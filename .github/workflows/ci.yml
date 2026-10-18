@@ -1,0 +1,49 @@
+name: CI
+
+# Cheap on purpose. This project does not scan markets, does not schedule
+# anything and does not deploy from CI; this workflow only proves that a commit
+# is clean, tested and builds. The market-hours scanner's runner minutes are a
+# separate budget and this workflow must never grow into it.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: sanitize and test the service
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: publish gate (no secrets, no private paths)
+        run: python tools/sanitize.py
+      - name: unit tests
+        run: python -m pytest tests -q
+      - name: offline demo still runs
+        run: python examples/charts_demo.py > /dev/null
+
+  frontend:
+    name: typecheck and test the web app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
