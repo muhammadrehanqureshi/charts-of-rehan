@@ -1,31 +1,49 @@
-# Data provenance and honest bars
+# Data provenance
 
-A candle is a record, not an illustration. This project never creates a bar to
-make the chart look continuous.
+A chart is only as honest as its statement of where its bars came from. This
+document is that statement.
 
-## The tape source
+## Where first minute bars come from
 
-`tape` reads this project's local market-feed recordings, parses exchange time
-and local receipt time separately, and builds one-minute bars using the same
-logic as the recorder's other consumers. Its resolution is `1m`. It can only
-show what was recorded; symbols that were absent from the feed have no candles.
-The live source cannot recover days before capture began.
+The `tape` source reads a read-only recording of the exchange's own market feed.
+The recorder subscribes to the venue for the eligible symbol universe, writes
+every frame it receives verbatim to an append only file under `data/`, and exits;
+it never sends an order, never logs in and never reconnects into a session it was
+not asked to be in.
 
-Finished sessions can be written to a private local archive. Archive rows retain
-exact source timestamps, separate receipt timestamps, full-precision OHLC,
-venue-derived volume, print counts and carried/missing markers. A day manifest
-pins the original capture's size, modification time and SHA-256 and hashes each
-symbol series, so later reads verify the archival record. This lets the chart
-serve old sessions when PSX is closed or the original recorder is offline.
-The archive does not restore data that was never captured, and data remains
-subject to the source venue's personal-use and redistribution rules.
+Measured on the live venue, 2026-10-16, inside a trading band:
 
-## Delayed portal source
+| Fact | Measurement |
+|---|---|
+| sweeps per connection | exactly 32 full market sweeps, then silence |
+| rows per sweep | about 315 symbols |
+| refresh achieved by the recorder | one burst every 23 seconds while it is running, after a stall watchdog was added |
+| stall without the watchdog | silence of 150 to 363 seconds while the socket looked healthy |
+| bar resolution built from the tape | 1 minute, by `src/data/tape_bars.py` |
+| tape growth | about 13 KB per second while the venue is pushing |
 
-`portal` reads the exchange's public company page. It has a measured delay of
-about five minutes and provides one session observation per trading day, not an
-intraday series. A source response with a cleared panel is reported as an empty
-acknowledgement, not a zero price.
+Those numbers are the reason the chart says "1m from the tape" rather than
+claiming a tick feed: the venue pushes bursts, not a continuous stream, and every
+bar in a payload is a completed minute built from banked prints.
+
+### The two honest limits of the tape source
+
+1. **Coverage.** A minute that the recorder did not capture is a gap, and it is
+   reported as a measured gap rather than interpolated. A symbol whose trading
+   did not print in a minute carries the previous close across the gap, and those
+   carried bars are counted separately in the payload's notes.
+2. **Late starts.** A series that begins mid session says when it begins and how
+   many session minutes it did not see, instead of drawing the whole morning as
+   one enormous gap.
+
+## Where the portal source's session bar comes from
+
+The `portal` source reads a public company page and takes the session panel the
+exchange itself publishes. Measured 2026-10-14, `/timeseries/eod/{symbol}`
+answered an HTML shell and `/timeseries/int/{symbol}` answered 404, so this source
+claims **one bar per trading day, about five minutes delayed**, and it does not
+claim an intraday series at all. A cleared panel is a named failure against that
+symbol, never a zero bar.
 
 ## What the replay source is
 

@@ -1,78 +1,78 @@
-# Running and deploying Charts of Rehan
+# Deployment
 
-## Local personal use
+## Where it may run
 
-The intended installation is local. The browser is a client of a foreground
-service on the same machine; the service binds `127.0.0.1` and stops when the
-operator stops it. It creates no scheduled task, autostart entry or daemon.
+The service is a **foreground tool**. It is started by a person, it serves until
+it is stopped, and it leaves nothing behind: no schedule, no daemon, no watcher,
+no autostart entry. Running it means a terminal is open.
 
-Build the web app once, then run the server:
+| Environment | Allowed | Why |
+|---|---|---|
+| a developer machine, loopback | yes | the intended use |
+| a workstation serving a local dashboard | yes, with `--allow-public-bind` stated explicitly | a network bind is a decision |
+| GitHub Actions | **no**, refused at startup | runner minutes belong to market hours work, and a scheduled chart server would be a daemon by another name |
+| a serverless platform | not as written | the service holds state in process and polls; a stateless platform would need a different ingest design |
+
+## Running it
 
 ```bash
-cd web && npm ci && npm run build
-cd ..
-python -m charts --source tape --static web/dist --port 8788
+# One pass, print health, exit. Good for a smoke test.
+python -m charts --source tape --once
+
+# Serve the API and the built front end on loopback.
+python -m charts --source tape --port 8788 --static web/dist
+
+# Keep a set of symbols warm so the first chart a browser asks for is instant.
+python -m charts --source tape --symbols OGDC,ENGRO,HBL --port 8788
+
+# Allow an extra origin to call the API (the Vite dev server is always allowed).
+python -m charts --source tape --cors http://192.168.1.20:5173
+
+# Offline demonstration, deterministic, no exchange and no network.
+python -m charts --source replay --symbols REPLAY1 --once
 ```
 
-Open `http://127.0.0.1:8788`. When there is a local tape capture, the chart is
-available immediately. To prepare a previously captured day for offline
-research:
+## Front end
+
+```bash
+cd web
+npm install
+npm run typecheck     # strict TypeScript, both projects
+npm test              # 121 unit tests
+npm run build         # writes web/dist
+```
+
+`web/dist` is build output and is never committed. Serve it with `--static`.
+
+## Operating notes
+
+- **Politeness.** The portal source paces its requests through a token bucket with
+  bounded retries and a circuit breaker. Do not raise the interval below the
+  default without measuring the effect on the upstream page.
+- **Memory.** Subscriber queues are bounded per chart. A stale tab drops events
+  rather than growing the process; the drop count is in `/api/health`.
+- **Ports.** The default port 8788 is high and uncommon so it does not collide
+  with a development server or another tool on the same machine.
+- **Clock.** All session logic is Karachi time (Asia/Karachi, UTC+5) and is never
+  derived from the host's local timezone.
+- **Logs.** Structured logging at INFO by default; `--log-level DEBUG` for
+  diagnosis. Nothing logs a credential because nothing holds one.
+
+## Data files and 24/7 research
+
+The tape source reads a capture from the path named by `--tape-dir`,
+`CHART_TAPE_DIR`, or its documented local candidates. Finished sessions can be
+stored once in a durable archive and read later without a running recorder:
 
 ```bash
 python -m charts --source tape --build-archive latest
 python -m charts --source tape --sessions
+python -m charts --source tape --day 2026-10-16 --port 8788
 ```
 
-By default, the archive is at `data/archive/`. Keep that folder and raw capture
-files on the private machine; it is excluded from Git. `--archive-dir PATH` or
-the `CHART_ARCHIVE_DIR` environment variable can point it to a protected local
-volume with enough room and backups. Data is written to a temporary file and
-atomically replaced; manifests and bar files are hashed and checked on read.
-Review the provider agreement before storing market data long term.
-
-A `--sessions` listing makes it easy to select historical dates. Archived
-sessions are readable after market hours and with the recorder switched off;
-the archive is not a collector and cannot recover a session that was never
-recorded. Store copies on a separate private backup if those are required. Use
-all supported history offline through the app while the service is running;
-the software itself intentionally starts only when the user asks.
-
-## Frontend development
-
-```bash
-cd web && npm ci && npm run dev
-```
-
-The Vite server proxies `/api` to `http://127.0.0.1:8788`. Typecheck, tests and
-build:
-
-```bash
-cd web
-npm run typecheck
-npm test
-npm run build
-```
-
-Backend tests and the sanitizer:
-
-```bash
-python tools/sanitize.py
-python -m pytest tests -q
-python examples/charts_demo.py
-```
-
-## Exposure is an explicit decision
-
-The server binds only to loopback by default. To share it over a trusted LAN, pass
-an explicit host and acknowledgement:
-
-```bash
-python -m charts --host 0.0.0.0 --allow-public-bind
-```
-
-This exposes the service to that network and adds no authentication. Do not
-forward the port to the public internet. The service refuses a non-loopback
-bind without `--allow-public-bind`.
-
-Do not deploy the service to shared hosting with private recordings. The tape and
-archive are personal runtime data. They are never part of the source release.
+The archive defaults to `data/archive/`, is local runtime data, and must not be
+committed or redistributed. Configure `--archive-dir PATH` to keep it outside
+the checkout or restore a separately held private archive. The exact session
+values, `prints`, carried-bar flags, and capture hashes are retained for local
+research. This app does not fetch or reconstruct missing market observations.
+The service does not create an account or contact an authenticated endpoint.
