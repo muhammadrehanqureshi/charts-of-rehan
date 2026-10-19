@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charts-of-rehan"
+version = "0.1.0"
+description = "A charting service for the exchange's own session, built from this project's own market data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Muhammad Rehan Qureshi"}]
+keywords = ["charts", "market-data", "psx", "sse", "stdlib"]
+classifiers = [
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+# Deliberately empty. The backend is standard library only, on purpose: it must
+# run on a machine with nothing installed but Python.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+charts-of-rehan = "charts.app:main"
+
+[tool.setuptools]
+packages = ["charts", "charts.adapters"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

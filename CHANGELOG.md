@@ -16,8 +16,8 @@ Initial standalone release, exported from the parent monorepo.
   breaker), `charts/store.py` (upserts, revision counts, measured gaps),
   `charts/ingest.py` (one polling thread, bounded subscriber queues),
   `charts/service.py` (the single payload builder), `charts/http.py` (REST, SSE,
-  static files), `charts/app.py` (the foreground entry point).
-- The web front end: React and strict TypeScript, built by Vite, with 64 unit
+  static files), `charts/app.py` (foreground entry point).
+- The web front end: React and strict TypeScript, built by Vite, with 121 unit
   tests. Bars live in parallel typed arrays, and a pointer move repaints without
   re-rendering the React tree.
 - `tools/sanitize.py`, the exposure scanner and publish gate: it reports
@@ -38,7 +38,7 @@ Initial standalone release, exported from the parent monorepo.
 
 **Verified at release**
 
-- 119 Python tests pass in this tree in under a second, with no network.
+- 187 Python tests pass in this tree in under two seconds, with no network.
 - 64 web unit tests pass; both TypeScript projects typecheck clean.
 - `tools/sanitize.py` reports 0 secrets and 0 private-data findings across 71
   scanned files.
