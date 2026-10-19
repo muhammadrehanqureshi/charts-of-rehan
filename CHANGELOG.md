@@ -38,7 +38,7 @@ Initial standalone release, exported from the parent monorepo.
 
 **Verified at release**
 
-- 187 Python tests pass in this tree in under two seconds, with no network.
+- 189 Python tests pass in this tree in under two seconds, with no network.
 - 64 web unit tests pass; both TypeScript projects typecheck clean.
 - `tools/sanitize.py` reports 0 secrets and 0 private-data findings across 71
   scanned files.

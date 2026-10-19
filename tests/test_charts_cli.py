@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -206,11 +207,30 @@ class BuildArchiveCommandTest(CommandCase):
 class EnvironmentTest(CommandCase):
 
     def test_a_public_bind_still_needs_the_explicit_flag(self):
+        # The bind rules are the subject here, so the runner variable is pinned
+        # off: a CI refusal would otherwise answer for them.
         parser = app.build_parser()
-        args = parser.parse_args(["--host", "0.0.0.0"])
-        self.assertIn("--allow-public-bind", app.check_environment(args) or "")
-        args = parser.parse_args(["--host", "0.0.0.0", "--allow-public-bind"])
-        self.assertIsNone(app.check_environment(args))
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": ""}):
+            args = parser.parse_args(["--host", "0.0.0.0"])
+            self.assertIn("--allow-public-bind", app.check_environment(args) or "")
+            args = parser.parse_args(["--host", "0.0.0.0", "--allow-public-bind"])
+            self.assertIsNone(app.check_environment(args))
+
+    def test_serving_under_github_actions_is_refused(self):
+        parser = app.build_parser()
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            refusal = app.check_environment(parser.parse_args([]))
+        self.assertIn("GitHub Actions", refusal or "")
+        self.assertIn("owner's machine", refusal or "")
+
+    def test_the_bounded_commands_are_allowed_under_github_actions(self):
+        parser = app.build_parser()
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            for argv in (["--sessions"],
+                         ["--build-archive", "latest"],
+                         ["--once"]):
+                with self.subTest(argv=argv):
+                    self.assertIsNone(app.check_environment(parser.parse_args(argv)))
 
     def test_the_tape_dirs_are_exactly_what_was_named(self):
         parser = app.build_parser()
