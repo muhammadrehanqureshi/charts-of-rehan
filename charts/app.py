@@ -188,8 +188,16 @@ def _warm_symbols(args) -> list[str]:
 
 
 def check_environment(args) -> str | None:
-    """Return the sentence that stops this process, or None to continue."""
-    if os.environ.get("GITHUB_ACTIONS"):
+    """Return the sentence that stops this process, or None to continue.
+
+    The GitHub Actions refusal covers the service itself. Serving is the
+    cloud-minute spend SO-12 reserves for the market-hours scans, so a runner
+    never starts the listener. The bounded commands (--sessions,
+    --build-archive, --once) answer from local files and exit, and CI has to
+    run them to prove them.
+    """
+    serving = not (args.sessions or args.build_archive or args.once)
+    if serving and os.environ.get("GITHUB_ACTIONS"):
         return ("this is a foreground chart service and GitHub Actions "
                 "minutes belong to the market-hours scans; run it on the "
                 "owner's machine instead")
