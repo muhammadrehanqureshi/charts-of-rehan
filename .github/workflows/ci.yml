@@ -12,14 +12,23 @@ on:
 permissions:
   contents: read
 
+# A push and its pull request are two runs of the same tree, and a rapid second
+# push makes the first obsolete. Cancel the superseded run so a red X always
+# describes the newest commit and the free minutes are not spent twice
+# (owner audit 2026-10-19: the same commit failed and passed twice within
+# four minutes while a stale run was still going).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: sanitize and test the service
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: publish gate (no secrets, no private paths)
@@ -40,13 +49,18 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
-          cache: npm
+          # Cache only when the lockfile is in the tree. setup-node fails the
+          # whole job with "Some specified paths were not resolved" when the
+          # cache path is missing, which is what turned three 2026-10-18
+          # branches red before their first line of code ran. With no cache
+          # the job still installs and tests; it is slower, not broken.
+          cache: ${{ hashFiles('web/package-lock.json') != '' && 'npm' || '' }}
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
