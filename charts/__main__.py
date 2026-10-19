@@ -1,5 +1,8 @@
-"""``python -m charts`` entry point."""
+"""``python -m charts`` runs the service's command line entry point."""
+
+from __future__ import annotations
 
 from charts.app import main
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
