@@ -6,6 +6,20 @@ versioned separately and only moves when a client can observe a difference.
 
 ## Unreleased
 
+**Fixed**
+
+- The KSE100 and KMIALLSHR charts served an equal-weight proxy rebased to
+  1000 where the exchange's own level was banked in every capture. The
+  index frames the read-only recorder banks (EXS-FEED, measured on the real
+  2026-10-12..10-16 captures: KSE100 166,231.18 → 166,532.86) are now parsed
+  and served as the index's own minute bars, foldable to every intraday and
+  calendar rung, each session chained. A session whose capture holds no
+  index frames falls back to the labelled proxy and the payload's facts say
+  which one answered.
+- `tools/sanitize.py --fix` crashed on its own Windows-user-path rewrite
+  (a `\U` escape in the replacement template); it rewrites through a lambda
+  now.
+
 **Added**
 
 - The full charting ladder: `1s`, `10s`, `1m`, `5m`, `10m`, `15m`, `30m`, `1h`,
