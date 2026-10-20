@@ -4,6 +4,37 @@ All notable changes to this project are recorded here. Versions follow
 `MAJOR.MINOR.PATCH`; the wire contract has its own `schema_version`, which is
 versioned separately and only moves when a client can observe a difference.
 
+## Unreleased
+
+**Added**
+
+- The full charting ladder: `1s`, `10s`, `1m`, `5m`, `10m`, `15m`, `30m`, `1h`,
+  `4h`, `1D`, `1W`, `1M`, measured and folded under the PSX session law.
+- `KSE100` and `KMIALLSHR` as computed, clearly labelled session-breadth
+  proxies, available from the toolbar and the API.
+- Pan, anchored wheel and pinch zoom, fit/newest, keyboard control and a
+  following/paused readout in the canvas.
+- An indicator studio with unlimited overlays, stacked panes, per-instance
+  colour/parameters, persisted state and a safe custom-formula editor.
+- A runnable custom-indicator example at `web/src/examples/CustomChart.tsx`.
+- Tests for the complete timeframe ladder and for validating a formula against
+  a synthetic series rather than its syntax alone.
+
+**Fixed**
+
+- Sub-minute charts used the median spacing of sparse ticks as the candle
+  width; the chosen resolution is now the width, so a sparse `1s` series is no
+  longer drawn as 23-second candles.
+- The watchlist now counts the same session-filtered bars the chart draws, so a
+  post-close print cannot make the list disagree with the canvas.
+- The canvas is cleared while a new series loads instead of leaving old
+  candles under the loading notice.
+- React registered `wheel` passively, so zooming logged a preventDefault
+  warning and scrolled the page. The chart now owns a non-passive listener.
+- Below 900px the chart leads the column and both panels have real heights;
+  the watchlist no longer collapses to a one-pixel border.
+- The URL hash keeps the selected session when switching symbols.
+
 ## 0.1.0
 
 Initial standalone release, exported from the parent monorepo.

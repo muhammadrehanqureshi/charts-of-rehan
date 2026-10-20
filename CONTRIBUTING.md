@@ -20,9 +20,31 @@ have been given access, these are the rules that keep it honest.
 
 ```bash
 python tools/sanitize.py            # must print PASS and exit 0
-python -m pytest tests -q           # 119 tests
+python -m pytest tests -q           # 222 tests
 cd web && npm run typecheck && npm test && npm run build
 ```
+
+## Landing a change
+
+Every change lands on `master` through a pull request that the agent opens and
+merges. Use the guarded landing script, not a direct push:
+
+```bash
+scripts/land.sh -m "Explain what changed and why"
+```
+
+The script refuses to run when the checkout is not the repository it claims to
+be. `.repo-identity` must contain exactly `charts-of-rehan`, and `origin` must
+name the same repository. Running this checkout's script against the
+`quant-of-rehan` remote therefore aborts before it stages anything. The script
+also asks `gh` which repository it is pointed at before opening the pull
+request, so a stray `GH_REPO` cannot redirect the PR either.
+
+Validation runs in the pull request's CI by default. Add `--local-checks` only
+when the owner asks for a local run; it executes the sanitize gate, the Python
+suite and the web typecheck and tests. `--until commit`, `--until sync` and
+`--until validate` stop before publishing, and `--dry-run` previews the staged
+set without changing anything.
 
 ## Changing the wire contract
 
