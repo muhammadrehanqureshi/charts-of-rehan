@@ -22,11 +22,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, ChartClient } from "./api/client";
 import { type Resolution, type SessionRow, type SymbolRow, parseHealth } from "./api/types";
 import { ChartCanvas } from "./components/ChartCanvas";
+import { IndicatorsPanel } from "./components/IndicatorsPanel";
 import { NotesPanel } from "./components/NotesPanel";
 import { StatusBar } from "./components/StatusBar";
 import { Toolbar } from "./components/Toolbar";
 import { Watchlist } from "./components/Watchlist";
 import { useChartFeed } from "./hooks/useChartFeed";
+import { useIndicators } from "./hooks/useIndicators";
 
 const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
 
@@ -66,8 +68,10 @@ export function App() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [catalogueLoading, setCatalogueLoading] = useState(true);
   const [watchlistOpen, setWatchlistOpen] = useState(true);
+  const [indicatorsOpen, setIndicatorsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [theme, setTheme] = useTheme();
+  const indicators = useIndicators();
 
   // The service's own facts, read once per mount and again after a refresh.
   useEffect(() => {
@@ -159,8 +163,8 @@ export function App() {
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
-    window.location.hash = next;
-  }, []);
+    window.location.hash = day.length > 0 ? `${next}/${day}` : next;
+  }, [day]);
 
   const chooseDay = useCallback((next: string) => {
     setDay(next);
@@ -191,7 +195,8 @@ export function App() {
     : `${session.day}${session.archived ? ", stored session" : ""}.`;
 
   return (
-    <div className={watchlistOpen ? "app app--with-watchlist" : "app"}>
+    <div className={["app", watchlistOpen ? "app--with-watchlist" : "",
+      indicatorsOpen ? "app--with-indicators" : ""].filter(Boolean).join(" ")}>
       <Toolbar
         symbol={symbol}
         onSymbol={chooseSymbol}
@@ -209,6 +214,8 @@ export function App() {
         busy={feed.status === "loading"}
         watchlistOpen={watchlistOpen}
         onToggleWatchlist={() => setWatchlistOpen((open) => !open)}
+        indicatorsOpen={indicatorsOpen}
+        onToggleIndicators={() => setIndicatorsOpen((open) => !open)}
       />
 
       <div className="app__body">
@@ -226,14 +233,18 @@ export function App() {
           <ChartCanvas
             series={feed.series}
             gaps={feed.meta.gaps}
+            resolution={resolution}
+            viewKey={`${symbol}|${day}|${resolution}`}
             version={feed.version}
             volumeAvailable={session?.volume_available ?? false}
             theme={theme}
             sessionLabel={sessionLabel}
             emptyNote={emptyNote}
+            indicators={indicators.specs}
           />
           <StatusBar
             status={feed.status}
+            resolution={resolution}
             market={feed.meta.market}
             symbol={feed.meta.symbol || symbol}
             day={session?.day ?? day}
@@ -263,6 +274,8 @@ export function App() {
           </button>
           {detailsOpen ? <NotesPanel meta={feed.meta} /> : null}
         </main>
+
+        {indicatorsOpen ? <IndicatorsPanel controller={indicators} /> : null}
       </div>
     </div>
   );

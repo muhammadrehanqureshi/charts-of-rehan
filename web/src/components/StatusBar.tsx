@@ -15,12 +15,14 @@
 
 import { useEffect, useState } from "react";
 
-import type { MarketContext } from "../api/types";
+import type { MarketContext, Resolution } from "../api/types";
 import type { FeedStatus } from "../hooks/useChartFeed";
 import { formatClock, formatMinutes, formatStamp } from "../chart/format";
+import { timeframeLabel } from "../chart/timeframes";
 
 export interface StatusBarProps {
   readonly status: FeedStatus;
+  readonly resolution: Resolution;
   /** The session facts the server resolved, never computed in the browser. */
   readonly market: MarketContext | null;
   readonly symbol: string;
@@ -54,9 +56,9 @@ const STATUS_TEXT: Record<FeedStatus, string> = {
 
 export function StatusBar(props: StatusBarProps) {
   const {
-    status, market, symbol, day, sessionNote, archived, captureName, sha256,
-    bars, gaps, missingMinutes, sourceLabel, delaySeconds, lastBarAt, asOf,
-    volumeAvailable, staleAfterMinutes, error,
+    status, resolution, market, symbol, day, sessionNote, archived,
+    captureName, sha256, bars, gaps, missingMinutes, sourceLabel,
+    delaySeconds, lastBarAt, asOf, volumeAvailable, staleAfterMinutes, error,
   } = props;
 
   // A local tick so "2 min ago" keeps counting while a quiet session sits on
@@ -100,6 +102,10 @@ export function StatusBar(props: StatusBarProps) {
         ) : null}
         <span className="status__item">
           <span className="status__key">symbol</span> {symbol || "none"}
+        </span>
+        <span className="status__item">
+          <span className="status__key">timeframe</span>{" "}
+          {timeframeLabel(resolution)}
         </span>
         <span className="status__item">
           <span className="status__key">session</span> {day || "unknown"}
