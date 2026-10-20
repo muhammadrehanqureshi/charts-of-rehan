@@ -12,7 +12,34 @@
  * a human debugging a broken deployment actually needs.
  */
 
-export type Resolution = "1m" | "1d" | "session";
+/**
+ * Every rung of the timeframe ladder the service serves.
+ *
+ * The server is the authority: a rung appears in this type because it is in
+ * the payload contract, not because the browser invented a button for it.
+ * `1d` and `session` stay in the union so a pre-v3 deployment still parses.
+ */
+export type Resolution =
+  | "1s" | "10s" | "1m" | "5m" | "10m" | "15m" | "30m" | "1h" | "4h"
+  | "1D" | "1W" | "1M"
+  | "1d" | "session";
+
+/** The canonical order the UI offers, finest first. */
+export const RESOLUTIONS: readonly Resolution[] = [
+  "1s", "10s", "1m", "5m", "10m", "15m", "30m", "1h", "4h",
+  "1D", "1W", "1M",
+];
+
+const RESOLUTION_SET = new Set<string>(RESOLUTIONS);
+const RESOLUTION_ALIASES: Readonly<Record<string, Resolution>> = {
+  "1d": "1D",
+  "1w": "1W",
+  "1hour": "1h",
+  "1hr": "1h",
+  "60m": "1h",
+  "240m": "4h",
+  session: "1D",
+};
 
 export interface SourceInfo {
   readonly id: string;
@@ -121,6 +148,8 @@ export interface SymbolRow {
   readonly symbol: string;
   readonly source: string;
   readonly listed: boolean;
+  /** True for the computed KSE100 and KMIALLSHR proxies. */
+  readonly index: boolean | undefined;
   readonly bars: number | null;
   readonly first: string | null;
   readonly last: string | null;
@@ -249,10 +278,14 @@ function stamp(value: unknown, path: string): string {
 
 function resolution(value: unknown, path: string): Resolution {
   const text = str(value, path);
-  if (text !== "1m" && text !== "1d" && text !== "session") {
-    throw new ContractViolation(path, `unknown resolution ${text}`);
+  if (RESOLUTION_SET.has(text)) {
+    return text as Resolution;
   }
-  return text;
+  const alias = RESOLUTION_ALIASES[text];
+  if (alias !== undefined) {
+    return alias;
+  }
+  throw new ContractViolation(path, `unknown resolution ${text}`);
 }
 
 function parseSource(raw: unknown, path: string): SourceInfo {
@@ -466,6 +499,18 @@ export interface HealthReport {
   readonly market: MarketContext;
   readonly source: SourceInfo;
   readonly resolutions: readonly Resolution[];
+  readonly timeframes: readonly TimeframeInfo[] | undefined;
+  readonly indices: readonly string[] | undefined;
+}
+
+/** The service's own label and build note for one rung. */
+export interface TimeframeInfo {
+  readonly id: Resolution;
+  readonly label: string;
+  readonly kind: string;
+  readonly seconds: number | null;
+  readonly minutes: number | null;
+  readonly source: string;
 }
 
 export function parseHealth(raw: unknown): HealthReport {
@@ -479,7 +524,39 @@ export function parseHealth(raw: unknown): HealthReport {
     resolutions: array(value["resolutions"], "health.resolutions").map(
       (item, index) => resolution(item, `health.resolutions[${index}]`),
     ),
+    timeframes: parseTimeframes(value["timeframes"], "health.timeframes"),
+    indices: value["indices"] === undefined
+      ? undefined
+      : array(value["indices"], "health.indices").map((item, index) =>
+          str(item, `health.indices[${index}]`),
+        ),
   };
+}
+
+/** The optional timeframe detail list; an older service simply omits it. */
+function parseTimeframes(
+  raw: unknown,
+  path: string,
+): readonly TimeframeInfo[] | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  return array(raw, path).map((item, index) => {
+    const where = `${path}[${index}]`;
+    const value = record(item, where);
+    return {
+      id: resolution(value["id"], `${where}.id`),
+      label: str(value["label"], `${where}.label`),
+      kind: str(value["kind"], `${where}.kind`),
+      seconds: value["seconds"] === null
+        ? null
+        : num(value["seconds"], `${where}.seconds`),
+      minutes: value["minutes"] === null
+        ? null
+        : num(value["minutes"], `${where}.minutes`),
+      source: str(value["source"], `${where}.source`),
+    };
+  });
 }
 
 /** The catalogue answer: one list of symbols the service can serve. */
@@ -509,6 +586,9 @@ export function parseSymbolRows(raw: unknown): SymbolRow[] {
       symbol: str(row["symbol"], `symbols.symbols[${index}].symbol`),
       source: optionalStr(row["source"]) ?? "",
       listed: row["listed"] === undefined ? true : bool(row["listed"], `symbols.symbols[${index}].listed`),
+      index: row["index"] === undefined
+        ? undefined
+        : bool(row["index"], `symbols.symbols[${index}].index`),
       bars: optionalNum(row["bars"]),
       first: optionalStr(row["first"]),
       last: optionalStr(row["last"]),
