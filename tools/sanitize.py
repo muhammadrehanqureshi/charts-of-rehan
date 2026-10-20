@@ -143,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
             before = path.read_bytes()
             after = before
             for rx, replacement in PATH_REWRITES:
-                after = rx.sub(replacement, after)
+                # A lambda, not a template string: the replacement contains
+                # backslashes that re otherwise reads as escapes.
+                after = rx.sub(lambda _, rep=replacement: rep, after)
             if after != before:
                 path.write_bytes(after)
                 changed += 1

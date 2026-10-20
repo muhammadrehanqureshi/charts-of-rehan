@@ -45,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data import index_feed  # noqa: E402
 from src.data import tape_bars  # noqa: E402
 from src.data import tick_volume  # noqa: E402
 from src.data.sessions import now_karachi  # noqa: E402
@@ -90,25 +91,38 @@ SOURCE_ARCHIVE = SourceInfo(
          "closed, so nothing in it can change",
 )
 
-#: The two index names the owner asked for. They are not tape symbols: PSX
-#: does not print an index through this broker feed. The service therefore
-#: computes a transparent proxy from the session's own constituents and says
-#: so in every payload. Nothing here is presented as the official PSX index.
+#: The two index names the owner asked for. The exchange's own levels come
+#: from the capture's EXS-FEED index frames (src/data/index_feed.py): the
+#: same read-only recording the tape reads banks the real published KSE100
+#: and all-shares index several times a minute. When a session's capture
+#: holds no index frames, the service falls back to computing an equal-weight
+#: proxy from the session's own constituents and says so in every payload.
 INDEX_KSE100 = "KSE100"
 INDEX_KMIALLSHR = "KMIALLSHR"
 INDEX_SYMBOLS = (INDEX_KSE100, INDEX_KMIALLSHR)
 INDEX_WEIGHT_LIMIT = 100
 
 SOURCE_INDEX = SourceInfo(
+    id="exchange_index",
+    label="the exchange's own published index, read from the broker feed's "
+          "EXS-FEED frames (the real KSE100 / all-shares level)",
+    delay_seconds=0,
+    note="the level is the exchange's own: value, session high and low and "
+         "the day's change come straight from the index frames the recorder "
+         "banked, at the minute those frames arrived",
+)
+
+SOURCE_INDEX_PROXY = SourceInfo(
     id="computed_index",
     label="computed index proxy from this session's tape constituents "
           "(not the exchange's official index)",
     delay_seconds=0,
-    note="KSE100 is the equal-weight return of the session's 100 largest "
-         "constituents by traded value; KMIALLSHR is the equal-weight return "
-         "of every symbol the tape printed. The level starts at 1000 at the "
-         "first bucket of each session; this is a chart of the session's own "
-         "breadth, never an official index level.",
+    note="no index frame was banked for this session, so KSE100 is the "
+         "equal-weight return of the session's 100 largest constituents by "
+         "traded value; KMIALLSHR is the equal-weight return of every symbol "
+         "the tape printed. The level starts at 1000 at the first bucket of "
+         "each session; this is a chart of the session's own breadth, never "
+         "an official index level.",
 )
 
 
@@ -247,6 +261,10 @@ class TapeSource:
         self._bars_cache: dict[tuple[str, str], list[Bar]] = {}
         #: Sub-minute bars, built once per capture identity and resolution.
         self._ticks: dict[str, tuple[tuple, dict[str, list[Bar]]]] = {}
+        #: The exchange's own index minutes, cached per capture identity.
+        #: Keyed like the tape cache: a growing live file has a new
+        #: (day, path, size, mtime), so today's newest frames arrive.
+        self._index_cache: dict[str, tuple[tuple, dict[str, list[Bar]]]] = {}
 
     # ------------------------------------------------------- configuration
     @property
@@ -318,9 +336,11 @@ class TapeSource:
                       if self._archive.symbols(day)]
             if stored:
                 facts_session = stored[-1]
-        index_rows = [{"symbol": symbol, "source": SOURCE_INDEX.id,
-                       "listed": True, "index": True}
-                      for symbol in INDEX_SYMBOLS]
+        index_rows = []
+        for symbol in INDEX_SYMBOLS:
+            rail = self.source_info(symbol, day=session)
+            index_rows.append({"symbol": symbol, "source": rail.id,
+                               "listed": True, "index": True})
         rows = [{"symbol": symbol, "source": SOURCE_TAPE, "listed": True}
                 for symbol in self._universe_for(
                     session, self.capture_for(session))[0]]
@@ -605,6 +625,13 @@ class TapeSource:
         symbol = symbol.strip().upper()
         session = _as_date(day) or self.session_day()
         if symbol in INDEX_SYMBOLS:
+            # The exchange's own published level first: the EXS-FEED frames
+            # the recorder banks carry the real index. A session whose
+            # capture holds no index frames falls back to the computed
+            # proxy, and the facts say which one answered.
+            real = self._exchange_index(symbol, session, canonical)
+            if real is not None:
+                return self._cal_tail(real, limit)
             if spec.calendar:
                 rows = self._index_calendar(symbol, canonical)
                 if day is not None:
@@ -793,6 +820,86 @@ class TapeSource:
         return built
 
     # ------------------------------------------------------------- indexes
+    def _exchange_index_minutes(self, session: date) -> dict[str, list[Bar]]:
+        """The exchange's own index minutes for a session, from the capture.
+
+        Built from the EXS-FEED frames the recorder banked and cached per
+        capture identity, so a live file re-reads as it grows and a finished
+        session reads once. There is no archive fallback for the index: the
+        archive keeps symbols, and the index frames live only in a capture.
+        """
+        path = self.capture_for(session)
+        if path is None:
+            return {}
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}
+        key = (session.isoformat(), str(path), stat.st_size, stat.st_mtime_ns)
+        cached = self._index_cache.get(session.isoformat())
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        built: dict[str, list[Bar]] = {}
+        for name, rows in ((INDEX_KSE100,
+                            index_feed.minute_bars(path, session, INDEX_KSE100)),
+                           (INDEX_KMIALLSHR,
+                            index_feed.minute_bars(path, session, INDEX_KMIALLSHR))):
+            bars: list[Bar] = []
+            for row in rows:
+                start = row["t"]
+                if not ladder.in_session(start):
+                    continue
+                bars.append(Bar.build(
+                    t=start, o=row["o"], h=row["h"], l=row["l"],
+                    c=row["c"], v=row["v"] or 0.0))
+            if bars:
+                built[name] = bars
+        self._index_cache[session.isoformat()] = (key, built)
+        return built
+
+    def _exchange_index(self, symbol: str, session: date,
+                        resolution: str) -> list[Bar] | None:
+        """The exchange's own index bars at `resolution`, or None to fall back.
+
+        Minutes are the read path's own grain; every coarser intraday rung is
+        folded through the one `ladder.aggregate` rule; calendar rungs chain
+        the sessions the captures hold. None means "this session's capture
+        holds no index frames": the caller then says so and serves the
+        computed proxy instead, labelled as a proxy.
+        """
+        minutes = self._exchange_index_minutes(session)
+        base = minutes.get(symbol)
+        if not base:
+            return None
+        spec = ladder.spec_for(resolution)
+        if spec.id == "1m" or minutes is None:
+            return base
+        if spec.calendar:
+            chain = self._exchange_index_calendar(symbol, resolution)
+            if not chain:
+                return base
+            wanted = ladder.calendar_key(
+                datetime(session.year, session.month, session.day, 12,
+                         tzinfo=ladder.law.KARACHI), resolution)
+            day_rows = [bar for bar in chain
+                        if ladder.calendar_key(
+                            datetime.fromisoformat(bar.t), resolution) == wanted]
+            return day_rows or base
+        return ladder.aggregate(base, resolution)
+
+    def _exchange_index_calendar(self, symbol: str,
+                                 resolution: str) -> list[Bar]:
+        """Chain every capture's real index minute into calendar bars."""
+        days = [day for day in self._available_days()
+                if self.capture_for(day) is not None]
+        days.sort()
+        parts: list[Bar] = []
+        for day in days:
+            minutes = self._exchange_index_minutes(day).get(symbol, [])
+            if minutes:
+                parts.extend(minutes)
+        return ladder.aggregate(parts, resolution)
+
     def _index_intraday(self, symbol: str, session: date,
                         resolution: str) -> list[Bar]:
         """One session of a transparent equal-weight index proxy."""
@@ -914,10 +1021,34 @@ class TapeSource:
         session = _as_date(day) or self.session_day()
         symbol = symbol.strip().upper()
         if symbol in INDEX_SYMBOLS:
-            members = len(self._index_universe(session))
-            if symbol == INDEX_KSE100:
+            exchange = self._exchange_index(symbol, session, "1m")
+            if exchange:
+                first, last = exchange[0], exchange[-1]
                 return [
-                    f"{INDEX_KSE100} is a computed proxy: the equal-weight "
+                    f"the exchange's own published {symbol} level, read from "
+                    f"the broker feed's EXS-FEED index frames the recorder "
+                    f"banked ({len(exchange)} minute(s), "
+                    f"{first.t[11:16]} to {last.t[11:16]} Karachi)",
+                    "the level, the session high and low and the day's change "
+                    "are the index frames' own numbers, at the minute each "
+                    "frame arrived; frames stop when the recorder stopped",
+                ]
+            capture = self.capture_for(session)
+            if capture is None and self._archive.manifest(session) is not None:
+                lines = [f"the index frames live in the capture files, and the "
+                         f"archive keeps no index series, so {session.isoformat()} "
+                         f"has no exchange index to serve"]
+            else:
+                lines = [f"no EXS-FEED index frame was banked for "
+                         f"{session.isoformat()} in "
+                         f"{capture.name if capture else 'any capture'}"]
+            members = len(self._index_universe(session))
+            lines.append(
+                f"no exchange level is available, so {symbol} is a computed "
+                f"proxy from this session's tape")
+            if symbol == INDEX_KSE100:
+                return lines + [
+                    f"{INDEX_KSE100} is the equal-weight "
                     f"return of the {min(INDEX_WEIGHT_LIMIT, members)} "
                     f"constituents with the largest traded value in this "
                     f"session, selected from the {members} symbols the tape "
@@ -963,6 +1094,9 @@ class TapeSource:
         session = _as_date(day) or self.session_day()
         symbol = symbol.strip().upper()
         if symbol in INDEX_SYMBOLS:
+            if self._exchange_index(symbol, session, "1m") is not None:
+                return self.capture_for(session) is not None \
+                    and session != self.today()
             return (session != self.today()
                     and self._archive.manifest(session) is not None)
         return session != self.today() and self._archive.has(session, symbol)
@@ -970,7 +1104,10 @@ class TapeSource:
     def source_info(self, symbol: str, *, day: date | str | None = None) -> SourceInfo:
         """Which source answers for this symbol on this day, and its words."""
         if symbol.strip().upper() in INDEX_SYMBOLS:
-            return SOURCE_INDEX
+            session = _as_date(day) or self.session_day()
+            if self._exchange_index(symbol, session, "1m") is not None:
+                return SOURCE_INDEX
+            return SOURCE_INDEX_PROXY
         return (SOURCE_ARCHIVE if self.served_from_archive(symbol, day=day)
                 else SOURCE)
 
