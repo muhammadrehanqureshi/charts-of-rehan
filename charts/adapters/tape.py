@@ -49,6 +49,8 @@ from src.data import tape_bars  # noqa: E402
 from src.data import tick_volume  # noqa: E402
 from src.data.sessions import now_karachi  # noqa: E402
 
+from charts import resolutions as ladder  # noqa: E402
+
 from charts.archive import (  # noqa: E402
     DEFAULT_ARCHIVE_DIR, DEFAULT_CAPTURE_DIRS, SessionArchive,
     capture_candidates, identify,
@@ -87,6 +89,35 @@ SOURCE_ARCHIVE = SourceInfo(
     note="read from the durable session archive on disk; the session is "
          "closed, so nothing in it can change",
 )
+
+#: The two index names the owner asked for. They are not tape symbols: PSX
+#: does not print an index through this broker feed. The service therefore
+#: computes a transparent proxy from the session's own constituents and says
+#: so in every payload. Nothing here is presented as the official PSX index.
+INDEX_KSE100 = "KSE100"
+INDEX_KMIALLSHR = "KMIALLSHR"
+INDEX_SYMBOLS = (INDEX_KSE100, INDEX_KMIALLSHR)
+INDEX_WEIGHT_LIMIT = 100
+
+SOURCE_INDEX = SourceInfo(
+    id="computed_index",
+    label="computed index proxy from this session's tape constituents "
+          "(not the exchange's official index)",
+    delay_seconds=0,
+    note="KSE100 is the equal-weight return of the session's 100 largest "
+         "constituents by traded value; KMIALLSHR is the equal-weight return "
+         "of every symbol the tape printed. The level starts at 1000 at the "
+         "first bucket of each session; this is a chart of the session's own "
+         "breadth, never an official index level.",
+)
+
+
+def _bar_in_session(bar: Bar) -> bool:
+    """True when this bar's stamp sits inside one of the day's bands."""
+    try:
+        return ladder.in_session(datetime.fromisoformat(bar.t))
+    except ValueError:
+        return False
 
 #: A guard against a corrupt file that would otherwise name millions of
 #: symbols: a capture cannot honestly carry more than this.
@@ -211,6 +242,11 @@ class TapeSource:
         self._day_override = _as_date(day)
         self._cache: dict[str, tuple[tuple, "tape_bars.TapeBars"]] = {}
         self._derived: dict[str, list[str]] = {}
+        #: Immutable archive rows, cached per (day, symbol). A finished
+        #: session never changes, so this is safe for the process lifetime.
+        self._bars_cache: dict[tuple[str, str], list[Bar]] = {}
+        #: Sub-minute bars, built once per capture identity and resolution.
+        self._ticks: dict[str, tuple[tuple, dict[str, list[Bar]]]] = {}
 
     # ------------------------------------------------------- configuration
     @property
@@ -250,8 +286,14 @@ class TapeSource:
 
     # -------------------------------------------------------- capabilities
     def capabilities(self) -> Capabilities:
-        return Capabilities(source=SOURCE, resolutions=(RESOLUTION_MINUTE,),
-                            live=True, local=True)
+        # The tape is the one source that can answer every rung: ticks for
+        # seconds, minutes for every intraday fold, and its archive for
+        # daily, weekly and monthly groups.
+        return Capabilities(
+            source=SOURCE,
+            resolutions=(RESOLUTION_MINUTE,) + tuple(
+                item for item in ladder.RESOLUTION_IDS if item != "1m"),
+            live=True, local=True)
 
     def catalog(self, day: date | str | None = None,
                 facts: bool = False) -> list[dict]:
@@ -265,8 +307,23 @@ class TapeSource:
         symbol.
         """
         session = _as_date(day) or self.session_day()
+        # A live catalogue with no recording yet would report zero bars for
+        # every symbol while the chart itself falls back to the newest stored
+        # session. Facts follow the same fallback, so the watchlist and the
+        # chart describe one session instead of two.
+        facts_session = session
+        if (facts and self.capture_for(session) is None
+                and self._archive.manifest(session) is None):
+            stored = [day for day in self._available_days()
+                      if self._archive.symbols(day)]
+            if stored:
+                facts_session = stored[-1]
+        index_rows = [{"symbol": symbol, "source": SOURCE_INDEX.id,
+                       "listed": True, "index": True}
+                      for symbol in INDEX_SYMBOLS]
         rows = [{"symbol": symbol, "source": SOURCE_TAPE, "listed": True}
-                for symbol in self._universe_for(session, self.capture_for(session))[0]]
+                for symbol in self._universe_for(
+                    session, self.capture_for(session))[0]]
         known = {row["symbol"] for row in rows}
         for symbol in self._archive.symbols(session):
             if symbol not in known:
@@ -284,27 +341,48 @@ class TapeSource:
                                  "listed": False})
                     known.add(symbol)
         if not facts:
-            return rows
+            return rows + index_rows
         for row in rows:
-            row.update(self._facts_for(tape, session, row["symbol"]))
+            row.update(self._facts_for(facts_session, row["symbol"]))
         rows.sort(key=lambda row: (not row.get("bars", 0), row["symbol"]))
-        return rows
+        for row in index_rows:
+            row.update(self._facts_for(facts_session, row["symbol"]))
+        # The indexes stay at the end in the wire catalogue; the UI lifts them
+        # to the top where a reader expects them. Keeping the traded symbols
+        # first here preserves the documented ordering for existing clients.
+        return rows + index_rows
 
-    def _facts_for(self, tape, session: date, symbol: str) -> dict:
-        """What the session holds for one symbol, measured, never guessed."""
-        bars = None if tape is None else tape.bars.get(symbol.strip().upper())
-        if bars is None and session != self.today():
-            rows = self._archive.read(session, symbol)
-            if rows:
-                return {"bars": len(rows), "first": rows[0].t, "last": rows[-1].t,
-                        "close": rows[-1].c, "day": session.isoformat()}
-        if not bars:
+    def _facts_for(self, session: date, symbol: str) -> dict:
+        """What the chartable session holds for one symbol, measured.
+
+        The catalogue used to report the raw capture's rows here, including a
+        Friday's post-close prints; the chart itself filters those through the
+        session law. A watchlist then said 128 bars to 12:34 while the chart
+        drew 93 bars to 11:59. Facts now go through the same reader the chart
+        uses, so the count, the last minute and the close are the series the
+        reader will actually see.
+        """
+        symbol = symbol.strip().upper()
+        if symbol in INDEX_SYMBOLS:
+            try:
+                rows = self._index_intraday(symbol, session, "1m")
+            except UpstreamError:
+                rows = []
+            if not rows:
+                return {"bars": 0, "first": None, "last": None,
+                        "close": None, "day": session.isoformat()}
+            return {"bars": len(rows), "first": rows[0].t,
+                    "last": rows[-1].t, "close": rows[-1].c,
+                    "day": session.isoformat()}
+        try:
+            rows = self._minute_history(symbol, session)
+        except UpstreamError:
+            rows = []
+        if not rows:
             return {"bars": 0, "first": None, "last": None, "close": None,
                     "day": session.isoformat()}
-        return {"bars": len(bars), "first": bars[0].timestamp.isoformat(
-                    timespec="seconds"),
-                "last": bars[-1].timestamp.isoformat(timespec="seconds"),
-                "close": bars[-1].close, "day": session.isoformat()}
+        return {"bars": len(rows), "first": rows[0].t, "last": rows[-1].t,
+                "close": rows[-1].c, "day": session.isoformat()}
 
     # ---------------------------------------------------------- the universe
     def _universe_for(self, day: date, capture: Path | None) -> tuple[list[str], list[str]]:
@@ -514,34 +592,314 @@ class TapeSource:
     # ------------------------------------------------------------- the wire
     def history(self, symbol: str, resolution: str = RESOLUTION_MINUTE, *,
                 limit: int = 500, day: date | str | None = None) -> list[Bar]:
-        if resolution != RESOLUTION_MINUTE:
-            raise UpstreamError(
-                UpstreamError.SCHEMA_CHANGE,
-                f"the broker tape serves {RESOLUTION_MINUTE} bars only, "
-                f"not {resolution}")
+        """Bars at any rung of the timeframe ladder.
+
+        Minutes and coarser rungs are folds of the tape's own minute bars.
+        Seconds are built from the capture's tick rows and therefore exist
+        only while that session's recording file is on disk: an archived day
+        that kept minutes cannot honestly produce a one-second candle, and
+        this method returns no bars rather than an invented one.
+        """
+        canonical = ladder.normalise(resolution)
+        spec = ladder.spec_for(canonical)
         symbol = symbol.strip().upper()
         session = _as_date(day) or self.session_day()
+        if symbol in INDEX_SYMBOLS:
+            if spec.calendar:
+                rows = self._index_calendar(symbol, canonical)
+                if day is not None:
+                    wanted = ladder.calendar_key(
+                        datetime(session.year, session.month, session.day, 12,
+                                 tzinfo=ladder.law.KARACHI), canonical)
+                    rows = [bar for bar in rows if ladder.calendar_key(
+                        datetime.fromisoformat(bar.t), canonical) == wanted]
+                return self._cal_tail(rows, limit)
+            return self._cal_tail(
+                self._index_intraday(symbol, session, canonical), limit)
+        if spec.calendar:
+            bars = self._calendar_history(symbol, canonical, session, day)
+            return self._cal_tail(bars, limit)
+        if spec.subminute:
+            rows = self._tick_day(session, canonical).get(symbol, [])
+            return self._cal_tail(rows, limit)
+        bars = self._minute_history(symbol, session)
+        folded = ladder.aggregate(bars, canonical)
+        return self._cal_tail(folded, limit)
+
+    @staticmethod
+    def _cal_tail(bars: list[Bar], limit: int) -> list[Bar]:
+        return bars[-limit:] if limit and limit > 0 else bars
+
+    def _minute_history(self, symbol: str, session: date) -> list[Bar]:
+        """One session's one-minute bars, from the archive or the capture."""
+        symbol = symbol.strip().upper()
         if session != self.today():
-            # A finished session: the archive is the durable answer, and a
-            # build from that day's capture is the fallback (and then it is
+            # A finished session: the archive is the durable answer. A day
+            # whose manifest exists but holds no file for this symbol is an
+            # honest empty series, not an error.
+            if self._archive.manifest(session) is not None:
+                return self._cached_archive(session, symbol)
+            # A build from that day's capture is the fallback (and then it is
             # stored, so this cost is paid once).
-            archived = self._archive.read(session, symbol, limit or None)
-            if archived:
-                return archived
-            bars = self._bars_for(self._day(session), symbol)
+            bars = [bar for bar in self._bars_for(self._day(session), symbol)
+                    if _bar_in_session(bar)]
             self._archive_session_best_effort(session)
-            return bars[-limit:] if limit else bars
+            return bars
         try:
             tape = self._day(session)
         except UpstreamError:
-            # Today's recording is missing: yesterday's answer beats an empty
-            # chart, and the payload says which session it is showing.
-            archived = self._archive.read(session, symbol, limit or None)
-            if not archived:
+            # Today's recording is missing: the archive is the only honest
+            # answer left, and the payload says which session it is showing.
+            if self._archive.manifest(session) is None:
                 raise
-            return archived
-        bars = self._bars_for(tape, symbol)
-        return bars[-limit:] if limit else bars
+            return self._cached_archive(session, symbol)
+        return [bar for bar in self._bars_for(tape, symbol)
+                if _bar_in_session(bar)]
+
+    def _cached_archive(self, session: date, symbol: str) -> list[Bar]:
+        key = (session.isoformat(), symbol)
+        found = self._bars_cache.get(key)
+        if found is not None:
+            return list(found)
+        rows = [bar for bar in self._archive.read(session, symbol)
+                if _bar_in_session(bar)]
+        self._bars_cache[key] = list(rows)
+        return rows
+
+    def _available_days(self) -> list[date]:
+        """Every day this deployment can draw, oldest first."""
+        found: set[date] = set()
+        for text in self._archive.days():
+            try:
+                found.add(date.fromisoformat(text))
+            except ValueError:
+                continue
+        for directory in self._capture_dirs:
+            if not directory.is_dir():
+                continue
+            for path in directory.glob("capture_*.ndjson"):
+                text = _day_from_capture_name(path.name)
+                if text is None:
+                    continue
+                try:
+                    found.add(date.fromisoformat(text))
+                except ValueError:
+                    continue
+        today = self.today()
+        if self.capture_for(today) is not None:
+            found.add(today)
+        return sorted(day for day in found if day <= today)
+
+    def _calendar_days(self, session: date, resolution: str,
+                       explicit: bool) -> list[date]:
+        available = self._available_days()
+        if session not in available and self._archive.manifest(session) \
+                is not None:
+            available.append(session)
+            available.sort()
+        if resolution == "1D":
+            # A named day is one daily bar. Without a day, the chart is a
+            # daily *series*: returning only today's session would make the
+            # history disappear the moment the recorder started working.
+            return [session] if explicit else available
+        if not explicit:
+            return available
+        wanted = ladder.calendar_key(
+            datetime(session.year, session.month, session.day, 12,
+                     tzinfo=ladder.law.KARACHI), resolution)
+        selected = [day for day in available if ladder.calendar_key(
+            datetime(day.year, day.month, day.day, 12,
+                     tzinfo=ladder.law.KARACHI), resolution) == wanted]
+        if session not in selected:
+            selected.append(session)
+            selected.sort()
+        return selected
+
+    def _calendar_history(self, symbol: str, resolution: str,
+                          session: date, day) -> list[Bar]:
+        days = self._calendar_days(session, resolution, explicit=day is not None)
+        rows: list[Bar] = []
+        missing: UpstreamError | None = None
+        for item in days:
+            try:
+                rows.extend(self._minute_history(symbol, item))
+            except UpstreamError as exc:
+                if item == session:
+                    missing = exc
+        if not rows and missing is not None:
+            raise missing
+        return ladder.aggregate(rows, resolution)
+
+    # ------------------------------------------------------------ sub-minute
+    def _tick_day(self, session: date, resolution: str) -> dict[str, list[Bar]]:
+        """Second or ten-second bars for every symbol the tick file printed.
+
+        Built once per capture identity and cached: the file is read in one
+        pass, volume comes from the venue's own running counter differenced
+        across buckets, and a row outside the session bands is dropped. A
+        row with no price contributes nothing rather than a guessed one.
+        """
+        path = self.capture_for(session)
+        if path is None:
+            return {}
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}
+        key = (session.isoformat(), resolution, str(path),
+               stat.st_size, stat.st_mtime_ns)
+        cached = self._ticks.get(session.isoformat())
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        buckets: dict[str, dict[datetime, dict]] = {}
+        previous_total: dict[str, float] = {}
+        for row in tick_volume.iter_ticks(path):
+            symbol = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+            if not symbol:
+                continue
+            moment = tape_bars._moment(row, session)
+            if moment is None or not ladder.in_session(moment):
+                continue
+            start = ladder.bucket_start(moment, resolution)
+            price = tape_bars._number(row.get("last"))
+            if start is None or price is None or price <= 0:
+                continue
+            total = tape_bars._number(row.get("volume"))
+            delta = 0.0
+            if total is not None and total > 0:
+                prior = previous_total.get(symbol)
+                if prior is not None and total >= prior:
+                    delta = float(int(total) - int(prior))
+                previous_total[symbol] = total
+            bucket = buckets.setdefault(symbol, {}).get(start)
+            if bucket is None:
+                buckets[symbol][start] = {
+                    "o": price, "h": price, "l": price, "c": price,
+                    "v": delta,
+                }
+            else:
+                bucket["h"] = max(bucket["h"], price)
+                bucket["l"] = min(bucket["l"], price)
+                bucket["c"] = price
+                bucket["v"] += delta
+        built: dict[str, list[Bar]] = {}
+        for symbol, series in buckets.items():
+            built[symbol] = [
+                Bar.build(t=start, o=data["o"], h=data["h"],
+                          l=data["l"], c=data["c"], v=data["v"])
+                for start, data in sorted(series.items())
+            ]
+        self._ticks[session.isoformat()] = (key, built)
+        return built
+
+    # ------------------------------------------------------------- indexes
+    def _index_intraday(self, symbol: str, session: date,
+                        resolution: str) -> list[Bar]:
+        """One session of a transparent equal-weight index proxy."""
+        spec = ladder.spec_for(resolution)
+        if spec.subminute:
+            base = self._tick_day(session, resolution)
+        else:
+            base = {}
+            for name in self._index_universe(session):
+                try:
+                    rows = self._minute_history(name, session)
+                except UpstreamError:
+                    continue
+                folded = ladder.aggregate(rows, resolution)
+                if folded:
+                    base[name] = folded
+        if not base:
+            return []
+        names = self._index_members(symbol, base)
+        if not names:
+            return []
+        times: set[datetime] = set()
+        for name in names:
+            for bar in base[name]:
+                times.add(datetime.fromisoformat(bar.t))
+        rows = {name: {datetime.fromisoformat(bar.t): bar
+                       for bar in base[name]} for name in names}
+        level = 1000.0
+        previous: dict[str, float] = {}
+        out: list[Bar] = []
+        for moment in sorted(times):
+            present = [(name, rows[name][moment]) for name in names
+                       if moment in rows[name]]
+            if not present:
+                continue
+            if not previous:
+                previous = {name: bar.o for name, bar in present}
+            ratios: list[float] = []
+            values = {"o": [], "h": [], "l": [], "c": []}
+            volume = 0.0
+            for name, bar in present:
+                base_price = previous.get(name, bar.o)
+                if base_price <= 0:
+                    continue
+                values["o"].append(bar.o / base_price)
+                values["h"].append(bar.h / base_price)
+                values["l"].append(bar.l / base_price)
+                values["c"].append(bar.c / base_price)
+                volume += bar.v
+            if not values["c"]:
+                continue
+            mean = {key: sum(items) / len(items)
+                    for key, items in values.items()}
+            opened = level * mean["o"]
+            high = level * max(mean["h"], mean["o"], mean["c"], mean["l"])
+            low = level * min(mean["l"], mean["o"], mean["c"], mean["h"])
+            close = level * mean["c"]
+            out.append(Bar.build(t=moment, o=round(opened, 4),
+                                 h=round(max(high, opened, close), 4),
+                                 l=round(min(low, opened, close), 4),
+                                 c=round(close, 4), v=round(volume, 4)))
+            for name, bar in present:
+                previous[name] = bar.c
+            level = close
+        return out
+
+    def _index_members(self, symbol: str, base: dict[str, list[Bar]]) -> list[str]:
+        names = sorted(base)
+        if symbol == INDEX_KMIALLSHR:
+            return names
+        ranked = sorted(
+            names,
+            key=lambda name: sum(bar.v * bar.c for bar in base[name]),
+            reverse=True,
+        )
+        return ranked[:INDEX_WEIGHT_LIMIT]
+
+    def _index_universe(self, session: date) -> list[str]:
+        """The symbols to read for an index, derived from what the day holds."""
+        if self._archive.manifest(session) is not None:
+            return self._archive.symbols(session)
+        try:
+            return self._universe_for(session, self.capture_for(session))[0]
+        except UpstreamError:
+            return []
+
+    def _index_calendar(self, symbol: str, resolution: str) -> list[Bar]:
+        """A chained daily index across every session this service can draw."""
+        days = self._available_days()
+        if not days:
+            return []
+        level = 1000.0
+        daily: list[Bar] = []
+        for day in days:
+            intraday = self._index_intraday(symbol, day, "1m")
+            if not intraday:
+                continue
+            scale = level / 1000.0
+            scaled = [Bar.build(t=bar.t, o=bar.o * scale, h=bar.h * scale,
+                                l=bar.l * scale, c=bar.c * scale, v=bar.v)
+                      for bar in intraday]
+            day_bar = ladder.aggregate(scaled, "1D")
+            if not day_bar:
+                continue
+            daily.append(day_bar[0])
+            level = day_bar[0].c
+        return ladder.aggregate(daily, resolution)
 
     def latest(self, symbol: str, resolution: str = RESOLUTION_MINUTE, *,
                since: str | None = None, day: date | str | None = None,
@@ -554,6 +912,28 @@ class TapeSource:
 
     def notes(self, symbol: str, *, day: date | str | None = None) -> list[str]:
         session = _as_date(day) or self.session_day()
+        symbol = symbol.strip().upper()
+        if symbol in INDEX_SYMBOLS:
+            members = len(self._index_universe(session))
+            if symbol == INDEX_KSE100:
+                return [
+                    f"{INDEX_KSE100} is a computed proxy: the equal-weight "
+                    f"return of the {min(INDEX_WEIGHT_LIMIT, members)} "
+                    f"constituents with the largest traded value in this "
+                    f"session, selected from the {members} symbols the tape "
+                    f"printed",
+                    "this is not the exchange's official KSE100 level; it is "
+                    "a transparent breadth chart of the session's own tape, "
+                    "with the level set to 1000 at its first bucket",
+                ]
+            return [
+                f"{INDEX_KMIALLSHR} is a computed proxy: the equal-weight "
+                f"return of every one of the {members} symbols the tape "
+                f"printed in this session",
+                "this is not the exchange's official KMIALLSHR level; it is "
+                "a transparent breadth chart of the session's own tape, "
+                "with the level set to 1000 at its first bucket",
+            ]
         summary = self._archive.summary(session)
         archived_session = session != self.today() and summary is not None
         if archived_session and self._archive.has(session, symbol):
@@ -581,10 +961,16 @@ class TapeSource:
         running session is not labelled a stored one.
         """
         session = _as_date(day) or self.session_day()
+        symbol = symbol.strip().upper()
+        if symbol in INDEX_SYMBOLS:
+            return (session != self.today()
+                    and self._archive.manifest(session) is not None)
         return session != self.today() and self._archive.has(session, symbol)
 
     def source_info(self, symbol: str, *, day: date | str | None = None) -> SourceInfo:
         """Which source answers for this symbol on this day, and its words."""
+        if symbol.strip().upper() in INDEX_SYMBOLS:
+            return SOURCE_INDEX
         return (SOURCE_ARCHIVE if self.served_from_archive(symbol, day=day)
                 else SOURCE)
 

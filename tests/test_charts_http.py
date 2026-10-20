@@ -284,6 +284,20 @@ class StaticTest(ServerCase):
         self.assertIn("javascript", headers["Content-Type"])
         self.assertIn("immutable", headers["Cache-Control"])
 
+    def test_an_encoded_parent_path_cannot_escape_the_build(self):
+        server = self.make_server(static_dir=self.root)
+        connection = http.client.HTTPConnection("127.0.0.1",
+                                                server.server_address[1],
+                                                timeout=10)
+        self.addCleanup(connection.close)
+        # The client must not normalise this away: %2e%2e is the attack, and
+        # the server has to decode it before deciding what file it names.
+        connection.request("GET", "/%2e%2e/%2e%2e/pyproject.toml")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 404)
+        self.assertEqual(json.loads(response.read())["error"]["code"],
+                         "NOT_FOUND")
+
     def test_without_a_build_the_api_says_so(self):
         server = self.make_server(static_dir=None)
         status, _, raw = self.get(server, "/")
