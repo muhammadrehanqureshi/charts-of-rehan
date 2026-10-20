@@ -73,6 +73,27 @@ export class ColumnSeries {
     this.revisions = 0;
   }
 
+  /**
+   * A copy of every column, for the indicator engine.
+   *
+   * The copies are deliberate: a calculation may never write into the bars
+   * the renderer is drawing, and an indicator is allowed to fail without
+   * corrupting the chart.
+   */
+  columns(): {
+    time: Float64Array; open: Float64Array; high: Float64Array;
+    low: Float64Array; close: Float64Array; volume: Float64Array;
+  } {
+    return {
+      time: this.time.slice(0, this.count),
+      open: this.open.slice(0, this.count),
+      high: this.high.slice(0, this.count),
+      low: this.low.slice(0, this.count),
+      close: this.close.slice(0, this.count),
+      volume: this.volume.slice(0, this.count),
+    };
+  }
+
   /** The bar at an index, or undefined outside the series. */
   at(index: number): BarRow | undefined {
     if (!Number.isInteger(index) || index < 0 || index >= this.count) {
