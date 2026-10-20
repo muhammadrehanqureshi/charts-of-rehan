@@ -109,6 +109,13 @@ def scan(paths: list[Path]) -> tuple[Counter[str], list[str]]:
                         continue
                     if value.endswith((b"@example.com", b"@example.org")):
                         continue
+                    # The git SSH address is not a mailbox, and a GitHub
+                    # noreply address is the identity the owner publishes on
+                    # purpose. Neither is personal data to redact.
+                    if value == b"git@github.com":
+                        continue
+                    if value.endswith(b"@users.noreply.github.com"):
+                        continue
                 if name == "phone_pk":
                     # +920000000000 is a documented placeholder, not a person.
                     digits = match.group(1)
