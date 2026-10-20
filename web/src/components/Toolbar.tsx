@@ -12,6 +12,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Resolution, SessionRow } from "../api/types";
 import { formatDay } from "../chart/format";
+import {
+  TIMEFRAME_GROUPS,
+  TIMEFRAMES,
+  timeframeLabel,
+} from "../chart/timeframes";
 
 export interface ToolbarProps {
   readonly symbol: string;
@@ -31,22 +36,22 @@ export interface ToolbarProps {
   readonly busy: boolean;
   readonly watchlistOpen: boolean;
   readonly onToggleWatchlist: () => void;
+  readonly indicatorsOpen: boolean;
+  readonly onToggleIndicators: () => void;
 }
-
-const RESOLUTION_LABEL: Record<string, string> = {
-  "1m": "1 minute",
-  "1d": "daily",
-  session: "session",
-};
 
 export function Toolbar(props: ToolbarProps) {
   const {
     symbol, onSymbol, catalogue, resolution, onResolution, resolutions,
     day, onDay, sessions, today, theme, onTheme, onRefresh, busy,
-    watchlistOpen, onToggleWatchlist,
+    watchlistOpen, onToggleWatchlist, indicatorsOpen, onToggleIndicators,
   } = props;
   const [query, setQuery] = useState<string | null>(null);
   const box = useRef<HTMLDivElement | null>(null);
+  const available = useMemo(
+    () => TIMEFRAMES.filter((item) => resolutions.includes(item.id)),
+    [resolutions],
+  );
 
   const matches = useMemo(() => {
     if (query === null) {
@@ -89,6 +94,7 @@ export function Toolbar(props: ToolbarProps) {
           type="button"
           className="toolbar__toggle"
           aria-expanded={watchlistOpen}
+          aria-label={watchlistOpen ? "hide watchlist" : "show watchlist"}
           onClick={onToggleWatchlist}
           title="Show or hide the watchlist"
         >
@@ -137,19 +143,44 @@ export function Toolbar(props: ToolbarProps) {
         ) : null}
       </div>
 
-      <div className="toolbar__group" role="group" aria-label="resolution">
-        {resolutions.map((item) => (
+      <div className="toolbar__group toolbar__group--indices"
+           role="group" aria-label="index charts">
+        {["KSE100", "KMIALLSHR"].map((name) => (
           <button
-            key={item}
+            key={name}
             type="button"
-            className={item === resolution ? "chip chip--on" : "chip"}
-            aria-pressed={item === resolution}
-            onClick={() => onResolution(item)}
+            className={name === symbol ? "chip chip--on" : "chip"}
+            aria-pressed={name === symbol}
+            title={`${name} computed proxy from this session's tape`}
+            onClick={() => onSymbol(name)}
           >
-            {RESOLUTION_LABEL[item] ?? item}
+            {name}
           </button>
         ))}
       </div>
+
+      <label className="toolbar__field toolbar__field--timeframe">
+        <span className="visually-hidden">timeframe</span>
+        <select
+          aria-label="timeframe"
+          value={resolutions.includes(resolution) ? resolution : "1m"}
+          onChange={(event) => onResolution(event.target.value as Resolution)}
+        >
+          {TIMEFRAME_GROUPS.map((group) => {
+            const options = available.filter((item) => item.group === group.key);
+            return options.length === 0 ? null : (
+              <optgroup key={group.key} label={group.label}>
+                {options.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </optgroup>
+            );
+          })}
+        </select>
+        <span className="toolbar__timeframe-hint" aria-hidden="true">
+          {timeframeLabel(resolution)}
+        </span>
+      </label>
 
       <label className="toolbar__field">
         <span className="visually-hidden">session</span>
@@ -170,6 +201,15 @@ export function Toolbar(props: ToolbarProps) {
       </label>
 
       <div className="toolbar__group toolbar__group--end">
+        <button
+          type="button"
+          className={indicatorsOpen ? "chip chip--on" : "chip"}
+          aria-pressed={indicatorsOpen}
+          title="Show or hide the indicator panel"
+          onClick={onToggleIndicators}
+        >
+          indicators
+        </button>
         <button type="button" onClick={onRefresh} disabled={busy}>
           {busy ? "loading…" : "reload"}
         </button>

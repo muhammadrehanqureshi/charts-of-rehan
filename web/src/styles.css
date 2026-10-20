@@ -119,8 +119,16 @@ button:disabled {
   min-height: 0;
 }
 
+.app--with-indicators .app__body {
+  grid-template-columns: 220px minmax(0, 1fr) 282px;
+}
+
 .app:not(.app--with-watchlist) .app__body {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.app:not(.app--with-watchlist).app--with-indicators .app__body {
+  grid-template-columns: minmax(0, 1fr) 282px;
 }
 
 .app__main {
@@ -200,6 +208,19 @@ button:disabled {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+
+.toolbar__field--timeframe select {
+  min-width: 128px;
+}
+
+.toolbar__timeframe-hint {
+  display: none;
+}
+
+.toolbar__group--indices .chip {
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
 .toolbar__options {
@@ -322,6 +343,18 @@ button:disabled {
   letter-spacing: 0.02em;
 }
 
+.row__badge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .row__price {
   grid-area: price;
   font-variant-numeric: tabular-nums;
@@ -418,8 +451,11 @@ button:disabled {
   position: absolute;
   top: 22px;
   left: 0;
+  max-width: calc(100% - 8px);
+  overflow: hidden;
   color: var(--text);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ----------------------------------------------------------------- status */
@@ -499,6 +535,209 @@ button:disabled {
   font-size: 11.5px;
 }
 
+/* -------------------------------------------------------------- indicators */
+
+.indicators {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.indicators__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.indicators__head h2 {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.indicators__count {
+  min-width: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.indicators__add {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.indicators__add select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.indicators__list {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow: auto;
+  min-height: 0;
+}
+
+.indicators__quiet {
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.indicators__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.indicators__foot .indicators__quiet {
+  padding: 0;
+  font-size: 9.5px;
+}
+
+.indicator {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.indicator--off {
+  opacity: 0.62;
+}
+
+.indicator--broken {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  color: var(--down);
+  font-size: 11px;
+}
+
+.indicator__head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.indicator__colour {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.indicator__title {
+  flex: 1;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.indicator__icon {
+  min-width: 22px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.indicator__description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.indicator__params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+  gap: 4px;
+}
+
+.indicator__param {
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.indicator__param input,
+.indicator__param select,
+.indicator__param textarea {
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.indicator__param textarea {
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.indicator__param--row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.indicator__param--row select {
+  grid-column: 2;
+}
+
+.indicator__help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.indicator__error {
+  margin: 0;
+  padding: 3px 5px;
+  border-left: 2px solid var(--down);
+  color: var(--down);
+  font-size: 10px;
+}
+
 /* ------------------------------------------------------------------ notes */
 
 .app__details-toggle {
@@ -551,17 +790,71 @@ button:disabled {
 
 /* --------------------------------------------------- narrow and short screens */
 
+@media (max-width: 1180px) {
+  .app--with-indicators .app__body {
+    grid-template-columns: 200px minmax(0, 1fr) 246px;
+  }
+
+  .app:not(.app--with-watchlist).app--with-indicators .app__body {
+    grid-template-columns: minmax(0, 1fr) 246px;
+  }
+}
+
 @media (max-width: 900px) {
-  .app__body {
-    grid-template-columns: minmax(0, 1fr);
+  /*
+   * A phone is a chart first and a watchlist second. The old flex order put
+   * the watchlist before the chart and then let it shrink to its 1px border,
+   * so the list was on screen but invisible. Each panel now has a real height,
+   * the chart leads, and the page scrolls as one column instead of shrinking
+   * three nested scroll areas into the viewport.
+   */
+  .app {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .app__body,
+  .app--with-indicators .app__body,
+  .app:not(.app--with-watchlist).app__body,
+  .app:not(.app--with-watchlist).app--with-indicators .app__body {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .app__main {
+    order: 1;
+    flex: 0 0 auto;
+    min-height: 0;
+    grid-template-rows: minmax(280px, 52vh) auto auto auto;
+  }
+
+  .app__main .chart {
+    min-height: 280px;
   }
 
   .watchlist {
-    max-height: 32vh;
+    order: 2;
+    flex: 0 0 auto;
+    height: 32vh;
+    min-height: 180px;
+    max-height: 300px;
+  }
+
+  .indicators {
+    order: 3;
+    flex: 0 0 auto;
+    height: 48vh;
+    min-height: 240px;
+    max-height: 520px;
   }
 
   .toolbar__title,
   .chart__hint {
+    display: none;
+  }
+
+  .toolbar__timeframe-hint {
     display: none;
   }
 }
@@ -580,8 +873,21 @@ button:disabled {
     width: 92px;
   }
 
+  .toolbar__field--timeframe select {
+    min-width: 104px;
+  }
+
+  .toolbar__group--indices .chip {
+    padding: 3px 5px;
+    font-size: 10px;
+  }
+
   .chart {
-    min-height: 200px;
+    min-height: 260px;
+  }
+
+  .chart__range {
+    display: none;
   }
 
   .status__row {
