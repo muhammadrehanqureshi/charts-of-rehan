@@ -38,10 +38,12 @@ import sys
 from pathlib import Path
 
 from charts import __version__, sessions
+from charts import resolutions as ladder
 from charts.adapters import SOURCES
 from charts.adapters.replay import ReplaySource
 from charts.adapters.tape import TapeSource, read_universe
 from charts.archive import discover_capture_dirs
+from charts.contract import RESOLUTION_MINUTE
 from charts.http import ChartServer
 from charts.ingest import Ingestor
 from charts.store import BarStore
@@ -218,7 +220,15 @@ def build(args) -> tuple[BarStore, Ingestor, ChartServer]:
     """Assemble the service. Pure wiring, so a test can call it directly."""
     source = _source_for(args)
     capabilities = source.capabilities()
-    resolution = args.resolution or capabilities.resolutions[0]
+    resolution = args.resolution or (
+        RESOLUTION_MINUTE if RESOLUTION_MINUTE in capabilities.resolutions
+        else capabilities.resolutions[0])
+    try:
+        resolution = ladder.normalise(resolution)
+    except ValueError:
+        raise SystemExit(
+            f"source {source.name} does not serve {resolution}; it serves "
+            f"{', '.join(capabilities.resolutions)}")
     if resolution not in capabilities.resolutions:
         raise SystemExit(
             f"source {source.name} does not serve {resolution}; it serves "
