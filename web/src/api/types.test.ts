@@ -140,7 +140,7 @@ describe("parsePayload", () => {
   });
 
   it("refuses an unknown resolution", () => {
-    const broken = { ...payload(), resolution: "5m" };
+    const broken = { ...payload(), resolution: "7m" };
     expect(() => parsePayload(broken)).toThrow(/resolution/);
   });
 
