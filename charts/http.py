@@ -29,15 +29,16 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import posixpath
 import queue
+import sys
 from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from charts import resolutions as ladder
 from charts import sessions
 from charts.contract import RESOLUTION_MINUTE, SCHEMA_VERSION, ContractError
 from charts.ingest import Ingestor
@@ -126,9 +127,20 @@ class ChartHandler(BaseHTTPRequestHandler):
             }.get(exc.category, 502)
             self._send_json(error_body(exc.category, exc.detail), status=status,
                             extra={"Retry-After": "30"})
+        except ConnectionError:
+            # A browser that closes a stream, a phone that loses Wi-Fi and a
+            # health probe that times out all look the same here. The request
+            # is already over, so there is no response to send and no error
+            # worth a traceback: trying to answer a disconnected client is
+            # what turns one closed tab into a log full of noise.
+            LOGGER.debug("client disconnected while serving %s", self.path)
         except Exception as exc:  # noqa: BLE001 - logged, never leaked
             LOGGER.exception("unhandled error serving %s", self.path)
-            self._send_error_json(500, "INTERNAL", type(exc).__name__)
+            try:
+                self._send_error_json(500, "INTERNAL", type(exc).__name__)
+            except ConnectionError:
+                LOGGER.debug("client disconnected before the 500 for %s",
+                             self.path)
 
     # ----------------------------------------------------------------- API
     def _route_api(self, path: str, query: dict) -> None:
@@ -239,7 +251,12 @@ class ChartHandler(BaseHTTPRequestHandler):
         symbol = self._symbol_or_error(query)
         if symbol is None:
             return
-        resolution = query.get("resolution", self.state.default_resolution)
+        try:
+            resolution = ladder.normalise(
+                query.get("resolution", self.state.default_resolution))
+        except ValueError as exc:
+            self._send_error_json(400, "UNSUPPORTED_RESOLUTION", str(exc))
+            return
         if resolution not in self.state.source.capabilities().resolutions:
             self._send_error_json(
                 400, "UNSUPPORTED_RESOLUTION",
@@ -275,7 +292,12 @@ class ChartHandler(BaseHTTPRequestHandler):
         symbol = self._symbol_or_error(query)
         if symbol is None:
             return
-        resolution = query.get("resolution", self.state.default_resolution)
+        try:
+            resolution = ladder.normalise(
+                query.get("resolution", self.state.default_resolution))
+        except ValueError as exc:
+            self._send_error_json(400, "UNSUPPORTED_RESOLUTION", str(exc))
+            return
         # The first payload is built before any header is written, so a
         # failure here is still an ordinary JSON error rather than half a
         # stream. Only after it exists does the response become an event
@@ -307,8 +329,29 @@ class ChartHandler(BaseHTTPRequestHandler):
                         break
                     continue
                 idle = 0.0
-                self._write_event("bars", event)
-        except (BrokenPipeError, ConnectionResetError):
+                # The ingestor polls the tape's own grain (one minute). A
+                # coarser rung must be rebuilt from it rather than forwarding
+                # minute bars under a five-minute label: a client that folded
+                # them itself would double-fold, and one that did not would
+                # draw the wrong candle width.
+                if resolution == self.state.default_resolution:
+                    self._write_event("bars", event)
+                else:
+                    fresh = self._payload(symbol, resolution, 1500)
+                    self._write_event("bars", {
+                        "event": "bars",
+                        "symbol": symbol,
+                        "resolution": resolution,
+                        "as_of": fresh["as_of"],
+                        "bars": fresh["bars"],
+                        "bar_count": fresh["bar_count"],
+                        "gaps": fresh["gaps"],
+                        "session": fresh["session"],
+                    })
+        except ConnectionError:
+            # BrokenPipe, ConnectionReset and ConnectionAborted are all the
+            # same fact: the reader went away. The subscription is cleaned up
+            # below and the server keeps serving everyone else.
             pass
         finally:
             self.state.ingestor.unsubscribe(subscription)
@@ -330,13 +373,25 @@ class ChartHandler(BaseHTTPRequestHandler):
                 "the chart UI is not built in this deployment; run the "
                 "development server or build the web app")
             return
-        relative = posixpath.normpath(path).lstrip("/")
-        wanted = (root / relative) if relative else (root / "index.html")
-        if wanted.is_dir():
-            wanted = wanted / "index.html"
+        # Decode first, then resolve, then prove the result is inside the
+        # build directory. `%2e%2e` and a symlink are both attempts to read a
+        # file this server was never asked to publish, so neither may become
+        # a path under the document root by accident.
+        relative = unquote(path).lstrip("/")
+        try:
+            root_resolved = root.resolve()
+            wanted = (root / relative).resolve() if relative else root_resolved
+            if wanted.is_dir():
+                wanted = (wanted / "index.html").resolve()
+            wanted.relative_to(root_resolved)
+        except (OSError, ValueError):
+            self._send_error_json(404, "NOT_FOUND", f"{path} not found")
+            return
         if not wanted.is_file():
-            # A single page app: unknown paths render the app shell.
-            wanted = root / "index.html"
+            # A single page app: unknown paths render the app shell. The
+            # shell itself is resolved and checked above, so the fallback
+            # cannot leave the build directory either.
+            wanted = root_resolved / "index.html"
             if not wanted.is_file():
                 self._send_error_json(404, "NOT_FOUND", f"{path} not found")
                 return
@@ -360,6 +415,22 @@ class ChartServer(ThreadingHTTPServer):
 
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address) -> None:
+        """A disconnected client is normal, not an incident.
+
+        ``socketserver`` prints a full traceback for every exception that
+        escapes a handler, including the ``ConnectionAbortedError`` Windows
+        raises when a browser closes a keep-alive socket between requests.
+        Those tracebacks are noise: the request is gone and there is nobody
+        to answer. Every other exception keeps the standard loud treatment,
+        because a real bug must not be hidden by this override.
+        """
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            LOGGER.debug("client %s disconnected: %s", client_address,
+                         sys.exc_info()[1])
+            return
+        super().handle_error(request, client_address)
 
     def __init__(self, address: tuple[str, int], *, store: BarStore,
                  ingestor: Ingestor, source, static_dir: Path | None,
@@ -402,6 +473,8 @@ class ChartServer(ThreadingHTTPServer):
             "market": sessions.market_context(moment).as_dict(),
             "source": self.source.capabilities().source.as_dict(),
             "resolutions": list(self.source.capabilities().resolutions),
+            "timeframes": ladder.all_specs(),
+            "indices": ["KSE100", "KMIALLSHR"],
             "tape": tape,
             "ingest": self.ingestor.health(),
             "symbols": len(self.store.symbols()),

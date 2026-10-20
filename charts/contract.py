@@ -30,15 +30,24 @@ from typing import Any, Iterable, Mapping
 #: whether that day is the one the clock calls today, whether the bars came
 #: from the durable archive, and which file answered. A chart that can show a
 #: finished session has to say which session it is showing.
-SCHEMA_VERSION = 2
+#: v3 (2026-10-20) added the full timeframe ladder (``1s`` through ``1M``) and
+#: the computed index proxies ``KSE100`` and ``KMIALLSHR``. The session block
+#: and the bar shape are unchanged; an old consumer keeps reading a v2 series.
+SCHEMA_VERSION = 3
 
-#: The resolutions this service may serve. ``1m`` is the broker tape's own
-#: grain; ``1d`` is the PSX portal's published daily bar; ``session`` is the
-#: single snapshot bar a session quote yields when nothing finer exists.
+#: The resolutions this service may serve, finest first. ``1m`` is the broker
+#: tape's own grain; sub-minute rungs are built from tick rows; coarser
+#: intraday rungs are folds of the tape's minutes; ``1D``/``1W``/``1M`` group
+#: trading sessions. ``1d`` and ``session`` remain accepted aliases.
 RESOLUTION_MINUTE = "1m"
-RESOLUTION_DAY = "1d"
+RESOLUTION_DAY = "1D"
 RESOLUTION_SESSION = "session"
-RESOLUTIONS = (RESOLUTION_MINUTE, RESOLUTION_DAY, RESOLUTION_SESSION)
+RESOLUTIONS = (
+    "1s", "10s", "1m", "5m", "10m", "15m", "30m", "1h", "4h",
+    "1D", "1W", "1M",
+    # Accepted spellings a pre-v3 caller may still send.
+    "1d", "session",
+)
 
 #: Source identifiers, so a consumer can name where a series came from.
 SOURCE_TAPE = "broker_tape"

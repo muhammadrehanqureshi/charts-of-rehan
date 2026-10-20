@@ -33,9 +33,11 @@ from __future__ import annotations
 from datetime import date, datetime
 from itertools import islice
 
+from charts import resolutions as ladder
 from charts import sessions
 from charts.adapters.base import BarSource
-from charts.contract import ChartPayload, ChartSession, ContractError
+from charts.contract import Bar, ChartPayload, ChartSession, ContractError
+from charts.ratelimit import UpstreamError
 from charts.store import BarStore, Series
 
 
@@ -47,6 +49,34 @@ def _stamp(moment) -> str:
 #: single absent minute inside a live tape is normal, and calling every one of
 #: them a data gap would train a reader to ignore the list.
 GAP_FLOOR_MINUTES = 2
+
+#: Resolutions whose buckets are the tape's own minute grid. Everything else
+#: is either finer (ticks, where a missing second is not a session gap) or
+#: calendar (where a missing day is reported as an absent session, not a
+#: stretch of missing minutes).
+_MINUTE_RUNGS = ("1m",)
+
+
+def _expected_for(day: date, resolution: str) -> list[datetime]:
+    """The session's expected bucket starts at this resolution."""
+    spec = ladder.spec_for(resolution)
+    if spec.calendar or spec.subminute:
+        return []
+    if spec.id in _MINUTE_RUNGS:
+        return sessions.session_minutes(day)
+    return ladder.expected_bucket_starts(day, resolution)
+
+
+def _gap_step(resolution: str) -> int:
+    spec = ladder.spec_for(resolution)
+    return max(1, spec.minutes or 1)
+
+
+def _build_note(resolution: str) -> str:
+    try:
+        return ladder.BUILD_NOTES[ladder.normalise(resolution)]
+    except (KeyError, ValueError):
+        return ""
 
 
 def series_notes(series: Series | None, *, expected_minutes: int,
@@ -139,28 +169,54 @@ def _session_payload(source: BarSource, symbol: str, resolution: str, *,
                      ) -> ChartPayload:
     """One named session, read from the source's own store for that day."""
     day_date = date.fromisoformat(day)
+    spec = ladder.spec_for(resolution)
     bars = list(source.history(symbol, resolution, limit=limit or 1500,
                                day=day_date))
-    expected = sessions.session_minutes(day_date)
-    gaps = ([gap for gap in BarStore.gaps(bars, expected)
-             if gap.minutes >= GAP_FLOOR_MINUTES] if bars else [])
+    expected = _expected_for(day_date, resolution)
+    step = _gap_step(resolution)
+    gap_floor = max(GAP_FLOOR_MINUTES, step)
+    gaps = ([gap for gap in BarStore.gaps(bars, expected, step_minutes=step)
+             if gap.minutes >= gap_floor] if bars and expected else [])
     notes = list(_source_notes(source, symbol, day=day_date))
+    build_note = _build_note(resolution)
+    if build_note:
+        notes.append(build_note)
     if bars:
-        first = bars[0].t
-        window = [minute for minute in expected if _stamp(minute) >= first]
-        late_start = len(expected) - len(window)
-        notes.append(f"{len(bars)} bar(s) held against {len(expected)} "
-                     f"session minute(s) in a finished session")
-        if late_start:
-            notes.append(
-                f"this series starts at {bars[0].t[11:16]} Karachi, "
-                f"{late_start} session minute(s) after the session opened; "
-                f"the earlier minutes are not in it")
+        if expected:
+            first = bars[0].t
+            window = [bucket for bucket in expected if _stamp(bucket) >= first]
+            late_start = len(expected) - len(window)
+            notes.append(f"{len(bars)} bar(s) held against {len(expected)} "
+                         f"expected {spec.label} bucket(s) in a finished "
+                         f"session")
+            if late_start and not spec.calendar:
+                notes.append(
+                    f"this series starts at {bars[0].t[11:16]} Karachi, "
+                    f"{late_start} bucket(s) after the session opened; the "
+                    f"earlier buckets are not in it")
+        elif spec.calendar:
+            notes.append(f"{len(bars)} {spec.label} bar(s) folded from the "
+                         f"sessions this service holds for {symbol}")
+        else:
+            notes.append(f"{len(bars)} {spec.label} bar(s) built from the "
+                         f"capture's own tick rows; missing seconds are absent "
+                         f"ticks, not a measured session gap")
     else:
-        notes.append(
-            f"no {resolution} bar exists for {symbol} on {day}: the session is "
-            f"stored and this symbol printed nothing in it, which is not the "
-            f"same as a price of zero")
+        if spec.subminute:
+            notes.append(
+                f"no {spec.label} bars exist for {symbol} on {day}: the "
+                f"durable archive keeps minute bars, and second bars can only "
+                f"be built while that session's capture file is on disk")
+        elif spec.calendar:
+            notes.append(
+                f"no {spec.label} bar exists for {symbol} in the sessions "
+                f"this service holds, which is not the same as a price of "
+                f"zero")
+        else:
+            notes.append(
+                f"no {resolution} bar exists for {symbol} on {day}: the "
+                f"session is stored and this symbol printed nothing in it, "
+                f"which is not the same as a price of zero")
     summary = getattr(source, "archive_summary", lambda _day: None)(day)
     capture = None
     built_at = ""
@@ -223,6 +279,132 @@ def _source_notes(source: BarSource, symbol: str, *, day=None) -> list[str]:
         return []
 
 
+def _live_multi_payload(store: BarStore, source: BarSource, symbol: str,
+                        resolution: str, *, limit: int, context,
+                        moment: datetime | None, today: date) -> ChartPayload:
+    """A live payload for any rung other than the store's own minute grain.
+
+    The store only ever holds the tape's minute bars. Everything else is asked
+    of the source, which folds minutes (or builds seconds from ticks) for the
+    session the clock calls today. A source that cannot answer produces an
+    empty series with the source's own sentence, never an invented candle.
+    """
+    spec = ladder.spec_for(resolution)
+    bars: list[Bar] = []
+    failure = ""
+    fallback_day: str | None = None
+    history = getattr(source, "history", None)
+    if not callable(history):
+        failure = (f"source {getattr(source, 'name', source)} cannot serve "
+                   f"{spec.label} bars")
+    else:
+        try:
+            bars = list(history(symbol, resolution,
+                                limit=limit or 1500))
+        except UpstreamError as exc:
+            failure = exc.detail
+        except Exception as exc:  # noqa: BLE001 - named, never silent
+            failure = f"{type(exc).__name__}: {exc}"
+        if not bars:
+            # The 24/7 rule applies to every rung, not just minutes. A live
+            # 5-minute chart at 02:00 would otherwise be an empty frame while
+            # the archive holds the whole previous session.
+            fallback = newest_archived_day(source, symbol, before=today)
+            if fallback:
+                try:
+                    rows = list(history(symbol, resolution,
+                                        limit=limit or 1500,
+                                        day=date.fromisoformat(fallback)))
+                except Exception:  # noqa: BLE001 - reported below
+                    rows = []
+                if rows:
+                    bars = rows
+                    fallback_day = fallback
+                    failure = ""
+    if limit > 0 and len(bars) > limit:
+        bars = bars[-limit:]
+
+    notes = list(_source_notes(source, symbol,
+                               day=(date.fromisoformat(fallback_day)
+                                    if fallback_day else None)))
+    build_note = _build_note(resolution)
+    if build_note:
+        notes.append(build_note)
+    if fallback_day:
+        notes.insert(
+            0, f"today ({today.isoformat()}) has no bar for {symbol} yet, so "
+               f"this is the newest stored session, {fallback_day}; the "
+               f"newest candle is that session's last price, not a live one")
+    if failure:
+        notes.insert(0, failure)
+    if bars:
+        notes.append(f"{len(bars)} {spec.label} bar(s) on this chart")
+        if spec.calendar:
+            notes.append(
+                f"these {spec.label} bars end at the {bars[-1].t[:10]} "
+                f"session; a calendar chart is built from every session this "
+                f"service holds")
+        if bars[-1].t[:10] != context.as_of[:10]:
+            notes.append(
+                f"these bars end on the {bars[-1].t[:10]} session, not "
+                f"today: the newest candle is that session's close, not a "
+                f"live price")
+    else:
+        notes.append(
+            f"no {spec.label} bar exists for {symbol} yet: nothing has been "
+            f"ingested at this resolution, which is not the same as a price "
+            f"of zero")
+
+    expected: list[datetime] = []
+    gap_day = date.fromisoformat(fallback_day) if fallback_day else today
+    if not spec.calendar and not spec.subminute:
+        expected = [bucket for bucket in
+                    ladder.expected_bucket_starts(gap_day, resolution)
+                    if fallback_day is not None
+                    or bucket <= sessions.law.as_karachi(moment)]
+    gaps = []
+    if bars and expected and bars[-1].t[:10] == gap_day.isoformat():
+        first = bars[0].t
+        window = [bucket for bucket in expected if _stamp(bucket) >= first]
+        step = _gap_step(resolution)
+        gaps = [gap for gap in
+                BarStore.gaps(bars, window, step_minutes=step)
+                if gap.minutes >= max(GAP_FLOOR_MINUTES, step)]
+    delayed = source.capabilities().source.delay_seconds
+    if delayed:
+        notes.append(
+            f"this source publishes with a delay of about "
+            f"{delayed // 60} minute(s), so the newest bar is not the "
+            f"newest trade")
+
+    session_day = bars[-1].t[:10] if bars else (fallback_day or
+                                                today.isoformat())
+    info = getattr(source, "source_info", None)
+    day_date = date.fromisoformat(session_day)
+    source_info = (info(symbol, day=day_date) if callable(info)
+                   else source.capabilities().source)
+    archived = (fallback_day is not None
+                or _served_from_archive(source, symbol, day_date))
+    volume_available = any(bar.v > 0 for bar in bars)
+    note = ""
+    if fallback_day:
+        note = (f"fallback to the newest stored session ({fallback_day}) "
+                f"because {today.isoformat()} holds no bar for {symbol}")
+    elif archived:
+        note = (f"this is the archived {session_day} session, so nothing "
+                f"in it is a live price")
+    return ChartPayload(
+        symbol=symbol, resolution=spec.id, source=source_info,
+        market=context, as_of=context.as_of, bars=bars, gaps=gaps,
+        notes=notes,
+        session=ChartSession(
+            day=session_day,
+            current=session_day == today.isoformat(),
+            archived=archived, source=_live_source_name(source),
+            note=note,
+            volume_available=volume_available))
+
+
 def build_payload(store: BarStore, source: BarSource, symbol: str,
                   resolution: str, *, limit: int = 1500,
                   moment: datetime | None = None,
@@ -246,6 +428,11 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
     archived session that holds this symbol when today has nothing to show.
     """
     symbol = symbol.strip().upper()
+    try:
+        canonical = ladder.normalise(resolution)
+    except ValueError as exc:
+        raise ContractError(str(exc)) from exc
+    resolution = canonical
     context = sessions.market_context(moment)
     today = _current_session(moment)
     wanted = day.isoformat() if isinstance(day, date) else (
@@ -261,6 +448,11 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
                 f"session only; it keeps no store to read {wanted} from")
         return _session_payload(source, symbol, resolution, day=wanted,
                                 limit=limit, context=context, moment=moment)
+
+    if resolution != "1m":
+        return _live_multi_payload(store, source, symbol, resolution,
+                                   limit=limit, context=context,
+                                   moment=moment, today=today)
 
     series = store.series(symbol, resolution)
     bars = list(series.bars) if series else []
