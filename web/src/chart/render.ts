@@ -14,6 +14,7 @@
  */
 
 import type { Gap } from "../api/types";
+import type { IndicatorOutput } from "../indicators/types";
 import { formatClock, formatDay, formatPrice, formatVolume } from "./format";
 import { decimalsFor, linearScale, niceTicks } from "./scale";
 import { type ColumnSeries, gapsInWindow, timeMs } from "./series";
@@ -68,6 +69,12 @@ export function themeFor(mode: "dark" | "light"): RendererTheme {
   return mode === "light" ? LIGHT_THEME : DARK_THEME;
 }
 
+export interface PaneFrame {
+  readonly index: number;
+  readonly top: number;
+  readonly bottom: number;
+}
+
 export interface ChartGeometry {
   readonly plotLeft: number;
   readonly plotRight: number;
@@ -78,34 +85,63 @@ export interface ChartGeometry {
   readonly volumeBottom: number;
   readonly priceAxisWidth: number;
   readonly timeAxisHeight: number;
+  readonly timeAxisTop: number;
+  /** One frame per visible indicator pane, top to bottom. */
+  readonly panes: readonly PaneFrame[];
 }
 
+const clamp = (value: number, low: number, high: number): number =>
+  Math.max(low, Math.min(high, value));
+
 /**
- * The two panes, laid out once.
+ * The stack, laid out once: price, volume, indicator panes, time axis.
  *
- * The price plot ends where the volume pane starts, so a candle can never be
- * drawn through a volume column: they are different measurements on different
- * scales, and overlapping them would invite reading one as the other. The
- * pane is a fixed share of the height, bounded so it stays useful on a short
- * window and never takes over a tall one.
+ * A candle can never be drawn through a volume column or an RSI line: they
+ * are different measurements on different scales. Pane height is bounded so
+ * one oscillator cannot take over a tall window, and a short phone screen
+ * keeps a usable price plot by shrinking the panes before the candles.
  */
-export function geometryFor(width: number, height: number): ChartGeometry {
+export function geometryFor(
+  width: number,
+  height: number,
+  paneCount = 0,
+): ChartGeometry {
   const priceAxisWidth = 62;
   const timeAxisHeight = 20;
   const padding = 6;
-  const available = Math.max(40, height - timeAxisHeight - padding * 2);
-  const volumeHeight = Math.max(36, Math.min(120, available * 0.22));
-  const volumeBottom = height - timeAxisHeight;
-  const volumeTop = volumeBottom - volumeHeight;
+  const usable = Math.max(60, height - timeAxisHeight - padding * 2);
+  const count = clamp(Math.floor(paneCount), 0, 8);
+  const volumeHeight = clamp(usable * 0.18, 24, 88);
+  let paneTotal = count > 0
+    ? Math.min(usable * 0.42, count * 58)
+    : 0;
+  let priceHeight = usable - volumeHeight - paneTotal;
+  if (priceHeight < 80) {
+    paneTotal = Math.max(0, usable - volumeHeight - 80);
+    priceHeight = usable - volumeHeight - paneTotal;
+  }
+  const paneHeight = count > 0 ? paneTotal / count : 0;
+  const plotTop = padding;
+  const plotBottom = plotTop + Math.max(40, priceHeight);
+  const volumeTop = plotBottom;
+  const volumeBottom = volumeTop + volumeHeight;
+  const timeAxisTop = height - timeAxisHeight;
+  const panes: PaneFrame[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const top = volumeBottom + index * paneHeight;
+    panes.push({ index, top, bottom: top + paneHeight });
+  }
   return {
     plotLeft: padding,
     plotRight: Math.max(padding + 10, width - priceAxisWidth),
-    plotTop: padding,
-    plotBottom: Math.max(padding + 20, volumeTop),
-    volumeTop: Math.max(padding + 20, volumeTop),
+    plotTop,
+    plotBottom,
+    volumeTop,
     volumeBottom,
     priceAxisWidth,
     timeAxisHeight,
+    timeAxisTop: Math.max(volumeBottom, timeAxisTop),
+    panes,
   };
 }
 
@@ -125,6 +161,10 @@ export interface RenderInput {
   readonly dpr: number;
   readonly crosshair?: Crosshair | null;
   readonly theme?: RendererTheme;
+  /** Indicator lines drawn on the price scale. */
+  readonly overlays?: readonly IndicatorOutput[];
+  /** Indicator outputs drawn in their own panes, in order. */
+  readonly panes?: readonly IndicatorOutput[];
   /**
    * Whether the source reported a volume counter for this session at all.
    *
@@ -146,7 +186,9 @@ export function drawChart(
   context.fillStyle = theme.background;
   context.fillRect(0, 0, width, height);
 
-  const frame = geometryFor(width, height);
+  const paneOutputs = input.panes ?? [];
+  const frame = geometryFor(width, height,
+    Math.min(paneOutputs.length, 8));
   const plotWidth = frame.plotRight - frame.plotLeft;
   if (plotWidth <= 10) {
     return;
@@ -172,15 +214,23 @@ export function drawChart(
   }
 
   const prices = series.priceRange(window.from, window.to);
-  const pad = (prices.max - prices.min || Math.max(0.01, prices.max * 0.01)) * 0.08;
-  const priceScale = linearScale([prices.min - pad, prices.max + pad],
+  const overlayMinMax = overlayRange(input.overlays ?? [], series, window);
+  const low = Math.min(prices.min, overlayMinMax?.min ?? prices.min);
+  const high = Math.max(prices.max, overlayMinMax?.max ?? prices.max);
+  const pad = (high - low || Math.max(0.01, high * 0.01)) * 0.08;
+  const priceScale = linearScale([low - pad, high + pad],
     [frame.plotBottom, frame.plotTop]);
   const volumeMax = series.maxVolume(window.from, window.to);
+  const slot = plotWidth / Math.max(1, visible);
 
-  drawPriceGrid(context, frame, priceScale, prices, pad, theme);
+  drawPriceGrid(context, frame, priceScale, { min: low, max: high }, pad,
+    theme);
   drawTimeAxis(context, input, frame, theme);
   drawVolumePane(context, input, frame, window, timeScale, volumeMax, theme);
   drawCandles(context, input, frame, window, timeScale, priceScale, theme);
+  drawOverlays(context, input, frame, window, timeScale, priceScale,
+    theme);
+  drawIndicatorPanes(context, input, frame, window, timeScale, slot, theme);
   drawLastPrice(context, input, frame, priceScale, window, theme);
 
   if (input.crosshair) {
@@ -226,6 +276,7 @@ function drawTimeAxis(
   const spanMs = input.toMs - input.fromMs;
   const crossesDay = formatDay(new Date(input.fromMs).toISOString()) !==
     formatDay(new Date(input.toMs).toISOString());
+  const wide = spanMs > 36 * 3_600_000;
   context.font = "11px ui-sans-serif, system-ui, sans-serif";
   context.fillStyle = theme.axisText;
   context.textAlign = "center";
@@ -234,15 +285,17 @@ function drawTimeAxis(
     const moment = input.fromMs + (spanMs * step) / labels;
     const x = frame.plotLeft + ((frame.plotRight - frame.plotLeft) * step) / labels;
     const iso = new Date(moment).toISOString();
-    const text = crossesDay && step === 0
-      ? `${formatDay(iso)} ${formatClock(iso)}`
-      : formatClock(iso);
+    const text = wide
+      ? formatDay(iso)
+      : crossesDay && step === 0
+        ? `${formatDay(iso)} ${formatClock(iso)}`
+        : formatClock(iso);
     const width = context.measureText(text).width;
     const clamped = Math.min(
       frame.plotRight - width / 2,
       Math.max(frame.plotLeft + width / 2, x),
     );
-    context.fillText(text, clamped, frame.volumeBottom + 2);
+    context.fillText(text, clamped, frame.timeAxisTop + 2);
   }
   context.textAlign = "left";
   context.textBaseline = "alphabetic";
@@ -276,6 +329,287 @@ function drawGaps(
   context.textAlign = "left";
 }
 
+function overlayRange(
+  outputs: readonly IndicatorOutput[],
+  series: ColumnSeries,
+  window: { from: number; to: number },
+): { min: number; max: number } | null {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const output of outputs) {
+    for (const line of output.lines) {
+      for (let index = Math.max(0, window.from);
+           index <= window.to && index < series.length; index += 1) {
+        const value = line.values[index] ?? Number.NaN;
+        if (Number.isFinite(value)) {
+          min = Math.min(min, value);
+          max = Math.max(max, value);
+        }
+      }
+    }
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+}
+
+function drawLineSeries(
+  context: CanvasRenderingContext2D,
+  series: ColumnSeries,
+  values: Float64Array,
+  window: { from: number; to: number },
+  timeScale: (value: number) => number,
+  yScale: (value: number) => number,
+  color: string,
+  width = 1.5,
+): void {
+  context.save();
+  context.beginPath();
+  context.strokeStyle = color;
+  context.lineWidth = width;
+  context.lineJoin = "round";
+  let drawing = false;
+  for (let index = Math.max(0, window.from);
+       index <= window.to && index < series.length; index += 1) {
+    const value = values[index] ?? Number.NaN;
+    if (!Number.isFinite(value)) {
+      drawing = false;
+      continue;
+    }
+    const bar = series.at(index);
+    if (bar === undefined) {
+      continue;
+    }
+    // Anchor every series at its timestamp. Adding half a slot here was
+    // harmless on a dense chart but pushed a single bar off the right edge:
+    // the slot can be the whole plot when only one bar is in view.
+    const x = timeScale(bar.timeMs);
+    const y = yScale(value);
+    if (drawing) {
+      context.lineTo(x, y);
+    } else {
+      context.moveTo(x, y);
+      drawing = true;
+    }
+  }
+  context.stroke();
+  context.restore();
+}
+
+function drawOverlays(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  window: { from: number; to: number },
+  timeScale: (value: number) => number,
+  priceScale: (value: number) => number,
+  theme: RendererTheme,
+): void {
+  for (const output of input.overlays ?? []) {
+    for (const line of output.lines) {
+      drawLineSeries(context, input.series, line.values, window, timeScale,
+        priceScale, line.color, 1.4);
+    }
+  }
+  // A small legend, so a line is never an anonymous squiggle.
+  const outputs = (input.overlays ?? []).filter((item) => item.lines.length > 0);
+  if (outputs.length === 0) {
+    return;
+  }
+  context.save();
+  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  let x = frame.plotLeft + 4;
+  let y = frame.plotTop + 22;
+  for (const output of outputs) {
+    const line = output.lines[0];
+    if (line === undefined) {
+      continue;
+    }
+    const label = output.label;
+    const width = context.measureText(label).width;
+    if (x + width + 18 > frame.plotRight) {
+      x = frame.plotLeft + 4;
+      y += 13;
+    }
+    context.fillStyle = line.color;
+    context.fillRect(x, y + 3, 7, 2);
+    context.fillStyle = theme.muted;
+    context.fillText(label, x + 11, y);
+    x += width + 22;
+  }
+  context.restore();
+}
+
+function drawIndicatorPanes(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  window: { from: number; to: number },
+  timeScale: (value: number) => number,
+  slot: number,
+  theme: RendererTheme,
+): void {
+  const outputs = input.panes ?? [];
+  const count = Math.min(outputs.length, frame.panes.length);
+  for (let index = 0; index < count; index += 1) {
+    const output = outputs[index];
+    const pane = frame.panes[index];
+    if (output === undefined || pane === undefined) {
+      continue;
+    }
+    drawIndicatorPane(context, input, frame, pane, output, window,
+      timeScale, slot, theme);
+  }
+}
+
+function paneRange(
+  output: IndicatorOutput,
+  series: ColumnSeries,
+  window: { from: number; to: number },
+): { min: number; max: number } {
+  if (output.range !== undefined && output.range !== null) {
+    return { min: output.range[0], max: output.range[1] };
+  }
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const line of output.lines) {
+    for (let index = Math.max(0, window.from);
+         index <= window.to && index < series.length; index += 1) {
+      const value = line.values[index] ?? Number.NaN;
+      if (Number.isFinite(value)) {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+    }
+  }
+  const histogram = output.histogram;
+  if (histogram !== undefined) {
+    for (let index = Math.max(0, window.from);
+         index <= window.to && index < series.length; index += 1) {
+      const value = histogram.values[index] ?? Number.NaN;
+      if (Number.isFinite(value)) {
+        min = Math.min(min, value, 0);
+        max = Math.max(max, value, 0);
+      }
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return { min: 0, max: 1 };
+  }
+  if (min === max) {
+    const pad = Math.abs(max) * 0.05 || 1;
+    return { min: min - pad, max: max + pad };
+  }
+  return { min, max };
+}
+
+function drawIndicatorPane(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  pane: PaneFrame,
+  output: IndicatorOutput,
+  window: { from: number; to: number },
+  timeScale: (value: number) => number,
+  slot: number,
+  theme: RendererTheme,
+): void {
+  context.save();
+  context.fillStyle = theme.background;
+  context.fillRect(frame.plotLeft, pane.top, frame.plotRight - frame.plotLeft,
+    pane.bottom - pane.top);
+  context.strokeStyle = theme.grid;
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(frame.plotLeft, Math.round(pane.top) + 0.5);
+  context.lineTo(frame.plotRight, Math.round(pane.top) + 0.5);
+  context.stroke();
+
+  const range = paneRange(output, input.series, window);
+  const fixed = output.range !== undefined && output.range !== null;
+  const pad = fixed ? 0 : (range.max - range.min) * 0.06;
+  const low = range.min - pad;
+  const high = range.max + pad;
+  const yScale = linearScale([low, high], [pane.bottom - 3, pane.top + 14]);
+  const zeroY = yScale(0);
+
+  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  context.fillStyle = theme.muted;
+  context.fillText(output.label, frame.plotLeft + 4, pane.top + 3);
+
+  // Reference lines make RSI and stochastic readable at a glance.
+  if (output.range !== undefined && output.range !== null) {
+    const [lowGuide, highGuide] = output.range[0] === 0 && output.range[1] === 100
+      ? [30, 70] : [null, null];
+    context.save();
+    context.setLineDash([3, 4]);
+    context.strokeStyle = theme.grid;
+    for (const guide of [lowGuide, highGuide]) {
+      if (guide === null) {
+        continue;
+      }
+      const y = Math.round(yScale(guide)) + 0.5;
+      context.beginPath();
+      context.moveTo(frame.plotLeft, y);
+      context.lineTo(frame.plotRight, y);
+      context.stroke();
+    }
+    context.restore();
+  } else if (low < 0 && high > 0) {
+    context.save();
+    context.setLineDash([2, 4]);
+    context.strokeStyle = theme.grid;
+    context.beginPath();
+    context.moveTo(frame.plotLeft, Math.round(zeroY) + 0.5);
+    context.lineTo(frame.plotRight, Math.round(zeroY) + 0.5);
+    context.stroke();
+    context.restore();
+  }
+
+  context.save();
+  context.beginPath();
+  context.rect(frame.plotLeft, pane.top + 12,
+    frame.plotRight - frame.plotLeft, pane.bottom - pane.top - 14);
+  context.clip();
+
+  const histogram = output.histogram;
+  if (histogram !== undefined) {
+    const bodyWidth = Math.max(1, Math.min(10, slot * 0.6));
+    const base = Math.min(pane.bottom - 3, Math.max(pane.top + 14, zeroY));
+    for (let index = Math.max(0, window.from);
+         index <= window.to && index < input.series.length; index += 1) {
+      const value = histogram.values[index] ?? Number.NaN;
+      const bar = input.series.at(index);
+      if (!Number.isFinite(value) || bar === undefined) {
+        continue;
+      }
+      const y = yScale(value);
+      context.fillStyle = value >= 0 ? histogram.positive : histogram.negative;
+      context.fillRect(timeScale(bar.timeMs) - bodyWidth / 2,
+        Math.min(y, base), bodyWidth, Math.max(1, Math.abs(base - y)));
+    }
+  }
+
+  for (const line of output.lines) {
+    drawLineSeries(context, input.series, line.values, window, timeScale,
+      yScale, line.color, 1.3);
+  }
+  context.restore();
+
+  // Two labels on the shared price axis, enough to read the pane's scale.
+  const decimals = decimalsFor((high - low) / 2);
+  context.fillStyle = theme.axisText;
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillText(formatPrice(fixed ? range.max : high, decimals),
+    frame.plotRight + 4, pane.top + 14);
+  context.fillText(formatPrice(fixed ? range.min : low, decimals),
+    frame.plotRight + 4, pane.bottom - 4);
+  context.restore();
+}
+
 function drawCandles(
   context: CanvasRenderingContext2D,
   input: RenderInput,
@@ -296,7 +630,7 @@ function drawCandles(
     }
     const rising = bar.c >= bar.o;
     const colour = rising ? theme.up : theme.down;
-    const x = timeScale(bar.timeMs) + slot / 2;
+    const x = timeScale(bar.timeMs);
     context.strokeStyle = colour;
     context.fillStyle = colour;
     context.lineWidth = 1;
@@ -361,7 +695,7 @@ function drawVolumePane(
       continue;
     }
     const barHeight = Math.max(0.5, height * (bar.v / volumeMax));
-    const x = timeScale(bar.timeMs) + slot / 2;
+    const x = timeScale(bar.timeMs);
     context.fillStyle = bar.c >= bar.o ? theme.volumeUp : theme.volumeDown;
     context.fillRect(x - bodyWidth / 2, frame.volumeBottom - barHeight,
       bodyWidth, barHeight);
@@ -395,7 +729,7 @@ function drawLastPrice(
   const width = context.measureText(label).width + 10;
   context.fillStyle = last.c >= last.o ? theme.up : theme.down;
   context.fillRect(frame.plotRight + 2, y - 8, width, 16);
-  context.fillStyle = "#0e1116";
+  context.fillStyle = theme.background;
   context.textAlign = "left";
   context.textBaseline = "middle";
   context.fillText(label, frame.plotRight + 7, y);
@@ -420,7 +754,7 @@ function drawCrosshair(
   context.setLineDash([3, 3]);
   context.beginPath();
   context.moveTo(Math.round(crosshair.x) + 0.5, frame.plotTop);
-  context.lineTo(Math.round(crosshair.x) + 0.5, frame.volumeBottom);
+  context.lineTo(Math.round(crosshair.x) + 0.5, frame.timeAxisTop);
   context.moveTo(frame.plotLeft, Math.round(crosshair.y) + 0.5);
   context.lineTo(frame.plotRight, Math.round(crosshair.y) + 0.5);
   context.stroke();

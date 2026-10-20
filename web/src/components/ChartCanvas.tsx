@@ -1,37 +1,42 @@
 /**
  * The chart surface, with the controls a charting terminal is expected to have.
  *
- * The drawing rule that matters, unchanged from the first version: React
- * re-renders for metadata, the canvas redraws imperatively from typed arrays.
- * A pointer move updates refs and repaints, and it writes the readout through
- * a DOM ref, so hovering never re-renders the tree.
+ * The drawing rule that matters: React re-renders for metadata, the canvas
+ * redraws imperatively from typed arrays. A pointer move updates refs and
+ * schedules one animation-frame paint; it writes the readout through a DOM
+ * ref, so hovering never re-renders the tree.
  *
- * What is new here is time control. The visible window lives in a ref, the
- * reader owns it (wheel to zoom, drag to pan, keyboard for both, buttons for
- * fit and for the newest bar), and a bar arriving extends a window that is
- * following the market without ever moving a window that has been scrolled
- * back. Every one of those decisions is delegated to `chart/viewport.ts`,
- * which is pure and tested; this file only wires it to events.
+ * Time is owned by the reader. The visible window lives in a ref, wheel and
+ * pinch zoom around the pointer, dragging pans, and keyboard does both. The
+ * pure rules in `chart/viewport.ts` decide every boundary; this file only
+ * wires them to events. A bar arriving extends a window that is following the
+ * market but never moves one the reader scrolled back.
  *
- * The volume pane is drawn by the same canvas, below the candles rather than
- * through them, and it says in words when the source reported no volume at
- * all: an absent measurement must not look like a measured zero.
+ * Indicators are computed on the bars actually on screen. The fold and the
+ * indicator result are cached per bar version, so a pointer move repaints the
+ * same arrays instead of recalculating a moving average sixty times a second.
  */
 
 import {
   type KeyboardEvent,
   type PointerEvent,
-  type WheelEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 
-import type { Gap } from "../api/types";
-import { formatClock, formatPrice, formatVolume } from "../chart/format";
-import { drawChart, type Crosshair, geometryFor, themeFor } from "../chart/render";
+import type { Gap, Resolution } from "../api/types";
+import { formatClock, formatDay, formatPrice, formatVolume } from "../chart/format";
+import {
+  drawChart,
+  type Crosshair,
+  geometryFor,
+  themeFor,
+} from "../chart/render";
 import { displayBucket, type ColumnSeries } from "../chart/series";
+import { timeframeMs } from "../chart/timeframes";
 import {
   DEFAULT_VISIBLE_BARS,
   type SeriesBounds,
@@ -44,15 +49,22 @@ import {
   viewportOfLastBars,
   zoomViewport,
 } from "../chart/viewport";
+import { computeIndicators, outputsFor, seriesData } from "../indicators/compute";
+import { placementOf } from "../indicators/registry";
+import type { IndicatorOutput, IndicatorSpec } from "../indicators/types";
 
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 220;
 const ZOOM_STEP = 0.18;
 const PAN_STEP = 0.18;
+const MAX_PANES = 8;
 
 export interface ChartCanvasProps {
   readonly series: ColumnSeries;
   readonly gaps: readonly Gap[];
+  readonly resolution: Resolution;
+  /** Symbol, session and timeframe: a new value means a new chart. */
+  readonly viewKey: string;
   readonly version: number;
   readonly volumeAvailable: boolean;
   readonly theme: "dark" | "light";
@@ -60,16 +72,42 @@ export interface ChartCanvasProps {
   readonly sessionLabel: string;
   /** What to say when there is nothing to draw, and why. */
   readonly emptyNote: string;
+  /** Configured indicators; unlimited overlays, up to eight panes. */
+  readonly indicators: readonly IndicatorSpec[];
 }
 
 interface DragState {
   readonly startX: number;
-  readonly viewport: Viewport;
+  readonly lastX: number;
+}
+
+interface Point {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface PinchState {
+  distance: number;
+  centre: number;
+}
+
+interface FoldCache {
+  readonly key: string;
+  readonly drawn: ColumnSeries;
+}
+
+interface IndicatorCache {
+  readonly source: ColumnSeries;
+  readonly version: number;
+  readonly key: string;
+  readonly outputs: readonly IndicatorOutput[];
 }
 
 export function ChartCanvas(props: ChartCanvasProps) {
-  const { series, gaps, version, volumeAvailable, theme, sessionLabel, emptyNote } =
-    props;
+  const {
+    series, gaps, resolution, viewKey, version, volumeAvailable, theme,
+    sessionLabel, emptyNote, indicators,
+  } = props;
   const wrapper = useRef<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const crosshair = useRef<Crosshair | null>(null);
@@ -77,11 +115,44 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const following = useRef(true);
   const visibleBars = useRef(DEFAULT_VISIBLE_BARS);
   const drag = useRef<DragState | null>(null);
+  const pointers = useRef(new Map<number, Point>());
+  const pinch = useRef<PinchState | null>(null);
   const folded = useRef<ColumnSeries | null>(null);
+  const foldCache = useRef<FoldCache | null>(null);
+  const indicatorCache = useRef<IndicatorCache | null>(null);
   const readout = useRef<HTMLDivElement | null>(null);
   const rangeReadout = useRef<HTMLSpanElement | null>(null);
+  const frameRequest = useRef<number | null>(null);
+  const lastViewKey = useRef(viewKey);
   const [size, setSize] = useState({ width: 800, height: 400 });
   const [hasBars, setHasBars] = useState(false);
+
+  const specKey = useMemo(() => JSON.stringify(indicators), [indicators]);
+  const paneCount = useMemo(
+    () => Math.min(MAX_PANES, indicators.filter((spec) =>
+      spec.visible && placementOf(spec) === "pane").length),
+    [indicators],
+  );
+  const frameNow = useCallback(
+    () => geometryFor(size.width, size.height, paneCount),
+    [paneCount, size.height, size.width],
+  );
+  /**
+   * The step is the chosen timeframe, not the interval the rows happen to
+   * show. `ColumnSeries.stepMs()` takes the median spacing, which is right for
+   * a dense minute series with holes but wrong for sparse tick rungs: 232
+   * one-second prints spread across two hours have a median spacing of 23
+   * seconds, and using that as the candle width folded the series into
+   * 23-second candles and mislabelled the axis. The server already built the
+   * rows at the requested resolution, so that resolution is the width; a hole
+   * is missing time, not a wider bar.
+   */
+  const boundsNow = useCallback((): SeriesBounds | null => {
+    const bounds = series.bounds();
+    return bounds === null
+      ? null
+      : { ...bounds, stepMs: timeframeMs(resolution) };
+  }, [resolution, series]);
 
   useEffect(() => {
     const node = wrapper.current;
@@ -102,6 +173,23 @@ export function ChartCanvas(props: ChartCanvasProps) {
     return () => observer.disconnect();
   }, []);
 
+  const outputsForFrame = useCallback(
+    (drawn: ColumnSeries): readonly IndicatorOutput[] => {
+      const cached = indicatorCache.current;
+      if (cached !== null && cached.source === drawn &&
+          cached.version === version && cached.key === specKey) {
+        return cached.outputs;
+      }
+      const data = seriesData(drawn);
+      const outputs = computeIndicators(indicators, data);
+      indicatorCache.current = {
+        source: drawn, version, key: specKey, outputs,
+      };
+      return outputs;
+    },
+    [indicators, specKey, version],
+  );
+
   const paint = useCallback(() => {
     const surface = canvas.current;
     if (surface === null) {
@@ -111,6 +199,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
     if (context === null) {
       return;
     }
+    if (lastViewKey.current !== viewKey) {
+      // A symbol, session or timeframe switch is a new chart, not a poll of
+      // the old one. Reset before the first paint of the new series so a
+      // weekly view cannot inherit an intraday five-minute window and open
+      // one week past its only candle.
+      lastViewKey.current = viewKey;
+      viewport.current = null;
+      following.current = true;
+      visibleBars.current = DEFAULT_VISIBLE_BARS;
+      crosshair.current = null;
+      foldCache.current = null;
+      indicatorCache.current = null;
+    }
     const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
     if (surface.width !== Math.round(size.width * dpr) ||
         surface.height !== Math.round(size.height * dpr)) {
@@ -119,42 +220,80 @@ export function ChartCanvas(props: ChartCanvasProps) {
       surface.style.width = `${size.width}px`;
       surface.style.height = `${size.height}px`;
     }
-    const bounds: SeriesBounds | null = series.bounds();
-    if (viewport.current === null && bounds !== null) {
-      // A fresh chart opens on the newest bars by counting bars, not minutes:
-      // an illiquid symbol's recent bars can be spread over hours, and a
-      // minute-sized window would show one candle and hide the day.
+    const bounds: SeriesBounds | null = boundsNow();
+    if (bounds === null) {
+      // A symbol, session or timeframe switch clears the series before the
+      // new bars arrive. The old window describes timestamps that no longer
+      // exist, so keep it would open the next chart on an empty slice of
+      // time: the daily view would inherit a two-hour intraday window and
+      // draw nothing. Reset here, where the absence is visible.
+      viewport.current = null;
+      following.current = true;
+      visibleBars.current = DEFAULT_VISIBLE_BARS;
+      folded.current = null;
+      indicatorCache.current = null;
+      crosshair.current = null;
+      // Clear the pixels and the diagnostic attributes too. Leaving the old
+      // candles underneath a "loading" overlay is exactly how a reader ends
+      // up quoting yesterday's price while a new symbol is being fetched.
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, surface.width, surface.height);
+      context.fillStyle = themeFor(theme).background;
+      context.fillRect(0, 0, surface.width, surface.height);
+      for (const name of ["data-window", "data-step-ms", "data-drawn",
+                          "data-aggregated", "data-indicators", "data-panes"]) {
+        surface.removeAttribute(name);
+      }
+      if (readout.current !== null) {
+        readout.current.textContent = "";
+      }
+      if (rangeReadout.current !== null) {
+        rangeReadout.current.textContent = "waiting for bars";
+      }
+    } else if (viewport.current === null) {
       viewport.current = viewportOfLastBars(
         series.timesOfLast(visibleBars.current), visibleBars.current,
         bounds.stepMs);
+      following.current = true;
     }
     viewport.current = followViewport(viewport.current, bounds,
                                       following.current, visibleBars.current);
     const view = viewport.current;
-    const frame = geometryFor(size.width, size.height);
+    const frame = geometryFor(size.width, size.height, paneCount);
     const plotWidth = frame.plotRight - frame.plotLeft;
     let drawn = series;
-    if (view !== null && bounds !== null && plotWidth > 0) {
-      // Folding is sized by the bars the window covers, not by its clock span:
-      // an illiquid symbol's window is far wider than its bars, and a
-      // span-sized bucket folded minute candles away that had room to draw.
+    // Calendar bars are already the unit the server folded by the Karachi
+    // calendar. Folding them again by an epoch-aligned width would merge two
+    // trading days into one "day" (or a Friday into a Saturday), so the
+    // renderer only compresses intraday series for screen density.
+    const calendar = resolution === "1D" || resolution === "1d" ||
+      resolution === "1W" || resolution === "1M";
+    if (!calendar && view !== null && bounds !== null && plotWidth > 0) {
       const shown = series.countInWindow(view.fromMs, view.toMs);
       const bucket = displayBucket(shown, bounds.stepMs, plotWidth);
       if (bucket > bounds.stepMs) {
-        // Aggregation is display only: the minute series stays untouched, so
-        // zooming back in shows every minute again.
-        drawn = series.aggregate(bucket);
+        const key = `${version}|${bucket}|${series.length}`;
+        const cached = foldCache.current;
+        if (cached !== null && cached.key === key) {
+          drawn = cached.drawn;
+        } else {
+          drawn = series.aggregate(bucket);
+          foldCache.current = { key, drawn };
+        }
       }
     }
     folded.current = drawn;
+    const outputs = outputsForFrame(drawn);
+    const overlays = outputsFor(outputs, "overlay");
+    const panes = outputsFor(outputs, "pane").slice(0, MAX_PANES);
+
     if (view !== null && bounds !== null) {
-      // A measurable trace of what is on screen, for a reader inspecting the
-      // page and for the performance harness: the window, the bar count and
-      // the step the renderer derived from the data itself.
       surface.dataset["window"] = `${view.fromMs}-${view.toMs}`;
       surface.dataset["stepMs"] = String(Math.round(bounds.stepMs));
       surface.dataset["drawn"] = String(drawn.length);
       surface.dataset["aggregated"] = String(drawn !== series);
+      surface.dataset["indicators"] = String(outputs.length);
+      surface.dataset["panes"] = String(panes.length);
     }
     if (view !== null) {
       drawChart(context, {
@@ -168,37 +307,59 @@ export function ChartCanvas(props: ChartCanvasProps) {
         crosshair: crosshair.current,
         theme: themeFor(theme),
         volumeAvailable,
+        overlays,
+        panes,
       });
     }
     if (rangeReadout.current !== null && view !== null) {
       const shown = series.countInWindow(view.fromMs, view.toMs);
+      const span = view.toMs - view.fromMs;
+      const label = span > 36 * 3_600_000
+        ? `${formatDay(new Date(view.fromMs).toISOString())} to ` +
+          `${formatDay(new Date(view.toMs).toISOString())}`
+        : `${formatClock(new Date(view.fromMs).toISOString())} to ` +
+          `${formatClock(new Date(view.toMs).toISOString())}`;
       rangeReadout.current.textContent =
-        `${formatClock(new Date(view.fromMs).toISOString())} to ` +
-        `${formatClock(new Date(view.toMs).toISOString())} · ` +
-        `${barsInViewportLabel(shown, series.length)}` +
+        `${label} · ${barsInViewportLabel(shown, series.length)}` +
         (following.current ? " · following" : " · paused");
     }
-  }, [series, gaps, size, theme, volumeAvailable]);
+  }, [boundsNow, gaps, outputsForFrame, paneCount, resolution, series, size,
+      theme, version, viewKey, volumeAvailable]);
+
+  const schedulePaint = useCallback(() => {
+    if (frameRequest.current !== null) {
+      return;
+    }
+    frameRequest.current = window.requestAnimationFrame(() => {
+      frameRequest.current = null;
+      paint();
+    });
+  }, [paint]);
 
   useEffect(() => {
     setHasBars(series.length > 0);
-    paint();
-  }, [paint, version, series]);
+    schedulePaint();
+  }, [schedulePaint, version, series]);
+
+  useEffect(() => () => {
+    if (frameRequest.current !== null) {
+      window.cancelAnimationFrame(frameRequest.current);
+      frameRequest.current = null;
+    }
+  }, []);
 
   /** Apply a viewport change, remember whether the reader is still following. */
   const apply = useCallback(
     (next: Viewport | null) => {
       viewport.current = next;
-      const bounds = series.bounds();
+      const bounds = boundsNow();
       following.current = bounds === null || next === null
         ? true
         : isAtNewest(next, bounds);
-      paint();
+      schedulePaint();
     },
-    [paint, series],
+    [boundsNow, schedulePaint],
   );
-
-  const boundsNow = useCallback((): SeriesBounds | null => series.bounds(), [series]);
 
   const zoomBy = useCallback(
     (factor: number, anchorRatio: number) => {
@@ -248,21 +409,37 @@ export function ChartCanvas(props: ChartCanvasProps) {
   }, [apply, boundsNow]);
 
   const onWheel = useCallback(
-    (event: WheelEvent<HTMLCanvasElement>) => {
+    (event: globalThis.WheelEvent) => {
       const surface = canvas.current;
       if (surface === null) {
         return;
       }
       event.preventDefault();
-      const frame = geometryFor(size.width, size.height);
+      const frame = frameNow();
       const rect = surface.getBoundingClientRect();
       const ratio = (event.clientX - rect.left - frame.plotLeft) /
         Math.max(1, frame.plotRight - frame.plotLeft);
-      const factor = event.deltaY > 0 ? 1 + ZOOM_STEP : 1 / (1 + ZOOM_STEP);
+      // A smooth exponential response, bounded so a trackpad fling cannot
+      // jump a month of bars in one event.
+      const delta = Math.max(-160, Math.min(160, event.deltaY));
+      const factor = Math.exp(delta * 0.0022);
       zoomBy(factor, ratio);
     },
-    [size.height, size.width, zoomBy],
+    [frameNow, zoomBy],
   );
+
+  // React registers `wheel` as a passive listener at the root, so calling
+  // preventDefault from the JSX handler only produced a browser warning and
+  // let the page scroll while the chart zoomed. A native listener with an
+  // explicit non-passive option is the only way to own the gesture.
+  useEffect(() => {
+    const surface = canvas.current;
+    if (surface === null) {
+      return;
+    }
+    surface.addEventListener("wheel", onWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", onWheel);
+  }, [onWheel]);
 
   const locate = useCallback(
     (clientX: number, clientY: number) => {
@@ -273,7 +450,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         return null;
       }
       const rect = surface.getBoundingClientRect();
-      const frame = geometryFor(size.width, size.height);
+      const frame = frameNow();
       const x = clientX - rect.left;
       const y = clientY - rect.top;
       const ratio = (x - frame.plotLeft) / (frame.plotRight - frame.plotLeft);
@@ -284,7 +461,32 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       return { index, x, y };
     },
-    [size.height, size.width],
+    [frameNow],
+  );
+
+  const describeIndicators = useCallback(
+    (index: number): string => {
+      const outputs = indicatorCache.current?.outputs ?? [];
+      const parts: string[] = [];
+      for (const output of outputs) {
+        if (output.error !== undefined) {
+          continue;
+        }
+        const values = output.lines
+          .map((line) => {
+            const value = line.values[index] ?? Number.NaN;
+            return Number.isFinite(value)
+              ? `${line.label} ${formatPrice(value, 2)}`
+              : "";
+          })
+          .filter((text) => text.length > 0);
+        if (values.length > 0) {
+          parts.push(values.join(" "));
+        }
+      }
+      return parts.join(" · ");
+    },
+    [],
   );
 
   const onPointerDown = useCallback(
@@ -292,25 +494,58 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (viewport.current === null) {
         return;
       }
-      drag.current = { startX: event.clientX, viewport: viewport.current };
+      const point = { x: event.clientX, y: event.clientY };
+      pointers.current.set(event.pointerId, point);
       event.currentTarget.setPointerCapture(event.pointerId);
+      if (pointers.current.size === 1) {
+        drag.current = { startX: event.clientX, lastX: event.clientX };
+      } else if (pointers.current.size === 2) {
+        const [first, second] = [...pointers.current.values()];
+        if (first !== undefined && second !== undefined) {
+          pinch.current = {
+            distance: Math.max(1, Math.hypot(second.x - first.x,
+              second.y - first.y)),
+            centre: (first.x + second.x) / 2,
+          };
+          drag.current = null;
+        }
+      }
     },
     [],
   );
 
   const onPointerMove = useCallback(
     (event: PointerEvent<HTMLCanvasElement>) => {
+      if (pointers.current.has(event.pointerId)) {
+        pointers.current.set(event.pointerId,
+          { x: event.clientX, y: event.clientY });
+      }
+      if (pointers.current.size >= 2 && pinch.current !== null) {
+        const [first, second] = [...pointers.current.values()];
+        if (first !== undefined && second !== undefined) {
+          const distance = Math.max(1, Math.hypot(second.x - first.x,
+            second.y - first.y));
+          const frame = frameNow();
+          const surface = canvas.current;
+          if (surface !== null) {
+            const rect = surface.getBoundingClientRect();
+            const centre = (first.x + second.x) / 2;
+            const ratio = (centre - rect.left - frame.plotLeft) /
+              Math.max(1, frame.plotRight - frame.plotLeft);
+            zoomBy(pinch.current.distance / distance, ratio);
+          }
+          pinch.current = { distance, centre: (first.x + second.x) / 2 };
+        }
+        return;
+      }
       const dragging = drag.current;
       if (dragging !== null) {
-        const frame = geometryFor(size.width, size.height);
+        const frame = frameNow();
         const width = Math.max(1, frame.plotRight - frame.plotLeft);
-        // Dragging right moves the window back in time, the way every chart
-        // the owner has ever used behaves.
-        const shift = -(event.clientX - dragging.startX) / width;
+        const shift = -(event.clientX - dragging.lastX) / width;
         if (Math.abs(shift) > 0.0005) {
           panBy(shift);
-          drag.current = { startX: event.clientX, viewport: viewport.current ??
-            dragging.viewport };
+          drag.current = { startX: dragging.startX, lastX: event.clientX };
         }
         return;
       }
@@ -321,29 +556,44 @@ export function ChartCanvas(props: ChartCanvasProps) {
       crosshair.current = found;
       const bar = folded.current?.at(found.index);
       if (readout.current !== null && bar !== undefined) {
-        readout.current.textContent =
+        const base =
           `${formatClock(new Date(bar.timeMs).toISOString())}  ` +
           `O ${formatPrice(bar.o)}  H ${formatPrice(bar.h)}  ` +
           `L ${formatPrice(bar.l)}  C ${formatPrice(bar.c)}  ` +
           `V ${formatVolume(bar.v)}`;
+        const extra = describeIndicators(found.index);
+        readout.current.textContent = extra.length > 0
+          ? `${base}   ${extra}`
+          : base;
       }
-      paint();
+      schedulePaint();
     },
-    [locate, paint, panBy, size.height, size.width],
+    [describeIndicators, frameNow, locate, panBy, schedulePaint, zoomBy],
   );
 
-  const onPointerUp = useCallback(() => {
-    drag.current = null;
+  const endPointer = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
+    pointers.current.delete(event.pointerId);
+    if (pointers.current.size < 2) {
+      pinch.current = null;
+    }
+    if (pointers.current.size === 0) {
+      drag.current = null;
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }, []);
 
   const onPointerLeave = useCallback(() => {
-    drag.current = null;
+    if (drag.current !== null || pointers.current.size > 0) {
+      return;
+    }
     crosshair.current = null;
     if (readout.current !== null) {
       readout.current.textContent = "";
     }
-    paint();
-  }, [paint]);
+    schedulePaint();
+  }, [schedulePaint]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLCanvasElement>) => {
@@ -361,6 +611,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         F: fit,
         n: newest,
         N: newest,
+        "0": fit,
       };
       const action = handled[event.key];
       if (action === undefined) {
@@ -375,6 +626,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const volumeNote = volumeAvailable
     ? "volume pane below the candles, from the source's own counter"
     : "this source reported no volume counter, so no volume pane is drawn";
+  const indicatorNote = indicators.length === 0
+    ? "no indicators configured"
+    : `${indicators.length} indicator(s) configured`;
 
   return (
     <div className="chart" ref={wrapper}>
@@ -382,14 +636,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
         ref={canvas}
         className="chart__canvas"
         tabIndex={0}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
         onPointerLeave={onPointerLeave}
+        onDoubleClick={fit}
         onKeyDown={onKeyDown}
-        aria-label={`candlestick chart. ${sessionLabel} ${series.length} bars. ${volumeNote}. Arrow keys pan, plus and minus zoom, f fits, n goes to the newest bar.`}
+        aria-label={`candlestick chart. ${sessionLabel} ${series.length} bars. ${volumeNote}. ${indicatorNote}. Arrow keys pan, plus and minus zoom, f fits, n goes to the newest bar.`}
         data-bars={series.length}
       />
       {!hasBars ? (
@@ -416,7 +670,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         </div>
         <span className="chart__range" ref={rangeReadout} aria-live="off" />
         <div className="chart__readout" ref={readout} aria-live="off" />
-        <div className="chart__hint">hover to read a bar, wheel to zoom, drag to pan</div>
+        <div className="chart__hint">hover to read, wheel or pinch to zoom, drag to pan</div>
       </div>
     </div>
   );

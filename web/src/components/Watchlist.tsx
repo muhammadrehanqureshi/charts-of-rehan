@@ -29,10 +29,13 @@ export function Watchlist(props: WatchlistProps) {
 
   const shown = useMemo(() => {
     const needle = filter.trim().toUpperCase();
-    if (needle.length === 0) {
-      return rows;
-    }
-    return rows.filter((row) => row.symbol.includes(needle));
+    const matching = needle.length === 0
+      ? rows
+      : rows.filter((row) => row.symbol.includes(needle));
+    // The two index proxies are the session's own breadth, so they sit above
+    // the stocks a reader has to scroll through.
+    return [...matching].sort((left, right) =>
+      Number(right.index === true) - Number(left.index === true));
   }, [filter, rows]);
 
   const traded = rows.filter((row) => (row.bars ?? 0) > 0).length;
@@ -79,7 +82,10 @@ export function Watchlist(props: WatchlistProps) {
                   aria-current={active ? "true" : undefined}
                   onClick={() => onSymbol(row.symbol)}
                 >
-                  <span className="row__symbol">{row.symbol}</span>
+                  <span className="row__symbol">
+                    {row.symbol}
+                    {row.index === true ? <span className="row__badge">index</span> : null}
+                  </span>
                   <span className="row__price">
                     {row.close === null ? (
                       <span className="row__note">
