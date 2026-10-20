@@ -48,7 +48,9 @@ KARACHI = timezone(timedelta(hours=5), name="Asia/Karachi")
 MONDAY = date(2026, 10, 12)
 MONDAY_OPEN = datetime(2026, 10, 12, 9, 32, tzinfo=KARACHI)
 MONDAY_1100 = datetime(2026, 10, 12, 11, 0, tzinfo=KARACHI)
+TUESDAY_OPEN = datetime(2026, 10, 13, 9, 32, tzinfo=KARACHI)
 TUESDAY_1100 = datetime(2026, 10, 13, 11, 0, tzinfo=KARACHI)
+WEDNESDAY_1100 = datetime(2026, 10, 14, 11, 0, tzinfo=KARACHI)
 
 
 def tick(symbol: str, price, volume, at: datetime,
@@ -442,6 +444,20 @@ class AnyDayServingTest(ArchiveCase):
                 self.source().archive_session("last Tuesday")
         self.assertEqual(caught.exception.category, UpstreamError.SCHEMA_CHANGE)
 
+    def test_a_daily_series_keeps_every_session_it_can_draw(self):
+        """1D without a named day is history, not just today's candle."""
+        self.write_tape(session_records())
+        tuesday = self.captures / "capture_20261013.ndjson"
+        self.write_tape(session_records(start=TUESDAY_OPEN), path=tuesday)
+        with self.patched_capture():
+            source = self.source(clock=WEDNESDAY_1100)
+            daily = source.history("OGDC", "1D")
+            one_day = source.history("OGDC", "1D", day=MONDAY)
+        self.assertEqual([bar.t[:10] for bar in daily],
+                         ["2026-10-12", "2026-10-13"])
+        self.assertEqual(len(one_day), 1)
+        self.assertEqual(one_day[0].t[:10], "2026-10-12")
+
     def test_the_catalogue_carries_per_symbol_facts_when_asked(self):
         self.write_tape(session_records())
         with self.patched_capture():
@@ -452,6 +468,31 @@ class AnyDayServingTest(ArchiveCase):
         self.assertEqual(by_symbol["OGDC"]["day"], "2026-10-12")
         self.assertEqual(by_symbol["OGDC"]["first"], "2026-10-12T09:33:00+05:00")
         self.assertEqual(by_symbol["PPL"]["bars"], 3)
+
+    def test_catalogue_facts_match_the_chartable_series(self):
+        """A pre-open print is in the capture but not in the chart.
+
+        The watchlist and the chart must describe one series. Reporting the
+        raw capture counted rows the session law excludes, so the list showed
+        a later bar and a larger count than the chart could ever draw.
+        """
+        before_open = datetime(2026, 10, 12, 9, 20, tzinfo=KARACHI)
+        self.write_tape([
+            frame(before_open, tick("OGDC", 99.0, 500, before_open,
+                                    "09:20:00")),
+            *session_records(),
+        ])
+        with self.patched_capture():
+            source = self.source()
+            rows = {
+                row["symbol"]: row
+                for row in source.catalog(facts=True)
+            }
+            bars = source.history("OGDC", "1m", day=MONDAY)
+        self.assertEqual(rows["OGDC"]["bars"], len(bars))
+        self.assertEqual(rows["OGDC"]["last"], bars[-1].t)
+        self.assertEqual(rows["OGDC"]["close"], bars[-1].c)
+        self.assertEqual(rows["OGDC"]["first"], "2026-10-12T09:33:00+05:00")
 
     def test_the_catalogue_without_facts_keeps_its_old_shape(self):
         self.write_tape(session_records())
