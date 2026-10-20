@@ -26,6 +26,7 @@ import type {
   ChartSession,
   ErrorCategory,
   Gap,
+  Resolution,
   SourceInfo,
 } from "../api/types";
 import { ColumnSeries } from "../chart/series";
@@ -67,7 +68,7 @@ const EMPTY_META: FeedMeta = {
 export function useChartFeed(
   client: ChartClient,
   symbol: string,
-  resolution: "1m" | "1d" | "session",
+  resolution: Resolution,
   options: { day?: string; limit?: number } = {},
 ): FeedState {
   const day = options.day ?? "";
