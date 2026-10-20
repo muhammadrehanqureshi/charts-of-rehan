@@ -1,9 +1,10 @@
 # Charts of Rehan
 
 A charting service for the exchange's own session, built from this project's own
-market data. It serves minute candles, volume, the Karachi session clock, and a
-measured list of the minutes that are missing, over a plain HTTP API plus a React
-front end.
+market data. It serves candles at twelve resolutions from one second to one
+month, volume, the Karachi session clock, two computed breadth proxies
+(`KSE100` and `KMIALLSHR`), and a measured list of the minutes that are missing,
+over a plain HTTP API plus a React front end.
 
 Two ideas carry the whole design.
 
@@ -33,6 +34,7 @@ list, and never invents a bar.
 | `tests/` | deterministic Python tests, no live network calls |
 | `examples/charts_demo.py` | the whole pipeline offline: replay bars, one gap, one revision |
 | `docs/` | architecture, API, deployment, data provenance |
+| `scripts/` | the guarded landing flow: repository identity, PR creation, merge |
 | `tools/sanitize.py` | the exposure scan that must pass before this tree is published |
 
 ## Quick start
@@ -62,7 +64,7 @@ The front end needs Node for its development server and its build:
 cd web
 npm install
 npm run dev        # http://localhost:5173, proxying /api to the service
-npm test           # 121 unit tests
+npm test           # 134 unit tests
 npm run build      # writes web/dist, which the service then serves
 ```
 
@@ -86,7 +88,7 @@ the event stream.
 
 | Source | Serves | Honest limits |
 |---|---|---|
-| `tape` | `1m` bars from this project's read-only market-feed recording | only what the recorder banked; a symbol that started late says so |
+| `tape` | `1s` and `10s` from the recording's own ticks, `1m` from its prints, and `5m` through `1M` folded server-side under the session law | only what the recorder banked; a symbol that started late says so |
 | `portal` | `session`: one bar per trading day from the exchange portal's company page | about five minutes delayed; not an intraday series; a cleared panel is a named failure, not a zero bar |
 | `replay` | `1m` synthetic bars | labelled synthetic and refused unless named on the command line; it exists to test the pipeline offline |
 
@@ -107,7 +109,7 @@ the event stream.
 ## Testing
 
 ```bash
-python -m pytest tests -q     # 187 tests
+python -m pytest tests -q     # 222 tests
 cd web && npm run typecheck && npm test
 python tools/sanitize.py      # must report zero findings before publishing
 ```

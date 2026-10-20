@@ -38,7 +38,7 @@ python -m charts --source replay --symbols REPLAY1 --once
 cd web
 npm install
 npm run typecheck     # strict TypeScript, both projects
-npm test              # 121 unit tests
+npm test              # 134 unit tests
 npm run build         # writes web/dist
 ```
 

@@ -1,15 +1,16 @@
 # Charts of Rehan, the web front end
 
 React 18 and TypeScript, strict, no UI framework and no charting library. The
-candles are drawn on a canvas by about four hundred lines in `src/chart/`, and
-the data layer is a typed client the tests drive with fake transports.
+candles, viewport and indicator panes are drawn on a canvas by the renderer in
+`src/chart/`, and the data layer is a typed client the tests drive with fake
+transports.
 
 ## Running it
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173, /api proxied to http://127.0.0.1:8788
-npm test           # 121 unit tests, no network, no browser
+npm test           # 134 unit tests, no network, no browser
 npm run typecheck  # tsc in strict mode over src and the Vite config
 npm run build      # writes dist/, which the Python service can serve itself
 ```
@@ -38,11 +39,17 @@ src/
   api/types.ts        the server contract, typed and validated at the boundary
   api/client.ts       REST and SSE client: retries, timeouts, named failures
   chart/series.ts     typed-array series: upsert, window, aggregation
+  chart/viewport.ts   pure pan, zoom, fit and follow rules
   chart/scale.ts      nice ticks and linear scales
   chart/format.ts     Karachi time and price formatting
-  chart/render.ts     the canvas renderer: candles, volume, gaps, crosshair
-  components/         ChartCanvas, MarketHeader, NotesPanel, SymbolPicker
+  chart/render.ts     the canvas renderer: candles, volume, gaps, panes
+  chart/timeframes.ts the twelve labels and their nominal widths
+  indicators/         formula language, maths, registry and computation
+  components/         ChartCanvas, Toolbar, Watchlist, IndicatorsPanel,
+                      StatusBar, NotesPanel
   hooks/useChartFeed.ts   series, stream, status and metadata for one symbol
+  hooks/useIndicators.ts  indicator instances, edited and persisted locally
+  examples/CustomChart.tsx  a runnable chart with custom indicators
   App.tsx, main.tsx, styles.css
 ```
 
@@ -69,9 +76,9 @@ pretending a dropped connection is still live.
 
 `drawChart` is one function and one frame. It computes a price range over the
 visible window, draws grid and axis labels from the tick maths, shades the
-measured gaps with their minute count, draws candles and volume, marks the last
-price, and draws a crosshair with an OHLCV readout when the pointer is inside
-the plot.
+measured gaps with their minute count, draws candles, volume and indicator
+panes, marks the last price, and draws a crosshair with an OHLCV readout when
+the pointer is inside the plot.
 
 When the visible window holds more bars than the plot has room for candles,
 the series is folded into buckets first: `open` from the first bar of the
@@ -81,17 +88,59 @@ minutes still draws readable candles in a few hundred pixels. The underlying
 minute series is untouched, so zooming back in shows every minute again.
 
 The time axis always prints Karachi time (`Asia/Karachi`), never the viewer's
-zone, matching the one clock rule the backend enforces (SO-8).
+zone, matching the one clock rule the backend enforces (SO-8). The visible
+window is owned by the reader: wheel and pinch zoom anchor at the pointer,
+dragging pans, and `+`, `-`, `f` (fit), `n` (newest) and the arrow keys do the
+same from the keyboard. A new bar extends a window that was following the
+market and never moves one the reader panned away from.
 
-## What is not here yet
+`ChartCanvas` repaints from the typed arrays on an animation frame. Indicator
+results are cached per bar version, so a pointer move does not recompute a
+moving average. The server owns the twelve resolutions (`1s` through `1M`,
+including `10s`, `10m` and `4h`); the toolbar only presents the ones the
+running service says it serves. The two index buttons, `KSE100` and
+`KMIALLSHR`, draw the session's computed breadth proxies and label them as
+such, never as official exchange index levels.
 
-Honest gaps, so the next reader does not have to guess:
+Below 900px the layout becomes one scrolling column with the chart first, then
+the watchlist and the indicator panel. Each panel has its own fixed height, so
+the watchlist can never collapse to a border and an open keyboard does not
+squeeze the candles out of existence.
 
-* no pan, zoom or range selection yet; the view shows the newest 260 bars;
-* no indicator overlays or drawings;
+## Custom indicators and a runnable example
+
+The indicator registry separates a definition (`ema`, `bollinger`, `rsi`, ...)
+from a configured instance (`ema` with period 9, a colour and a placement).
+There is no cap on instances: the panel adds, removes, hides and recolours them,
+and overlays share the price scale while pane indicators stack beneath volume.
+The `formula` definition is a small safe expression language, not `eval`:
+
+```
+ema(close, 20) - ema(close, 50)
+(close - sma(close, 20)) / stddev(close, 20)
+roc(close, 10)
+```
+
+The editor validates the formula against a synthetic series before it is drawn,
+so a call that compiles but cannot run says why. Instances are persisted in
+local storage after field-by-field validation; a corrupt entry is dropped rather
+than allowed to break the chart.
+
+[`src/examples/CustomChart.tsx`](src/examples/CustomChart.tsx) is a complete
+component: it opens the feed, initialises three custom instances (two overlays
+and a formula pane), and passes them to `ChartCanvas` exactly as the terminal
+does. It is mounted at `/?example=1`, so it can be run without copying a line;
+copy the file into another application and mount `<CustomChart />` to use the
+same initialisation on its own. There is no other setup beyond the service
+running on the same origin.
+
+## Known limits
+
 * no offline caching of series, so a reload refetches history;
-* the tests cover the data layer and the series maths, not the canvas
-  renderer; the renderer is verified by looking at it.
+* no drawing tools (trendlines, annotations) beyond indicator lines;
+* the computed index proxies are session breadth, not official PSX levels;
+* the canvas renderer is verified by looking at it and through its pure
+  viewport/series tests, not with pixel snapshots.
 
 ## Types and tooling
 
