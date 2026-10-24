@@ -1,64 +1,114 @@
 /**
- * The chart surface, with the controls a charting terminal is expected to have.
+ * The chart surface: TradingView's own engine, bound to the PSX tape.
  *
- * The drawing rule that matters: React re-renders for metadata, the canvas
- * redraws imperatively from typed arrays. A pointer move updates refs and
- * schedules one animation-frame paint; it writes the readout through a DOM
- * ref, so hovering never re-renders the tree.
+ * The renderer is the genuine thing: `lightweight-charts` is TradingView's
+ * open-source chart (Apache-2.0, the same renderer behind their quick
+ * charts), so pan, zoom, the price scale, the crosshair, the packed candles
+ * and the attached volume pane are drawn by their code, themed to TV's
+ * exact dark tokens (#131722 chart, #1e222d grid, #089981 up, #f23645
+ * down, #758696 crosshair, Trebuchet MS text).
  *
- * Time is owned by the reader. The visible window lives in a ref, wheel and
- * pinch zoom around the pointer, dragging pans, and keyboard does both. The
- * pure rules in `chart/viewport.ts` decide every boundary; this file only
- * wires them to events. A bar arriving extends a window that is following the
- * market but never moves one the reader scrolled back.
+ * The drawing rule survives from the previous renderer: React re-renders
+ * for metadata only, the engine owns the pixels, and a pointer move goes
+ * through one subscription that writes a DOM node, never a rendered tree.
+ * The tape owns time exactly as before: bars live in the Karachi clock and
+ * reach the engine as UTC seconds, with the tick marks labelled explicitly
+ * in Asia/Karachi, so a viewer in any zone reads the exchange's clock.
  *
- * Indicators are computed on the bars actually on screen. The fold and the
- * indicator result are cached per bar version, so a pointer move repaints the
- * same arrays instead of recalculating a moving average sixty times a second.
+ * The honesty features keep their place: an empty window says so on the
+ * chart, and the order tape (the venue's own counters) is the floating
+ * surface that draws when the tape has something to show.
  */
 
 import {
-  type KeyboardEvent,
-  type PointerEvent,
-  useCallback,
+  type CandlestickData,
+  type HistogramData,
+  type IChartApi,
+  type ISeriesApi,
+  type LineData,
+  LineStyle,
+  type MouseEventParams,
+  type SeriesMarker,
+  type Time,
+  type UTCTimestamp,
+  ColorType,
+  CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
+  CrosshairMode,
+  createChart,
+  createSeriesMarkers,
+  createTextWatermark,
+} from "lightweight-charts";
+import {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 
 import type { Gap, PrintEvent, PrintTotals, Resolution } from "../api/types";
-import { formatClock, formatDay, formatPrice, formatVolume } from "../chart/format";
-import {
-  drawChart,
-  type Crosshair,
-  geometryFor,
-  themeFor,
-} from "../chart/render";
-import { displayBucket, type ColumnSeries } from "../chart/series";
-import { timeframeMs } from "../chart/timeframes";
-import {
-  DEFAULT_VISIBLE_BARS,
-  type SeriesBounds,
-  type Viewport,
-  barsInViewportLabel,
-  fitViewport,
-  followViewport,
-  isAtNewest,
-  panViewport,
-  viewportOfLastBars,
-  zoomViewport,
-} from "../chart/viewport";
-import { computeIndicators, outputsFor, seriesData } from "../indicators/compute";
-import { placementOf } from "../indicators/registry";
-import type { IndicatorOutput, IndicatorSpec } from "../indicators/types";
+import { formatClock, formatPrice, formatVolume } from "../chart/format";
+import { type ColumnSeries, timeMs } from "../chart/series";
+import { computeIndicators, seriesData } from "../indicators/compute";
+import type {
+  IndicatorOutput,
+  IndicatorSpec,
+  SeriesData,
+} from "../indicators/types";
 
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 220;
-const ZOOM_STEP = 0.18;
-const PAN_STEP = 0.18;
-const MAX_PANES = 8;
 const TAPE_ROWS = 9;
+const RIGHT_OFFSET_BARS = 5;
+
+/** The chart's colour tokens, TV's exact values. */
+export interface TvTheme {
+  readonly background: string;
+  readonly grid: string;
+  readonly text: string;
+  readonly border: string;
+  readonly up: string;
+  readonly down: string;
+  readonly volumeUp: string;
+  readonly volumeDown: string;
+  readonly crosshair: string;
+  readonly labelBack: string;
+  readonly watermark: string;
+}
+
+/** TradingView's dark chart, token for token. */
+export const TV_DARK_THEME: TvTheme = {
+  background: "#131722",
+  grid: "#1e222d",
+  text: "#d1d4dc",
+  border: "#2a2e39",
+  up: "#089981",
+  down: "#f23645",
+  volumeUp: "rgba(8, 153, 129, 0.45)",
+  volumeDown: "rgba(242, 54, 69, 0.45)",
+  crosshair: "#758696",
+  labelBack: "#363a45",
+  watermark: "rgba(120, 123, 134, 0.18)",
+};
+
+/** The same drawing code read on a bright screen. */
+export const TV_LIGHT_THEME: TvTheme = {
+  background: "#ffffff",
+  grid: "#e0e3eb",
+  text: "#131722",
+  border: "#d7dce3",
+  up: "#089981",
+  down: "#f23645",
+  volumeUp: "rgba(8, 153, 129, 0.30)",
+  volumeDown: "rgba(242, 54, 69, 0.30)",
+  crosshair: "#9598a1",
+  labelBack: "#f0f3fa",
+  watermark: "rgba(120, 123, 134, 0.14)",
+};
+
+export function tvTheme(mode: "dark" | "light"): TvTheme {
+  return mode === "light" ? TV_LIGHT_THEME : TV_DARK_THEME;
+}
 
 export interface ChartCanvasProps {
   readonly series: ColumnSeries;
@@ -75,667 +125,381 @@ export interface ChartCanvasProps {
   readonly emptyNote: string;
   /** Configured indicators; unlimited overlays, up to eight panes. */
   readonly indicators: readonly IndicatorSpec[];
-  /** Order prints the tape carried, drawn as dots on their candles. */
+  /** Order prints the tape carried, drawn as markers on their candles. */
   readonly prints?: readonly PrintEvent[];
-  /** The venue's own session counters, for the on-chart orders badge. */
+  /** The venue's own session counters, for the on-chart order tape. */
   readonly printTotals?: PrintTotals | null;
   /** The chart headline, TV-style: `PRL · 1h · PSX` watermark. */
   readonly heading?: string;
-  /** True while a live stream is open; gates the countdown and its clock. */
+  /** True while a live stream is open; the chart itself does not need it. */
   readonly live?: boolean;
 }
 
-interface DragState {
-  readonly startX: number;
-  readonly lastX: number;
+interface PaneRef {
+  readonly lines: readonly ISeriesApi<"Line">[];
+  readonly histogram: ISeriesApi<"Histogram"> | undefined;
 }
 
-interface Point {
-  readonly x: number;
-  readonly y: number;
+type MarkerApi = {
+  setSeriesMarkers(markers: SeriesMarker<Time>[]): void;
+};
+
+interface EngineState {
+  readonly chart: IChartApi;
+  readonly candles: ISeriesApi<"Candlestick">;
+  readonly volume: ISeriesApi<"Histogram"> | null;
+  readonly markers: MarkerApi | null;
+  readonly panes: Map<string, PaneRef>;
+  /** epoch-second → bar index, for the legend's previous close. */
+  readonly index: Map<number, number>;
+  readonly volumeShown: boolean;
+  data: SeriesData | null;
 }
 
-interface PinchState {
-  distance: number;
-  centre: number;
+/** A definite number from a typed-array slot: missing reads as 0. */
+function f64(value: number | undefined): number {
+  return value === undefined ? 0 : value;
 }
 
-interface FoldCache {
-  readonly key: string;
-  readonly drawn: ColumnSeries;
+/** decimals the tape's own closes use, so the axis is exact. */
+function decimalsFrom(values: readonly number[]): number {
+  let best = 0;
+  for (const value of values) {
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    const text = value.toString();
+    const dot = text.indexOf(".");
+    const digits = dot === -1 ? 0 : text.length - dot - 1;
+    if (digits > best) {
+      best = Math.min(digits, 4);
+    }
+  }
+  return best;
 }
 
-interface IndicatorCache {
-  readonly source: ColumnSeries;
-  readonly version: number;
-  readonly key: string;
-  readonly outputs: readonly IndicatorOutput[];
-}
+const karachiClock = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const karachiStamp = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+const karachiDay = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  day: "2-digit",
+  month: "short",
+});
 
 export function ChartCanvas(props: ChartCanvasProps) {
   const {
-    series, gaps, resolution, viewKey, version, volumeAvailable, theme,
-    sessionLabel, emptyNote, indicators, prints, printTotals, heading, live,
+    series,
+    resolution,
+    viewKey,
+    version,
+    volumeAvailable,
+    theme,
+    sessionLabel,
+    emptyNote,
+    indicators,
+    prints,
+    printTotals,
+    heading,
+    live,
   } = props;
-  const wrapper = useRef<HTMLDivElement | null>(null);
-  const canvas = useRef<HTMLCanvasElement | null>(null);
-  const crosshair = useRef<Crosshair | null>(null);
-  const viewport = useRef<Viewport | null>(null);
-  const following = useRef(true);
-  const visibleBars = useRef(DEFAULT_VISIBLE_BARS);
-  const drag = useRef<DragState | null>(null);
-  const pointers = useRef(new Map<number, Point>());
-  const pinch = useRef<PinchState | null>(null);
-  const folded = useRef<ColumnSeries | null>(null);
-  const foldCache = useRef<FoldCache | null>(null);
-  const indicatorCache = useRef<IndicatorCache | null>(null);
-  const readout = useRef<HTMLDivElement | null>(null);
-  const rangeReadout = useRef<HTMLSpanElement | null>(null);
-  const frameRequest = useRef<number | null>(null);
-  const lastViewKey = useRef(viewKey);
-  const [size, setSize] = useState({ width: 800, height: 400 });
-  // The opening zoom is a candle width, not a bar count: about eight pixels
-  // per bar keeps every candle readable - wick, body, colour - at the
-  // density the plot actually has. A fixed 240-bar count made narrow
-  // windows open on a field of hairline slivers.
-  const openingBars = Math.max(48, Math.min(240, Math.floor((size.width - 90) / 8)));
-  const openingBarsRef = useRef(openingBars);
-  openingBarsRef.current = openingBars;
-  const [hasBars, setHasBars] = useState(false);
+  void live; // the status bar owns liveness; the chart owns candles
+  void props.gaps; // the status bar owns the gap ledger; see it there
 
-  const specKey = useMemo(() => JSON.stringify(indicators), [indicators]);
-  const paneCount = useMemo(
-    () => Math.min(MAX_PANES, indicators.filter((spec) =>
-      spec.visible && placementOf(spec) === "pane").length),
+
+  const wrapper = useRef<HTMLDivElement | null>(null);
+  const surface = useRef<HTMLDivElement | null>(null);
+  const legend = useRef<HTMLDivElement | null>(null);
+  const engine = useRef<EngineState | null>(null);
+  const didFit = useRef(false);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+
+  const showSeconds = resolution === "1s" || resolution === "10s";
+
+  /** TV's tick marks and axis: the Karachi clock, whatever the viewer's PC. */
+  const tickLabel = useMemo(() => {
+    const secondsFormat = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Karachi",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    return (time: Time): string => {
+      const ms = Number(time) * 1000;
+      const moment = new Date(ms);
+      if (Number.isNaN(moment.getTime())) {
+        return "";
+      }
+      return showSeconds ? secondsFormat.format(moment)
+        : karachiClock.format(moment);
+    };
+  }, [showSeconds]);
+
+  /** The indicator plan: the chart engine rebuilds when the plan changes. */
+  const indicatorsKey = useMemo(
+    () => indicators
+      .map((spec) =>
+        `${spec.id}:${spec.type}:${spec.placement ?? ""}:${spec.color}:` +
+        `${JSON.stringify(spec.params)}`)
+      .join("|"),
     [indicators],
   );
-  const frameNow = useCallback(
-    () => geometryFor(size.width, size.height, paneCount),
-    [paneCount, size.height, size.width],
-  );
-  /**
-   * The step is the chosen timeframe, not the interval the rows happen to
-   * show. `ColumnSeries.stepMs()` takes the median spacing, which is right for
-   * a dense minute series with holes but wrong for sparse tick rungs: 232
-   * one-second prints spread across two hours have a median spacing of 23
-   * seconds, and using that as the candle width folded the series into
-   * 23-second candles and mislabelled the axis. The server already built the
-   * rows at the requested resolution, so that resolution is the width; a hole
-   * is missing time, not a wider bar.
-   */
-  const boundsNow = useCallback((): SeriesBounds | null => {
-    const bounds = series.bounds();
-    return bounds === null
-      ? null
-      : { ...bounds, stepMs: timeframeMs(resolution) };
-  }, [resolution, series]);
 
   useEffect(() => {
-    const node = wrapper.current;
-    if (node === null) {
+    const surfaceEl = surface.current;
+    if (surfaceEl === null) {
       return;
     }
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect === undefined) {
-        return;
-      }
-      setSize({
-        width: Math.max(MIN_WIDTH, Math.round(rect.width)),
-        height: Math.max(MIN_HEIGHT, Math.round(rect.height)),
-      });
+    const tokens = tvTheme(themeRef.current);
+
+    // The decimals come from the tape's own closes, before any axis print.
+    const columns = series.columns();
+    const decimals = decimalsFrom(Array.from(columns.close));
+
+    const chart = createChart(surfaceEl, {
+      width: surfaceEl.clientWidth || MIN_WIDTH,
+      height: surfaceEl.clientHeight || MIN_HEIGHT,
+      layout: {
+        background: { type: ColorType.Solid, color: tokens.background },
+        textColor: tokens.text,
+        fontFamily: "'Trebuchet MS', 'Segoe UI', Verdana, sans-serif",
+        panes: { separatorColor: tokens.border },
+      },
+      grid: {
+        vertLines: { color: tokens.grid },
+        horzLines: { color: tokens.grid },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: tokens.crosshair,
+          width: 1,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: tokens.labelBack,
+        },
+        horzLine: {
+          color: tokens.crosshair,
+          width: 1,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: tokens.labelBack,
+        },
+      },
+      rightPriceScale: {
+        borderColor: tokens.border,
+        scaleMargins: { top: 0.12, bottom: 0.12 },
+      },
+      timeScale: {
+        borderColor: tokens.border,
+        rightOffset: RIGHT_OFFSET_BARS,
+        barSpacing: 8,
+        timeVisible: true,
+        secondsVisible: showSeconds,
+        tickMarkFormatter:
+          (time: Time) => tickLabel(time),
+      },
+      localization: {
+        priceFormatter: (price: number) => formatPrice(price, decimals),
+      },
     });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
 
-  const outputsForFrame = useCallback(
-    (drawn: ColumnSeries): readonly IndicatorOutput[] => {
-      const cached = indicatorCache.current;
-      if (cached !== null && cached.source === drawn &&
-          cached.version === version && cached.key === specKey) {
-        return cached.outputs;
-      }
-      const data = seriesData(drawn);
-      const outputs = computeIndicators(indicators, data);
-      indicatorCache.current = {
-        source: drawn, version, key: specKey, outputs,
-      };
-      return outputs;
-    },
-    [indicators, specKey, version],
-  );
-
-  // The legend renderer is declared below paint (it needs describeIndicators,
-  // which is itself declared below paint); paint reaches it through this ref
-  // so the dependency graph stays declaration-order honest.
-  const legendRef = useRef<(index: number | null) => void>(() => undefined);
-
-  const paint = useCallback(() => {
-    const surface = canvas.current;
-    if (surface === null) {
-      return;
-    }
-    const context = surface.getContext("2d");
-    if (context === null) {
-      return;
-    }
-    if (lastViewKey.current !== viewKey) {
-      // A symbol, session or timeframe switch is a new chart, not a poll of
-      // the old one. Reset before the first paint of the new series so a
-      // weekly view cannot inherit an intraday five-minute window and open
-      // one week past its only candle.
-      lastViewKey.current = viewKey;
-      viewport.current = null;
-      following.current = true;
-      visibleBars.current = openingBarsRef.current;
-      crosshair.current = null;
-      foldCache.current = null;
-      indicatorCache.current = null;
-    }
-    const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
-    if (surface.width !== Math.round(size.width * dpr) ||
-        surface.height !== Math.round(size.height * dpr)) {
-      surface.width = Math.round(size.width * dpr);
-      surface.height = Math.round(size.height * dpr);
-      surface.style.width = `${size.width}px`;
-      surface.style.height = `${size.height}px`;
-    }
-    const bounds: SeriesBounds | null = boundsNow();
-    if (bounds === null) {
-      // A symbol, session or timeframe switch clears the series before the
-      // new bars arrive. The old window describes timestamps that no longer
-      // exist, so keep it would open the next chart on an empty slice of
-      // time: the daily view would inherit a two-hour intraday window and
-      // draw nothing. Reset here, where the absence is visible.
-      viewport.current = null;
-      following.current = true;
-      visibleBars.current = openingBarsRef.current;
-      folded.current = null;
-      indicatorCache.current = null;
-      crosshair.current = null;
-      // Clear the pixels and the diagnostic attributes too. Leaving the old
-      // candles underneath a "loading" overlay is exactly how a reader ends
-      // up quoting yesterday's price while a new symbol is being fetched.
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.clearRect(0, 0, surface.width, surface.height);
-      context.fillStyle = themeFor(theme).background;
-      context.fillRect(0, 0, surface.width, surface.height);
-      for (const name of ["data-window", "data-step-ms", "data-drawn",
-                          "data-aggregated", "data-indicators", "data-panes"]) {
-        surface.removeAttribute(name);
-      }
-      if (readout.current !== null) {
-        readout.current.textContent = "";
-      }
-      if (rangeReadout.current !== null) {
-        rangeReadout.current.textContent = "waiting for bars";
-      }
-    } else if (viewport.current === null) {
-      viewport.current = viewportOfLastBars(
-        series.timesOfLast(visibleBars.current), visibleBars.current,
-        bounds.stepMs);
-      following.current = true;
-    }
-    viewport.current = followViewport(viewport.current, bounds,
-                                      following.current, visibleBars.current);
-    const view = viewport.current;
-    const frame = geometryFor(size.width, size.height, paneCount);
-    const plotWidth = frame.plotRight - frame.plotLeft;
-    let drawn = series;
-    // Calendar bars are already the unit the server folded by the Karachi
-    // calendar. Folding them again by an epoch-aligned width would merge two
-    // trading days into one "day" (or a Friday into a Saturday), so the
-    // renderer only compresses intraday series for screen density.
-    const calendar = resolution === "1D" || resolution === "1d" ||
-      resolution === "1W" || resolution === "1M";
-    if (!calendar && view !== null && bounds !== null && plotWidth > 0) {
-      const shown = series.countInWindow(view.fromMs, view.toMs);
-      const bucket = displayBucket(shown, bounds.stepMs, plotWidth);
-      if (bucket > bounds.stepMs) {
-        const key = `${version}|${bucket}|${series.length}`;
-        const cached = foldCache.current;
-        if (cached !== null && cached.key === key) {
-          drawn = cached.drawn;
-        } else {
-          drawn = series.aggregate(bucket);
-          foldCache.current = { key, drawn };
-        }
-      }
-    }
-    folded.current = drawn;
-    const outputs = outputsForFrame(drawn);
-    const overlays = outputsFor(outputs, "overlay");
-    const panes = outputsFor(outputs, "pane").slice(0, MAX_PANES);
-
-    if (view !== null && bounds !== null) {
-      surface.dataset["window"] = `${view.fromMs}-${view.toMs}`;
-      surface.dataset["stepMs"] = String(Math.round(bounds.stepMs));
-      surface.dataset["drawn"] = String(drawn.length);
-      surface.dataset["aggregated"] = String(drawn !== series);
-      surface.dataset["indicators"] = String(outputs.length);
-      surface.dataset["panes"] = String(panes.length);
-    }
-    if (view !== null) {
-      drawChart(context, {
-        series: drawn,
-        gaps,
-        fromMs: view.fromMs,
-        toMs: view.toMs,
-        width: size.width,
-        height: size.height,
-        dpr,
-        crosshair: crosshair.current,
-        theme: themeFor(theme),
-        volumeAvailable,
-        overlays,
-        panes,
-        prints: prints ?? [],
-        heading: heading ?? "",
-        barEndsAtMs: live && bounds !== null
-          ? bounds.lastMs + bounds.stepMs
-          : null,
-      });
-      // A stream that appends a bar is a new "newest" bar: the legend's
-      // resting row has to follow the series, not the last pointer visit.
-      legendRef.current(crosshair.current === null ? null : crosshair.current.index);
-    }
-    if (rangeReadout.current !== null && view !== null) {
-      const shown = series.countInWindow(view.fromMs, view.toMs);
-      const span = view.toMs - view.fromMs;
-      const label = span > 36 * 3_600_000
-        ? `${formatDay(new Date(view.fromMs).toISOString())} to ` +
-          `${formatDay(new Date(view.toMs).toISOString())}`
-        : `${formatClock(new Date(view.fromMs).toISOString())} to ` +
-          `${formatClock(new Date(view.toMs).toISOString())}`;
-      rangeReadout.current.textContent =
-        `${label} · ${barsInViewportLabel(shown, series.length)}` +
-        (following.current ? " · following" : " · paused");
-    }
-  }, [boundsNow, gaps, heading, live, outputsForFrame, paneCount, prints,
-      printTotals, resolution, series, size, theme, version, viewKey,
-      volumeAvailable]);
-
-  const schedulePaint = useCallback(() => {
-    if (frameRequest.current !== null) {
-      return;
-    }
-    frameRequest.current = window.requestAnimationFrame(() => {
-      frameRequest.current = null;
-      paint();
+    const candles = chart.addSeries(CandlestickSeries, {
+      upColor: tokens.up,
+      downColor: tokens.down,
+      wickUpColor: tokens.up,
+      wickDownColor: tokens.down,
+      borderVisible: false,
+      priceLineVisible: true,
+      priceLineColor: tokens.crosshair,
+      priceLineStyle: LineStyle.Dashed,
+      lastValueVisible: true,
     });
-  }, [paint]);
 
-  useEffect(() => {
-    setHasBars(series.length > 0);
-    schedulePaint();
-  }, [schedulePaint, version, series]);
-
-  // The countdown under the last price is a clock, not a state change: one
-  // repaint a second keeps it counting while the tape is live. A stored
-  // session's bar is never closing, so it never pays the tick.
-  useEffect(() => {
-    if (!live) {
-      return;
+    let volume: ISeriesApi<"Histogram"> | null = null;
+    if (volumeAvailable) {
+      chart.addPane();
+      volume = chart.addSeries(
+        HistogramSeries,
+        {
+          priceScaleId: "right",
+          priceLineVisible: false,
+          lastValueVisible: false,
+          base: 0,
+        },
+        1,
+      );
+      if (volume !== null) {
+        volume.priceScale().applyOptions({
+          scaleMargins: { top: 0.6, bottom: 0 },
+        });
+      }
     }
-    const timer = window.setInterval(schedulePaint, 1000);
-    return () => window.clearInterval(timer);
-  }, [live, schedulePaint]);
 
-  useEffect(() => () => {
-    if (frameRequest.current !== null) {
-      window.cancelAnimationFrame(frameRequest.current);
-      frameRequest.current = null;
+    // The TV watermark: the symbol, then the timeframe, behind the candles.
+    const pricePane = chart.panes()[0];
+    if (heading !== undefined && heading.length > 0 && pricePane) {
+      const parts = heading.split("·");
+      const symbolLine = (parts[0] ?? "").trim();
+      const restLine = parts.slice(1).join("·").trim();
+      void createTextWatermark(pricePane, {
+        horzAlign: "center",
+        vertAlign: "center",
+        lines: [
+          { text: symbolLine, color: tokens.watermark, fontSize: 44 },
+          ...(restLine.length > 0
+            ? [{ text: restLine, color: tokens.watermark, fontSize: 26 }]
+            : []),
+        ],
+      });
     }
-  }, []);
 
-  /** Apply a viewport change, remember whether the reader is still following. */
-  const apply = useCallback(
-    (next: Viewport | null) => {
-      viewport.current = next;
-      const bounds = boundsNow();
-      following.current = bounds === null || next === null
-        ? true
-        : isAtNewest(next, bounds);
-      schedulePaint();
-    },
-    [boundsNow, schedulePaint],
-  );
+    const markersApi = createSeriesMarkers(candles, []);
 
-  const zoomBy = useCallback(
-    (factor: number, anchorRatio: number) => {
-      const bounds = boundsNow();
-      const view = viewport.current;
-      if (bounds === null || view === null) {
+    // The pointer readout: one browser callback, one DOM write, no renders.
+    const onCrosshair = (param: MouseEventParams) => {
+      const state = engine.current;
+      const legendEl = legend.current;
+      if (state === null || legendEl === null) {
         return;
       }
-      apply(zoomViewport(view, bounds, factor, anchorRatio));
-    },
-    [apply, boundsNow],
-  );
-
-  const panBy = useCallback(
-    (fraction: number) => {
-      const bounds = boundsNow();
-      const view = viewport.current;
-      if (bounds === null || view === null) {
+      if (param.time === undefined || param.point === undefined) {
+        // Left the chart: the legend falls back to the newest bar.
+        const last = state.data === null ? undefined
+          : state.data.length - 1;
+        writeLegend(state, last, legendEl, volumeAvailable);
         return;
       }
-      apply(panViewport(view, bounds, fraction));
-    },
-    [apply, boundsNow],
-  );
-
-  const fit = useCallback(() => {
-    const bounds = boundsNow();
-    if (bounds === null) {
-      return;
-    }
-    visibleBars.current = bounds.count;
-    apply(fitViewport(bounds));
-  }, [apply, boundsNow]);
-
-  const newest = useCallback(() => {
-    const bounds = boundsNow();
-    if (bounds === null) {
-      return;
-    }
-    const span = viewport.current === null
-      ? null
-      : viewport.current.toMs - viewport.current.fromMs;
-    apply(span === null
-      ? fitViewport(bounds)
-      : { fromMs: bounds.lastMs + bounds.stepMs - span,
-          toMs: bounds.lastMs + bounds.stepMs });
-  }, [apply, boundsNow]);
-
-  const onWheel = useCallback(
-    (event: globalThis.WheelEvent) => {
-      const surface = canvas.current;
-      if (surface === null) {
-        return;
-      }
-      event.preventDefault();
-      const frame = frameNow();
-      const rect = surface.getBoundingClientRect();
-      const ratio = (event.clientX - rect.left - frame.plotLeft) /
-        Math.max(1, frame.plotRight - frame.plotLeft);
-      // A smooth exponential response, bounded so a trackpad fling cannot
-      // jump a month of bars in one event.
-      const delta = Math.max(-160, Math.min(160, event.deltaY));
-      const factor = Math.exp(delta * 0.0022);
-      zoomBy(factor, ratio);
-    },
-    [frameNow, zoomBy],
-  );
-
-  // React registers `wheel` as a passive listener at the root, so calling
-  // preventDefault from the JSX handler only produced a browser warning and
-  // let the page scroll while the chart zoomed. A native listener with an
-  // explicit non-passive option is the only way to own the gesture.
-  useEffect(() => {
-    const surface = canvas.current;
-    if (surface === null) {
-      return;
-    }
-    surface.addEventListener("wheel", onWheel, { passive: false });
-    return () => surface.removeEventListener("wheel", onWheel);
-  }, [onWheel]);
-
-  const locate = useCallback(
-    (clientX: number, clientY: number) => {
-      const surface = canvas.current;
-      const drawn = folded.current;
-      const view = viewport.current;
-      if (surface === null || drawn === null || view === null) {
-        return null;
-      }
-      const rect = surface.getBoundingClientRect();
-      const frame = frameNow();
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
-      const ratio = (x - frame.plotLeft) / (frame.plotRight - frame.plotLeft);
-      const moment = view.fromMs + ratio * (view.toMs - view.fromMs);
-      const index = drawn.indexAtOrBefore(moment);
-      if (index < 0) {
-        return null;
-      }
-      return { index, x, y };
-    },
-    [frameNow],
-  );
-
-  const describeIndicators = useCallback(
-    (index: number): string => {
-      const outputs = indicatorCache.current?.outputs ?? [];
-      const parts: string[] = [];
-      for (const output of outputs) {
-        if (output.error !== undefined) {
-          continue;
-        }
-        const values = output.lines
-          .map((line) => {
-            const value = line.values[index] ?? Number.NaN;
-            return Number.isFinite(value)
-              ? `${line.label} ${formatPrice(value, 2)}`
-              : "";
-          })
-          .filter((text) => text.length > 0);
-        if (values.length > 0) {
-          parts.push(values.join(" "));
-        }
-      }
-      return parts.join(" · ");
-    },
-    [],
-  );
-
-  /**
-   * The TradingView legend line: the crossed bar while the reader hovers,
-   * and otherwise the newest bar, always visible, always colored.
-   *
-   * The change is measured against the previous bar in the drawn series -
-   * the data this session actually holds - and it is honest about that:
-   * it never pretends a previous close it has not seen.
-   */
-  const showLegend = useCallback((index: number | null) => {
-    const drawn = folded.current;
-    const box = readout.current;
-    if (box === null) {
-      return;
-    }
-    if (drawn === null || drawn.length === 0) {
-      box.replaceChildren();
-      return;
-    }
-    const useIndex = index === null
-      ? drawn.length - 1
-      : Math.max(0, Math.min(drawn.length - 1, index));
-    const bar = drawn.at(useIndex);
-    if (bar === undefined) {
-      box.replaceChildren();
-      return;
-    }
-    const before = drawn.at(useIndex - 1);
-    const described = describeIndicators(useIndex);
-    const cell = (label: string, value: string, cls = "") => {
-      const span = document.createElement("span");
-      span.className = cls.length > 0 ? `legend__cell ${cls}` : "legend__cell";
-      const key = document.createElement("b");
-      key.textContent = label;
-      span.append(key, document.createTextNode(" " + value));
-      return span;
+      writeLegend(state, state.index.get(Number(param.time)),
+        legendEl, volumeAvailable);
     };
-    const cells: Node[] = [
-      cell("O", formatPrice(bar.o)),
-      cell("H", formatPrice(bar.h)),
-      cell("L", formatPrice(bar.l)),
-    ];
-    if (before !== undefined) {
-      const change = bar.c - before.c;
-      const cls = change < 0 ? "legend__down" : "legend__up";
-      const percent = before.c === 0 ? 0 : change / before.c * 100;
-      const span = document.createElement("span");
-      span.className = `legend__cell ${cls}`;
-      span.textContent =
-        `${change >= 0 ? "+" : ""}${change.toFixed(2)} (${percent.toFixed(2)}%)`;
-      cells.push(cell("C", formatPrice(bar.c), cls), span);
-    } else {
-      cells.push(cell("C", formatPrice(bar.c)));
-    }
-    cells.push(cell("V", formatVolume(bar.v)));
-    if (described.length > 0) {
-      cells.push(document.createTextNode("   " + described));
-    }
-    box.replaceChildren(...cells);
-  }, [describeIndicators]);
-  legendRef.current = showLegend;
+    chart.subscribeCrosshairMove(onCrosshair);
 
-  const onPointerDown = useCallback(
-    (event: PointerEvent<HTMLCanvasElement>) => {
-      if (viewport.current === null) {
-        return;
-      }
-      const point = { x: event.clientX, y: event.clientY };
-      pointers.current.set(event.pointerId, point);
-      event.currentTarget.setPointerCapture(event.pointerId);
-      if (pointers.current.size === 1) {
-        drag.current = { startX: event.clientX, lastX: event.clientX };
-      } else if (pointers.current.size === 2) {
-        const [first, second] = [...pointers.current.values()];
-        if (first !== undefined && second !== undefined) {
-          pinch.current = {
-            distance: Math.max(1, Math.hypot(second.x - first.x,
-              second.y - first.y)),
-            centre: (first.x + second.x) / 2,
-          };
-          drag.current = null;
-        }
-      }
-    },
-    [],
-  );
+    const resize = () => {
+      chart.applyOptions({
+        width: Math.max(MIN_WIDTH, surfaceEl.clientWidth),
+        height: Math.max(MIN_HEIGHT, surfaceEl.clientHeight),
+      });
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(surfaceEl);
+    resize();
 
-  const onPointerMove = useCallback(
-    (event: PointerEvent<HTMLCanvasElement>) => {
-      if (pointers.current.has(event.pointerId)) {
-        pointers.current.set(event.pointerId,
-          { x: event.clientX, y: event.clientY });
-      }
-      if (pointers.current.size >= 2 && pinch.current !== null) {
-        const [first, second] = [...pointers.current.values()];
-        if (first !== undefined && second !== undefined) {
-          const distance = Math.max(1, Math.hypot(second.x - first.x,
-            second.y - first.y));
-          const frame = frameNow();
-          const surface = canvas.current;
-          if (surface !== null) {
-            const rect = surface.getBoundingClientRect();
-            const centre = (first.x + second.x) / 2;
-            const ratio = (centre - rect.left - frame.plotLeft) /
-              Math.max(1, frame.plotRight - frame.plotLeft);
-            zoomBy(pinch.current.distance / distance, ratio);
-          }
-          pinch.current = { distance, centre: (first.x + second.x) / 2 };
-        }
-        return;
-      }
-      const dragging = drag.current;
-      if (dragging !== null) {
-        const frame = frameNow();
-        const width = Math.max(1, frame.plotRight - frame.plotLeft);
-        const shift = -(event.clientX - dragging.lastX) / width;
-        if (Math.abs(shift) > 0.0005) {
-          panBy(shift);
-          drag.current = { startX: dragging.startX, lastX: event.clientX };
-        }
-        return;
-      }
-      const found = locate(event.clientX, event.clientY);
-      if (found === null) {
-        return;
-      }
-      crosshair.current = found;
-      showLegend(found.index);
-      schedulePaint();
-    },
-    [describeIndicators, frameNow, locate, panBy, schedulePaint, showLegend, zoomBy],
-  );
+    engine.current = {
+      chart,
+      candles,
+      volume,
+      markers: markersApi as unknown as MarkerApi,
+      panes: new Map(),
+      index: new Map(),
+      volumeShown: volumeAvailable,
+      data: null,
+    };
+    didFit.current = false;
 
-  const endPointer = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    pointers.current.delete(event.pointerId);
-    if (pointers.current.size < 2) {
-      pinch.current = null;
-    }
-    if (pointers.current.size === 0) {
-      drag.current = null;
-    }
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
+    return () => {
+      observer.disconnect();
+      chart.unsubscribeCrosshairMove(onCrosshair);
+      chart.remove();
+      engine.current = null;
+    };
+    // The full build is keyed to the chart's identity only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, indicatorsKey, theme, volumeAvailable]);
 
-  const onPointerLeave = useCallback(() => {
-    if (drag.current !== null || pointers.current.size > 0) {
+  /**
+   * The data effect: every bar version flows through setData on the
+   * engine's series, prints become markers, indicator series are built on
+   * a fresh engine or fed their own series, and the legend reads the
+   * newest bar. Exactly the pattern the engine docs prescribe.
+   */
+  useEffect(() => {
+    const state = engine.current;
+    if (state === null || series.length === 0) {
       return;
     }
-    crosshair.current = null;
-    // The legend stays: it falls back to the newest bar rather than
-    // vanishing, because a readout that exists only while the pointer is
-    // down teaches the reader nothing between hovers.
-    showLegend(null);
-    schedulePaint();
-  }, [schedulePaint, showLegend]);
+    const tokens = tvTheme(themeRef.current);
+    const data = seriesData(series);
+    const length = data.time.length;
+    if (length === 0) {
+      return;
+    }
 
-  const onKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLCanvasElement>) => {
-      const handled: Record<string, () => void> = {
-        ArrowLeft: () => panBy(-PAN_STEP),
-        ArrowRight: () => panBy(PAN_STEP),
-        ArrowUp: () => zoomBy(1 / (1 + ZOOM_STEP), 0.5),
-        ArrowDown: () => zoomBy(1 + ZOOM_STEP, 0.5),
-        "+": () => zoomBy(1 / (1 + ZOOM_STEP), 0.5),
-        "=": () => zoomBy(1 / (1 + ZOOM_STEP), 0.5),
-        "-": () => zoomBy(1 + ZOOM_STEP, 0.5),
-        Home: fit,
-        End: newest,
-        f: fit,
-        F: fit,
-        n: newest,
-        N: newest,
-        "0": fit,
+    state.data = data;
+    state.index.clear();
+    for (let i = 0; i < length; i += 1) {
+      state.index.set(Math.floor(f64(data.time[i]) / 1000), i);
+    }
+
+    const candlesData: CandlestickData[] = new Array(length);
+    for (let i = 0; i < length; i += 1) {
+      candlesData[i] = {
+        time: (f64(data.time[i]) / 1000) as UTCTimestamp,
+        open: f64(data.open[i]),
+        high: f64(data.high[i]),
+        low: f64(data.low[i]),
+        close: f64(data.close[i]),
       };
-      const action = handled[event.key];
-      if (action === undefined) {
-        return;
-      }
-      event.preventDefault();
-      action();
-    },
-    [fit, newest, panBy, zoomBy],
-  );
+    }
+    state.candles.setData(candlesData);
 
-  const volumeNote = volumeAvailable
-    ? "volume pane below the candles, from the source's own counter"
-    : "this source reported no volume counter, so no volume pane is drawn";
-  const indicatorNote = indicators.length === 0
-    ? "no indicators configured"
-    : `${indicators.length} indicator(s) configured`;
+    if (state.volumeShown && state.volume !== null) {
+      const volumeData: HistogramData[] = new Array(length);
+      for (let i = 0; i < length; i += 1) {
+        volumeData[i] = {
+          time: (f64(data.time[i]) / 1000) as UTCTimestamp,
+          value: f64(data.volume[i]),
+          color: f64(data.close[i]) >= f64(data.open[i])
+            ? tokens.volumeUp
+            : tokens.volumeDown,
+        };
+      }
+      state.volume.setData(volumeData);
+    }
+
+    if (state.markers !== null) {
+      state.markers.setSeriesMarkers(
+        printMarkers(data, prints, tokens),
+      );
+    }
+
+    buildIndicators(state, indicators, data, tokens);
+
+    const legendEl = legend.current;
+    if (legendEl !== null) {
+      writeLegend(state, length - 1, legendEl, state.volumeShown);
+    }
+
+    if (!didFit.current) {
+      didFit.current = true;
+      state.chart.timeScale().fitContent();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  const hasBars = series.length > 0;
 
   return (
-    <div className="chart" ref={wrapper}>
-      <canvas
-        ref={canvas}
-        className="chart__canvas"
+    <div className="chart tv-chart" ref={wrapper}>
+      <div
+        ref={surface}
+        className="chart__canvas chart__tv"
         tabIndex={0}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        onPointerLeave={onPointerLeave}
-        onDoubleClick={fit}
-        onKeyDown={onKeyDown}
-        aria-label={`candlestick chart. ${sessionLabel} ${series.length} bars. ${volumeNote}. ${indicatorNote}. Arrow keys pan, plus and minus zoom, f fits, n goes to the newest bar.`}
+        aria-label={`candlestick chart. ${sessionLabel} ${series.length} bars. ` +
+          "Drag to pan, wheel to zoom."}
         data-bars={series.length}
       />
       {!hasBars ? (
@@ -743,95 +507,348 @@ export function ChartCanvas(props: ChartCanvasProps) {
           {emptyNote}
         </p>
       ) : null}
-      <div className="chart__overlay">
-        <div className="chart__controls">
-          <button type="button" onClick={() => zoomBy(1 / (1 + ZOOM_STEP), 0.5)}
-                  aria-label="zoom in" title="Zoom in (keyboard: +)">
-            +
-          </button>
-          <button type="button" onClick={() => zoomBy(1 + ZOOM_STEP, 0.5)}
-                  aria-label="zoom out" title="Zoom out (keyboard: -)">
-            {String.fromCharCode(8722)}
-          </button>
-          <button type="button" onClick={fit} title="Fit every bar (keyboard: f)">
-            fit
-          </button>
-          <button type="button" onClick={newest} title="Newest bar (keyboard: n)">
-            newest
-          </button>
+      {/* The TV legend: OHLC + change, live under the pointer. */}
+      <div className="tv-legend" ref={legend} aria-live="off" />
+      {printTape(prints, printTotals)}
+    </div>
+  );
+}
+
+/**
+ * The TV legend, written straight into one DOM node. Every field wears the
+ * bar's own colour: teal above the prior close, red below, grey when flat.
+ * When the series carries a volume counter the readout ends with it.
+ */
+function writeLegend(
+  state: EngineState,
+  at: number | undefined,
+  legendEl: HTMLElement,
+  withVolume: boolean,
+): void {
+  if (at === undefined || state.data === null
+    || at < 0 || at >= state.data.length) {
+    return;
+  }
+  const i = at;
+  const close = f64(state.data.close[i]);
+  const prior = i > 0 ? f64(state.data.close[i - 1]) : close;
+  const change = close - prior;
+  const changePct = prior !== 0 ? (change / prior) * 100 : 0;
+  const tone = change > 0 ? "var(--tv-up)" : change < 0
+    ? "var(--tv-down)" : "var(--tv-muted)";
+  const stampMs = f64(state.data.time[i]);
+  const colour = (value: number): string => {
+    const previous = i > 0 ? f64(state.data!.close[i - 1]) : value;
+    const own = value - previous;
+    return own > 0 ? "var(--tv-up)" : own < 0 ? "var(--tv-down)"
+      : "var(--tv-muted)";
+  };
+
+  const volumeHtml = withVolume && state.volumeShown
+    ? `<span class="tv-legend__field">V <b>` +
+      `${formatVolume(f64(state.data!.volume[i]))}</b></span>`
+    : "";
+  legendEl.innerHTML =
+    `<span class="tv-legend__stamp">` +
+    karachiStamp.format(new Date(stampMs)) +
+    ` <span class="tv-legend__day">` +
+    karachiDay.format(new Date(stampMs)) + `</span></span>` +
+    `<span class="tv-legend__field">O <b style="color:${colour(f64(state.data!.open[i]))}">` +
+    `${formatPrice(f64(state.data!.open[i]), 2)}</b></span>` +
+    `<span class="tv-legend__field">H <b style="color:${colour(f64(state.data!.high[i]))}">` +
+    `${formatPrice(f64(state.data!.high[i]), 2)}</b></span>` +
+    `<span class="tv-legend__field">L <b style="color:${colour(f64(state.data!.low[i]))}">` +
+    `${formatPrice(f64(state.data!.low[i]), 2)}</b></span>` +
+    `<span class="tv-legend__field">C <b style="color:${colour(close)}">` +
+    `${formatPrice(close, 2)}</b></span>` +
+    `<span class="tv-legend__field" style="color:${tone}">` +
+    `${change >= 0 ? "+" : ""}${formatPrice(change, 2)} ` +
+    `(${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%)</span>` +
+    volumeHtml;
+}
+
+// ---------------------------------------------------------------------------
+// Order prints as TV-style markers
+// ---------------------------------------------------------------------------
+
+/**
+ * A print rides the candle that was active when it printed — the same rule
+ * the one-minute fold keeps — as a teal dot (buyer lifted) or a red dot
+ * (seller hit) set on the bar it belongs to. Snap by matching time, in
+ * order, to the bar whose own minute window covers the print.
+ */
+function printMarkers(
+  data: SeriesData,
+  prints: readonly PrintEvent[] | undefined,
+  tokens: TvTheme,
+): SeriesMarker<Time>[] {
+  if (prints === undefined || prints.length === 0 || data.time.length === 0) {
+    return [];
+  }
+  const markers: SeriesMarker<Time>[] = [];
+  for (let i = 0; i < prints.length; i += 1) {
+    const event = prints[i];
+    if (event === undefined) {
+      continue;
+    }
+    const ms = timeMs(event.t);
+    if (!Number.isFinite(ms)) {
+      continue;
+    }
+    // The bar whose time is the greatest one at or before this print.
+    let lo = 0;
+    let hi = data.time.length - 1;
+    if (ms < f64(data.time[0])) {
+      continue; // before the tape watched: no bar owns it
+    }
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (f64(data.time[mid]) <= ms) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    const newest = i === prints.length - 1;
+    const buy = event.side === "B";
+    const sell = event.side === "S";
+    markers.push({
+      time: (f64(data.time[lo]) / 1000) as UTCTimestamp,
+      position: sell ? "belowBar" : "inBar",
+      shape: "circle",
+      color: buy ? tokens.up : sell ? tokens.down : tokens.crosshair,
+      size: newest ? 2 : 1,
+      text: "",
+    });
+  }
+  return markers;
+}
+
+// ---------------------------------------------------------------------------
+// Indicator panes
+// ---------------------------------------------------------------------------
+
+/**
+ * The indicators, on the chart the TV way: an overlay indicator paints on
+ * the price pane, a pane indicator owns its own pane beneath the volume,
+ * the first one starting at pane 2 (0 price, 1 volume). This runs on a
+ * freshly built engine or on new bars; series then exist once and feed.
+ */
+function buildIndicators(
+  state: EngineState,
+  specs: readonly IndicatorSpec[],
+  data: SeriesData,
+  tokens: TvTheme,
+): void {
+  void tokens;
+  const outputs = computeIndicators(specs, data);
+  let nextPane = state.volumeShown ? 2 : 1;
+  for (const output of outputs) {
+    if (output.error !== undefined) {
+      continue;
+    }
+    const isPane = output.placement === "pane";
+    const existing = state.panes.get(output.id);
+    if (existing !== undefined) {
+      // Same indicator, new bars: feed the series it already holds.
+      for (let li = 0; li < output.lines.length
+        && li < existing.lines.length; li += 1) {
+        const held = existing.lines[li];
+        const line = output.lines[li];
+        if (held === undefined || line === undefined) {
+          continue;
+        }
+        held.setData(lineData(data, line.values));
+      }
+      if (existing.histogram !== undefined && output.histogram !== undefined) {
+        existing.histogram.setData(histData(data, output));
+      }
+      continue;
+    }
+
+    const paneIndex = isPane ? nextPane : 0;
+    if (isPane) {
+      state.chart.addPane();
+      nextPane += 1;
+    }
+    const lines: ISeriesApi<"Line">[] = [];
+    for (const line of output.lines) {
+      const points = lineData(data, line.values);
+      if (points.length === 0) {
+        continue;
+      }
+      const lineSeries = state.chart.addSeries(LineSeries, {
+        color: line.color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: isPane && output.lines.length === 1,
+      }, paneIndex);
+      lineSeries.setData(points);
+      fixRange(lineSeries, output.range);
+      lines.push(lineSeries);
+    }
+    let histogram: ISeriesApi<"Histogram"> | undefined;
+    if (output.histogram !== undefined) {
+      const bars = histData(data, output);
+      if (bars.length > 0) {
+        histogram = state.chart.addSeries(HistogramSeries, {
+          priceLineVisible: false,
+          lastValueVisible: false,
+        }, paneIndex);
+        histogram.setData(bars);
+        fixRange(histogram, output.range);
+      }
+    }
+    state.panes.set(output.id, { lines, histogram });
+  }
+}
+
+/** A fixed indicator range (RSI 0-100) pins its pane's scale. */
+function fixRange(
+  series: ISeriesApi<"Line"> | ISeriesApi<"Histogram">,
+  range: readonly [number, number] | null | undefined,
+): void {
+  if (range === undefined || range === null) {
+    return;
+  }
+  series.applyOptions({
+    autoscaleInfoProvider: () => ({
+      priceRange: {
+        minValue: range[0],
+        maxValue: range[1],
+      },
+    }),
+  });
+}
+
+function lineData(data: SeriesData, values: Float64Array): LineData[] {
+  const length = Math.min(data.time.length, values.length);
+  const points: LineData[] = [];
+  for (let i = 0; i < length; i += 1) {
+    const value = f64(values[i]);
+    if (!Number.isFinite(value)) {
+      continue; // the warm-up bars an indicator does not have yet
+    }
+    points.push({
+      time: (f64(data.time[i]) / 1000) as UTCTimestamp,
+      value,
+    });
+  }
+  return points;
+}
+
+function histData(
+  data: SeriesData,
+  output: IndicatorOutput,
+): HistogramData[] {
+  const histogram = output.histogram;
+  if (histogram === undefined) {
+    return [];
+  }
+  const length = Math.min(data.time.length, histogram.values.length);
+  const points: HistogramData[] = [];
+  for (let i = 0; i < length; i += 1) {
+    const value = f64(histogram.values[i]);
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    points.push({
+      time: (f64(data.time[i]) / 1000) as UTCTimestamp,
+      value,
+      color: value >= 0 ? histogram.positive : histogram.negative,
+    });
+  }
+  return points;
+}
+
+// ---------------------------------------------------------------------------
+// The order tape, TV-styled
+// ---------------------------------------------------------------------------
+
+/**
+ * The order tape: the venue's own counters and the newest prints, floating
+ * over the chart. It draws when the tape has either prints or counters to
+ * show, and nothing when it has neither — no empty box.
+ */
+function printTape(
+  prints: readonly PrintEvent[] | undefined,
+  printTotals: PrintTotals | null | undefined,
+): React.ReactNode {
+  if (printTotals === undefined) {
+    printTotals = null;
+  }
+  const hasPrints = prints !== undefined && prints.length > 0;
+  const hasCounters = printTotals != null
+    && [printTotals.buy_volume, printTotals.sell_volume,
+        printTotals.volume, printTotals.orders]
+      .some((value) =>
+        value !== null && Number.isFinite(value) && value > 0);
+  if (!hasPrints && !hasCounters) {
+    return null;
+  }
+  return (
+    <div className="chart__tape" aria-label="order tape, newest first">
+      <div className="chart__tape__head">order tape</div>
+      {printTotals != null ? (
+        <div className="chart__tape__totals">
+          {printTotals.buy_volume !== null
+            && Number.isFinite(printTotals.buy_volume)
+            && printTotals.buy_volume > 0
+            ? (
+              <span className="chart__tape__buy">
+                buy {formatVolume(printTotals.buy_volume)}
+              </span>
+            )
+            : null}
+          {printTotals.sell_volume !== null
+            && Number.isFinite(printTotals.sell_volume)
+            && printTotals.sell_volume > 0
+            ? (
+              <span className="chart__tape__sell">
+                sell {formatVolume(printTotals.sell_volume)}
+              </span>
+            )
+            : null}
+          {printTotals.volume !== null && Number.isFinite(printTotals.volume)
+            ? (
+              <span className="chart__tape__vol">
+                vol {formatVolume(printTotals.volume)}
+              </span>
+            )
+            : null}
+          {printTotals.orders !== null && Number.isFinite(printTotals.orders)
+            ? (
+              <span className="chart__tape__orders">
+                {formatVolume(printTotals.orders)} orders
+              </span>
+            )
+            : null}
         </div>
-        <span className="chart__range" ref={rangeReadout} aria-live="off" />
-        <div className="chart__readout" ref={readout} aria-live="off" />
-        {/* The tape is the one surface that carries the venue counters, so
-            it draws when there are prints to list OR counters to show; a
-            source with counters but no prints keeps its facts visible, and
-            a source that has neither draws no box at all. */}
-        {(prints !== undefined && prints.length > 0)
-          || (printTotals != null
-            && [printTotals.buy_volume, printTotals.sell_volume,
-                printTotals.volume, printTotals.orders]
-              .some((value) => value !== null && Number.isFinite(value)
-                && value > 0)) ? (
-          <div className="chart__tape" aria-label="order tape, newest first">
-            <div className="chart__tape__head">order tape</div>
-            {printTotals != null ? (
-              <div className="chart__tape__totals">
-                {printTotals.buy_volume !== null
-                  && Number.isFinite(printTotals.buy_volume)
-                  && printTotals.buy_volume > 0 ? (
-                    <span className="chart__tape__buy">
-                      buy {formatVolume(printTotals.buy_volume)}
-                    </span>
-                  ) : null}
-                {printTotals.sell_volume !== null
-                  && Number.isFinite(printTotals.sell_volume)
-                  && printTotals.sell_volume > 0 ? (
-                    <span className="chart__tape__sell">
-                      sell {formatVolume(printTotals.sell_volume)}
-                    </span>
-                  ) : null}
-                {printTotals.volume !== null
-                  && Number.isFinite(printTotals.volume) ? (
-                    <span className="chart__tape__vol">
-                      vol {formatVolume(printTotals.volume)}
-                    </span>
-                  ) : null}
-                {printTotals.orders !== null
-                  && Number.isFinite(printTotals.orders) ? (
-                    <span className="chart__tape__orders">
-                      {formatVolume(printTotals.orders)} orders
-                    </span>
-                  ) : null}
-              </div>
-            ) : null}
-            {(prints ?? []).slice(-TAPE_ROWS).reverse().map((row, index) => {
-              const sideClass = row.side === "B"
-                ? " chart__tape__row--buy"
-                : row.side === "S"
-                  ? " chart__tape__row--sell"
-                  : "";
-              return (
-                <div
-                  key={`${row.t}:${index}`}
-                  className={`chart__tape__row${sideClass}`}
-                >
-                  <span className="chart__tape__time">{formatClock(row.t)}</span>
-                  <span className="chart__tape__price">{formatPrice(row.price)}</span>
-                  <span className="chart__tape__size">
-                    {row.size !== null && Number.isFinite(row.size)
-                      ? formatVolume(row.size)
-                      : ""}
-                  </span>
-                  <span className="chart__tape__side">
-                    {row.side === "B" ? "buy" : row.side === "S" ? "sell" : ""}
-                  </span>
-                </div>
-              );
-            })}
+      ) : null}
+      {(prints ?? []).slice(-TAPE_ROWS).reverse().map((row, index) => {
+        const sideClass = row.side === "B"
+          ? " chart__tape__row--buy"
+          : row.side === "S"
+            ? " chart__tape__row--sell"
+            : "";
+        return (
+          <div
+            key={`${row.t}:${index}`}
+            className={`chart__tape__row${sideClass}`}
+          >
+            <span className="chart__tape__time">{formatClock(row.t)}</span>
+            <span className="chart__tape__price">{formatPrice(row.price)}</span>
+            <span className="chart__tape__size">
+              {row.size !== null && Number.isFinite(row.size)
+                ? formatVolume(row.size)
+                : ""}
+            </span>
+            <span className="chart__tape__side">
+              {row.side === "B" ? "buy" : row.side === "S" ? "sell" : ""}
+            </span>
           </div>
-        ) : null}
-        <div className="chart__hint">hover to read, wheel or pinch to zoom, drag to pan</div>
-      </div>
+        );
+      })}
     </div>
   );
 }
