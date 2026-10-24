@@ -27,7 +27,7 @@ import {
   useState,
 } from "react";
 
-import type { Gap, Resolution } from "../api/types";
+import type { Gap, PrintEvent, PrintTotals, Resolution } from "../api/types";
 import { formatClock, formatDay, formatPrice, formatVolume } from "../chart/format";
 import {
   drawChart,
@@ -58,6 +58,7 @@ const MIN_HEIGHT = 220;
 const ZOOM_STEP = 0.18;
 const PAN_STEP = 0.18;
 const MAX_PANES = 8;
+const TAPE_ROWS = 9;
 
 export interface ChartCanvasProps {
   readonly series: ColumnSeries;
@@ -74,6 +75,14 @@ export interface ChartCanvasProps {
   readonly emptyNote: string;
   /** Configured indicators; unlimited overlays, up to eight panes. */
   readonly indicators: readonly IndicatorSpec[];
+  /** Order prints the tape carried, drawn as dots on their candles. */
+  readonly prints?: readonly PrintEvent[];
+  /** The venue's own session counters, for the on-chart orders badge. */
+  readonly printTotals?: PrintTotals | null;
+  /** The chart headline, TV-style: `PRL · 1h · PSX` watermark. */
+  readonly heading?: string;
+  /** True while a live stream is open; gates the countdown and its clock. */
+  readonly live?: boolean;
 }
 
 interface DragState {
@@ -106,7 +115,7 @@ interface IndicatorCache {
 export function ChartCanvas(props: ChartCanvasProps) {
   const {
     series, gaps, resolution, viewKey, version, volumeAvailable, theme,
-    sessionLabel, emptyNote, indicators,
+    sessionLabel, emptyNote, indicators, prints, printTotals, heading, live,
   } = props;
   const wrapper = useRef<HTMLDivElement | null>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
@@ -125,6 +134,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const frameRequest = useRef<number | null>(null);
   const lastViewKey = useRef(viewKey);
   const [size, setSize] = useState({ width: 800, height: 400 });
+  // The opening zoom is a candle width, not a bar count: about eight pixels
+  // per bar keeps every candle readable - wick, body, colour - at the
+  // density the plot actually has. A fixed 240-bar count made narrow
+  // windows open on a field of hairline slivers.
+  const openingBars = Math.max(48, Math.min(240, Math.floor((size.width - 90) / 8)));
+  const openingBarsRef = useRef(openingBars);
+  openingBarsRef.current = openingBars;
   const [hasBars, setHasBars] = useState(false);
 
   const specKey = useMemo(() => JSON.stringify(indicators), [indicators]);
@@ -190,6 +206,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     [indicators, specKey, version],
   );
 
+  // The legend renderer is declared below paint (it needs describeIndicators,
+  // which is itself declared below paint); paint reaches it through this ref
+  // so the dependency graph stays declaration-order honest.
+  const legendRef = useRef<(index: number | null) => void>(() => undefined);
+
   const paint = useCallback(() => {
     const surface = canvas.current;
     if (surface === null) {
@@ -207,7 +228,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       lastViewKey.current = viewKey;
       viewport.current = null;
       following.current = true;
-      visibleBars.current = DEFAULT_VISIBLE_BARS;
+      visibleBars.current = openingBarsRef.current;
       crosshair.current = null;
       foldCache.current = null;
       indicatorCache.current = null;
@@ -229,7 +250,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // draw nothing. Reset here, where the absence is visible.
       viewport.current = null;
       following.current = true;
-      visibleBars.current = DEFAULT_VISIBLE_BARS;
+      visibleBars.current = openingBarsRef.current;
       folded.current = null;
       indicatorCache.current = null;
       crosshair.current = null;
@@ -309,7 +330,16 @@ export function ChartCanvas(props: ChartCanvasProps) {
         volumeAvailable,
         overlays,
         panes,
+        prints: prints ?? [],
+        printTotals: printTotals ?? null,
+        heading: heading ?? "",
+        barEndsAtMs: live && bounds !== null
+          ? bounds.lastMs + bounds.stepMs
+          : null,
       });
+      // A stream that appends a bar is a new "newest" bar: the legend's
+      // resting row has to follow the series, not the last pointer visit.
+      legendRef.current(crosshair.current === null ? null : crosshair.current.index);
     }
     if (rangeReadout.current !== null && view !== null) {
       const shown = series.countInWindow(view.fromMs, view.toMs);
@@ -323,8 +353,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
         `${label} · ${barsInViewportLabel(shown, series.length)}` +
         (following.current ? " · following" : " · paused");
     }
-  }, [boundsNow, gaps, outputsForFrame, paneCount, resolution, series, size,
-      theme, version, viewKey, volumeAvailable]);
+  }, [boundsNow, gaps, heading, live, outputsForFrame, paneCount, prints,
+      printTotals, resolution, series, size, theme, version, viewKey,
+      volumeAvailable]);
 
   const schedulePaint = useCallback(() => {
     if (frameRequest.current !== null) {
@@ -340,6 +371,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
     setHasBars(series.length > 0);
     schedulePaint();
   }, [schedulePaint, version, series]);
+
+  // The countdown under the last price is a clock, not a state change: one
+  // repaint a second keeps it counting while the tape is live. A stored
+  // session's bar is never closing, so it never pays the tick.
+  useEffect(() => {
+    if (!live) {
+      return;
+    }
+    const timer = window.setInterval(schedulePaint, 1000);
+    return () => window.clearInterval(timer);
+  }, [live, schedulePaint]);
 
   useEffect(() => () => {
     if (frameRequest.current !== null) {
@@ -489,6 +531,67 @@ export function ChartCanvas(props: ChartCanvasProps) {
     [],
   );
 
+  /**
+   * The TradingView legend line: the crossed bar while the reader hovers,
+   * and otherwise the newest bar, always visible, always colored.
+   *
+   * The change is measured against the previous bar in the drawn series -
+   * the data this session actually holds - and it is honest about that:
+   * it never pretends a previous close it has not seen.
+   */
+  const showLegend = useCallback((index: number | null) => {
+    const drawn = folded.current;
+    const box = readout.current;
+    if (box === null) {
+      return;
+    }
+    if (drawn === null || drawn.length === 0) {
+      box.replaceChildren();
+      return;
+    }
+    const useIndex = index === null
+      ? drawn.length - 1
+      : Math.max(0, Math.min(drawn.length - 1, index));
+    const bar = drawn.at(useIndex);
+    if (bar === undefined) {
+      box.replaceChildren();
+      return;
+    }
+    const before = drawn.at(useIndex - 1);
+    const described = describeIndicators(useIndex);
+    const cell = (label: string, value: string, cls = "") => {
+      const span = document.createElement("span");
+      span.className = cls.length > 0 ? `legend__cell ${cls}` : "legend__cell";
+      const key = document.createElement("b");
+      key.textContent = label;
+      span.append(key, document.createTextNode(" " + value));
+      return span;
+    };
+    const cells: Node[] = [
+      cell("O", formatPrice(bar.o)),
+      cell("H", formatPrice(bar.h)),
+      cell("L", formatPrice(bar.l)),
+    ];
+    if (before !== undefined) {
+      const change = bar.c - before.c;
+      const cls = change < 0 ? "legend__down" : "legend__up";
+      const percent = before.c === 0 ? 0 : change / before.c * 100;
+      const span = document.createElement("span");
+      span.className = `legend__cell ${cls}`;
+      span.textContent =
+        `${change >= 0 ? "+" : ""}${change.toFixed(2)} (${percent.toFixed(2)}%)`;
+      cells.push(cell("C", formatPrice(bar.c), cls), span);
+    } else {
+      cells.push(cell("C", formatPrice(bar.c)));
+    }
+    cells.push(cell("V", formatVolume(bar.v)));
+    if (described.length > 0) {
+      cells.push(document.createTextNode("   " + described));
+    }
+    box.replaceChildren(...cells);
+  }, [describeIndicators]);
+  legendRef.current = showLegend;
+
   const onPointerDown = useCallback(
     (event: PointerEvent<HTMLCanvasElement>) => {
       if (viewport.current === null) {
@@ -554,21 +657,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
         return;
       }
       crosshair.current = found;
-      const bar = folded.current?.at(found.index);
-      if (readout.current !== null && bar !== undefined) {
-        const base =
-          `${formatClock(new Date(bar.timeMs).toISOString())}  ` +
-          `O ${formatPrice(bar.o)}  H ${formatPrice(bar.h)}  ` +
-          `L ${formatPrice(bar.l)}  C ${formatPrice(bar.c)}  ` +
-          `V ${formatVolume(bar.v)}`;
-        const extra = describeIndicators(found.index);
-        readout.current.textContent = extra.length > 0
-          ? `${base}   ${extra}`
-          : base;
-      }
+      showLegend(found.index);
       schedulePaint();
     },
-    [describeIndicators, frameNow, locate, panBy, schedulePaint, zoomBy],
+    [describeIndicators, frameNow, locate, panBy, schedulePaint, showLegend, zoomBy],
   );
 
   const endPointer = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
@@ -589,11 +681,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       return;
     }
     crosshair.current = null;
-    if (readout.current !== null) {
-      readout.current.textContent = "";
-    }
+    // The legend stays: it falls back to the newest bar rather than
+    // vanishing, because a readout that exists only while the pointer is
+    // down teaches the reader nothing between hovers.
+    showLegend(null);
     schedulePaint();
-  }, [schedulePaint]);
+  }, [schedulePaint, showLegend]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLCanvasElement>) => {
@@ -670,6 +763,65 @@ export function ChartCanvas(props: ChartCanvasProps) {
         </div>
         <span className="chart__range" ref={rangeReadout} aria-live="off" />
         <div className="chart__readout" ref={readout} aria-live="off" />
+        {prints !== undefined && prints.length > 0 ? (
+          <div className="chart__tape" aria-label="order tape, newest first">
+            <div className="chart__tape__head">order tape</div>
+            {printTotals != null ? (
+              <div className="chart__tape__totals">
+                {printTotals.buy_volume !== null
+                  && Number.isFinite(printTotals.buy_volume)
+                  && printTotals.buy_volume > 0 ? (
+                    <span className="chart__tape__buy">
+                      buy {formatVolume(printTotals.buy_volume)}
+                    </span>
+                  ) : null}
+                {printTotals.sell_volume !== null
+                  && Number.isFinite(printTotals.sell_volume)
+                  && printTotals.sell_volume > 0 ? (
+                    <span className="chart__tape__sell">
+                      sell {formatVolume(printTotals.sell_volume)}
+                    </span>
+                  ) : null}
+                {printTotals.volume !== null
+                  && Number.isFinite(printTotals.volume) ? (
+                    <span className="chart__tape__vol">
+                      vol {formatVolume(printTotals.volume)}
+                    </span>
+                  ) : null}
+                {printTotals.orders !== null
+                  && Number.isFinite(printTotals.orders) ? (
+                    <span className="chart__tape__orders">
+                      {formatVolume(printTotals.orders)} orders
+                    </span>
+                  ) : null}
+              </div>
+            ) : null}
+            {prints.slice(-TAPE_ROWS).reverse().map((row, index) => {
+              const sideClass = row.side === "B"
+                ? " chart__tape__row--buy"
+                : row.side === "S"
+                  ? " chart__tape__row--sell"
+                  : "";
+              return (
+                <div
+                  key={`${row.t}:${index}`}
+                  className={`chart__tape__row${sideClass}`}
+                >
+                  <span className="chart__tape__time">{formatClock(row.t)}</span>
+                  <span className="chart__tape__price">{formatPrice(row.price)}</span>
+                  <span className="chart__tape__size">
+                    {row.size !== null && Number.isFinite(row.size)
+                      ? formatVolume(row.size)
+                      : ""}
+                  </span>
+                  <span className="chart__tape__side">
+                    {row.side === "B" ? "buy" : row.side === "S" ? "sell" : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="chart__hint">hover to read, wheel or pinch to zoom, drag to pan</div>
       </div>
     </div>

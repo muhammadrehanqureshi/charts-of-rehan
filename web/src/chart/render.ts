@@ -7,13 +7,23 @@
  * outside the plot: that is what keeps a live chart at frame rate while bars
  * keep arriving.
  *
- * The two honesty features the server asked for are drawn literally:
- * measured gaps are shaded across the plot with their minute count, and an
- * empty window says "no bars for this symbol yet" on the canvas rather than
+ * The layout follows the convention every professional chart uses, and which
+ * a reader assumes without noticing they assume it: **bars are packed per
+ * session**. The hours between one session's close and the next open exist on
+ * the exchange, not on the chart, so a month of trading days is drawn edge to
+ * edge with a thin session break between them rather than hours of blank
+ * canvas every night. That is why this renderer plots by bar slot, not by
+ * wall-clock position: a clock axis would give the weekend the same width as
+ * a trading day.
+ *
+ * The honesty features are drawn literally: a measured intra-session gap is
+ * shaded with its minute count (a session break, by contrast, is expected
+ * missing time and is drawn as a line, not an accusation), and an empty
+ * window says "no bars for this symbol yet" on the canvas rather than
  * showing an empty price axis that could be mistaken for a flat market.
  */
 
-import type { Gap } from "../api/types";
+import { type Gap, type PrintEvent, type PrintTotals } from "../api/types";
 import type { IndicatorOutput } from "../indicators/types";
 import { formatClock, formatDay, formatPrice, formatVolume } from "./format";
 import { decimalsFor, linearScale, niceTicks } from "./scale";
@@ -31,38 +41,46 @@ export interface RendererTheme {
   readonly gapText: string;
   readonly crosshair: string;
   readonly lastLine: string;
+  readonly sessionLine: string;
   readonly muted: string;
+  /** The big muted symbol text behind the candles, the TV watermark. */
+  readonly watermark: string;
 }
 
+/** The TradingView-style dark chart: #131722 with the teal-and-red candles. */
 export const DARK_THEME: RendererTheme = {
-  background: "#0e1116",
-  grid: "#1c2330",
-  axisText: "#8b98ab",
-  up: "#2fbf71",
-  down: "#e05252",
-  volumeUp: "rgba(47, 191, 113, 0.35)",
-  volumeDown: "rgba(224, 82, 82, 0.35)",
-  gapFill: "rgba(139, 152, 171, 0.10)",
-  gapText: "rgba(139, 152, 171, 0.75)",
-  crosshair: "#5b6474",
-  lastLine: "#8b98ab",
-  muted: "#8b98ab",
+  background: "#131722",
+  grid: "#1e2530",
+  axisText: "#787b86",
+  up: "#089981",
+  down: "#f23645",
+  volumeUp: "rgba(8, 153, 129, 0.45)",
+  volumeDown: "rgba(242, 54, 69, 0.45)",
+  gapFill: "rgba(120, 123, 134, 0.14)",
+  gapText: "rgba(120, 123, 134, 0.85)",
+  crosshair: "#758696",
+  lastLine: "#758696",
+  sessionLine: "#2d3340",
+  muted: "#787b86",
+  watermark: "rgba(120, 123, 134, 0.18)",
 };
 
-/** The light theme. The same drawing code, read on a bright screen. */
+/** The light theme: the same drawing code, read on a bright screen. */
 export const LIGHT_THEME: RendererTheme = {
   background: "#ffffff",
-  grid: "#e6eaef",
-  axisText: "#5b6474",
-  up: "#14884f",
-  down: "#c02b2b",
-  volumeUp: "rgba(20, 136, 79, 0.28)",
-  volumeDown: "rgba(192, 43, 43, 0.28)",
-  gapFill: "rgba(91, 100, 116, 0.10)",
-  gapText: "rgba(91, 100, 116, 0.85)",
-  crosshair: "#8b98ab",
-  lastLine: "#5b6474",
-  muted: "#5b6474",
+  grid: "#e9edf2",
+  axisText: "#6a6d78",
+  up: "#089981",
+  down: "#f23645",
+  volumeUp: "rgba(8, 153, 129, 0.30)",
+  volumeDown: "rgba(242, 54, 69, 0.30)",
+  gapFill: "rgba(106, 109, 120, 0.10)",
+  gapText: "rgba(106, 109, 120, 0.85)",
+  crosshair: "#9598a1",
+  lastLine: "#758696",
+  sessionLine: "#d7dce3",
+  muted: "#6a6d78",
+  watermark: "rgba(106, 109, 120, 0.14)",
 };
 
 export function themeFor(mode: "dark" | "light"): RendererTheme {
@@ -93,6 +111,10 @@ export interface ChartGeometry {
 const clamp = (value: number, low: number, high: number): number =>
   Math.max(low, Math.min(high, value));
 
+/** The UTC calendar day of a bar timestamp, the identity of a session. */
+const dayOfMs = (ms: number): string =>
+  new Date(ms).toISOString().slice(0, 10);
+
 /**
  * The stack, laid out once: price, volume, indicator panes, time axis.
  *
@@ -106,14 +128,17 @@ export function geometryFor(
   height: number,
   paneCount = 0,
 ): ChartGeometry {
-  const priceAxisWidth = 62;
-  const timeAxisHeight = 20;
-  const padding = 6;
+  const priceAxisWidth = 68;
+  const timeAxisHeight = 22;
+  const padding = 4;
   const usable = Math.max(60, height - timeAxisHeight - padding * 2);
   const count = clamp(Math.floor(paneCount), 0, 8);
-  const volumeHeight = clamp(usable * 0.18, 24, 88);
+  // The price plot is the point of the whole screen, so it wins: volume is
+  // a thin strip and each oscillator pane is capped, and anything neither
+  // of them needs is left to the candles.
+  const volumeHeight = clamp(usable * 0.16, 26, 80);
   let paneTotal = count > 0
-    ? Math.min(usable * 0.42, count * 58)
+    ? Math.min(usable * 0.36, count * 64)
     : 0;
   let priceHeight = usable - volumeHeight - paneTotal;
   if (priceHeight < 80) {
@@ -173,6 +198,27 @@ export interface RenderInput {
    * and a chart must not turn one into the other.
    */
   readonly volumeAvailable?: boolean;
+  /**
+   * The order prints the tape carried, newest last.
+   *
+   * Each is a trade the venue itself reported, drawn as a dot on the
+   * candle whose slot holds it. A source without a ledger simply passes
+   * an empty list and nothing is drawn - absence stays absence.
+   */
+  readonly prints?: readonly PrintEvent[];
+  /** The session's venue counters, for the orders badge on the chart. */
+  readonly printTotals?: PrintTotals | null;
+  /**
+   * The headline the chart carries, TradingView-style: symbol, timeframe
+   * and venue (`PRL · 1h · PSX`), drawn large and muted behind the candles.
+   */
+  readonly heading?: string;
+  /**
+   * When the newest bar closes, in epoch ms, while a live stream is open.
+   * Drawn as the countdown on the price axis; a stored session passes null
+   * and no countdown is drawn.
+   */
+  readonly barEndsAtMs?: number | null;
 }
 
 export function drawChart(
@@ -197,18 +243,23 @@ export function drawChart(
   const { series } = input;
   const window = series.window(input.fromMs, input.toMs);
   const visible = window.to - window.from + 1;
-  const timeScale = linearScale([input.fromMs, input.toMs],
-    [frame.plotLeft, frame.plotRight]);
+  // The packed-session slot: every visible bar gets an equal share of the
+  // plot, whatever wall-clock time it carries, so a quiet stock and the
+  // overnight between sessions cost exactly one slot each instead of hours.
+  const slot = plotWidth / Math.max(1, visible);
+  const xOf = (index: number): number =>
+    frame.plotLeft + (index - window.from + 0.5) * slot;
 
-  drawGaps(context, input, frame, timeScale, theme);
+  drawSessionBreaks(context, input, frame, theme, window, slot);
+  drawGaps(context, input, frame, theme, window, slot);
 
   if (series.length === 0 || visible <= 0) {
     context.fillStyle = theme.muted;
-    context.font = "13px ui-sans-serif, system-ui, sans-serif";
+    context.font = "13px 'Segoe UI', system-ui, sans-serif";
     context.textAlign = "center";
     context.fillText("no bars for this symbol yet",
       frame.plotLeft + plotWidth / 2, frame.plotTop + (frame.plotBottom - frame.plotTop) / 2);
-    drawTimeAxis(context, input, frame, theme);
+    drawTimeAxis(context, input, frame, theme, window, xOf, slot);
     context.textAlign = "left";
     return;
   }
@@ -221,16 +272,18 @@ export function drawChart(
   const priceScale = linearScale([low - pad, high + pad],
     [frame.plotBottom, frame.plotTop]);
   const volumeMax = series.maxVolume(window.from, window.to);
-  const slot = plotWidth / Math.max(1, visible);
 
   drawPriceGrid(context, frame, priceScale, { min: low, max: high }, pad,
     theme);
-  drawTimeAxis(context, input, frame, theme);
-  drawVolumePane(context, input, frame, window, timeScale, volumeMax, theme);
-  drawCandles(context, input, frame, window, timeScale, priceScale, theme);
-  drawOverlays(context, input, frame, window, timeScale, priceScale,
+  drawWatermark(context, input, frame, theme);
+  drawTimeAxis(context, input, frame, theme, window, xOf, slot);
+  drawVolumePane(context, input, frame, window, slot, volumeMax, theme);
+  drawCandles(context, input, window, xOf, slot, priceScale, theme);
+  drawPrints(context, input, frame, window, xOf, priceScale, theme);
+  drawOverlays(context, input, frame, window, xOf, slot, priceScale,
     theme);
-  drawIndicatorPanes(context, input, frame, window, timeScale, slot, theme);
+  drawPrintsBadge(context, input, frame, theme);
+  drawIndicatorPanes(context, input, frame, window, xOf, slot, theme);
   drawLastPrice(context, input, frame, priceScale, window, theme);
 
   if (input.crosshair) {
@@ -238,7 +291,221 @@ export function drawChart(
   }
 }
 
+/**
+ * The symbol headline, drawn large and muted behind everything.
+ *
+ * The watermark is the signature a reader recognises before they read any
+ * number on the chart: symbol, timeframe and venue in big grey type. It
+ * paints before the candles, so it sits behind them and never competes
+ * with the price for attention.
+ */
+function drawWatermark(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  theme: RendererTheme,
+): void {
+  const heading = input.heading;
+  if (heading === undefined || heading.length === 0) {
+    return;
+  }
+  context.save();
+  context.font = "300 30px 'Segoe UI', system-ui, sans-serif";
+  context.fillStyle = theme.watermark;
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  const middle = (frame.plotTop + frame.volumeTop) / 2;
+  context.fillText(heading, frame.plotLeft + 16, middle);
+  context.restore();
+}
+
 // ------------------------------------------------------------------ pieces
+
+/**
+ * The order prints, drawn on the candles they belong to.
+ *
+ * One dot per print, at its own price, on the bar slot its time falls
+ * into. The mapping is honest by construction: prints are timed facts and
+ * the chart is a packed-slot series, so a print draws on the bar active
+ * when it printed, the same rule the drawn candle itself follows. A print
+ * at a price off this window's scale is skipped, not clamped - pulling a
+ * dot onto the canvas would misplace a real trade.
+ *
+ * The newest print wears a ring, so "an order just came" is visible at a
+ * glance without any animation the frame loop would have to sustain.
+ */
+function drawPrints(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  window: { from: number; to: number },
+  xOf: (index: number) => number,
+  priceScale: (value: number) => number,
+  theme: RendererTheme,
+): void {
+  const prints = input.prints;
+  if (prints === undefined || prints.length === 0) {
+    return;
+  }
+  context.save();
+  for (let i = 0; i < prints.length; i += 1) {
+    const event = prints[i];
+    if (event === undefined || !Number.isFinite(event.price) ||
+        !Number.isFinite(timeMs(event.t))) {
+      continue;
+    }
+    const index = input.series.indexAtOrBefore(timeMs(event.t));
+    if (index < Math.max(0, window.from) || index > window.to) {
+      continue;
+    }
+    const y = priceScale(event.price);
+    if (y < frame.plotTop - 2 || y > frame.volumeBottom + 2) {
+      continue;
+    }
+    const x = xOf(index);
+    const colour = event.change === "down" ? theme.down
+      : event.change === "up" ? theme.up : theme.muted;
+    const newest = i === prints.length - 1;
+    const radius = newest ? 4.5 : 3;
+    context.beginPath();
+    context.fillStyle = colour;
+    context.globalAlpha = 0.85;
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+    if (newest) {
+      context.globalAlpha = 1;
+      context.strokeStyle = colour;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.arc(x, y, radius + 3, 0, Math.PI * 2);
+      context.stroke();
+    }
+  }
+  context.restore();
+}
+
+/**
+ * The live-orders badge, top right of the plot.
+ *
+ * The venue's own counters, never a recompute: the orders number is the
+ * tape's cumulative order count and the volume its own share counter. When
+ * the source carries no counters the badge is simply not drawn - a missing
+ * measurement is not a zero (GOVERNANCE SO-3 in spirit, in the renderer).
+ */
+function drawPrintsBadge(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  theme: RendererTheme,
+): void {
+  const totals = input.printTotals;
+  if (totals === undefined || totals === null) {
+    return;
+  }
+  const segments: Array<{ text: string; colour: string | null }> = [];
+  if (totals.orders !== null && Number.isFinite(totals.orders)) {
+    segments.push({ text: `orders ${formatInt(totals.orders)}`, colour: null });
+  }
+  if (totals.buy_volume !== null && Number.isFinite(totals.buy_volume) && totals.buy_volume > 0) {
+    segments.push({ text: `buy ${formatVolume(totals.buy_volume)}`, colour: theme.up });
+  }
+  if (totals.sell_volume !== null && Number.isFinite(totals.sell_volume) && totals.sell_volume > 0) {
+    segments.push({ text: `sell ${formatVolume(totals.sell_volume)}`, colour: theme.down });
+  }
+  if (totals.volume !== null && Number.isFinite(totals.volume)) {
+    segments.push({ text: `vol ${formatVolume(totals.volume)}`, colour: null });
+  }
+  if (segments.length === 0) {
+    return;
+  }
+  context.font = "11px 'Segoe UI', system-ui, sans-serif";
+  let width = 14;
+  const widths: number[] = [];
+  for (const segment of segments) {
+    const w = context.measureText(segment.text).width;
+    widths.push(w);
+    width += w + 12;
+  }
+  const drawn: Array<{ text: string; colour: string | null; width: number }> =
+    segments.map((segment, i) => {
+      const w = widths[i] ?? 0;
+      return { text: segment.text, colour: segment.colour, width: w };
+    });
+  const left = frame.plotRight - width;
+  context.fillStyle = theme.background;
+  context.globalAlpha = 0.85;
+  context.fillRect(left, frame.plotTop + 2, width, 17);
+  context.globalAlpha = 1;
+  context.strokeStyle = theme.grid;
+  context.strokeRect(left + 0.5, frame.plotTop + 2.5, width - 1, 16);
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  let x = left + 7;
+  for (const segment of drawn) {
+    context.fillStyle = segment.colour === null ? theme.axisText : segment.colour;
+    context.fillText(segment.text, x, frame.plotTop + 11);
+    x += segment.width + 12;
+  }
+  context.textBaseline = "alphabetic";
+}
+
+/** Grouped thousands with commas, no locale surprises. */
+function formatInt(value: number): string {
+  return Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Inclusive index window of one visible stretch of bars. */
+interface SlotWindow {
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * The vertical line where one session ends and the next begins.
+ *
+ * Packed bars hide the passage of days, so the chart says it out loud: a
+ * quiet vertical line through every pane, and a date label on the axis. The
+ * first bar of the series is not a break (nothing ended to its left inside
+ * this window), and a break is drawn even while its slot is empty, because
+ * the boundary is between bars, not at one.
+ */
+function drawSessionBreaks(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  theme: RendererTheme,
+  window: SlotWindow,
+  slot: number,
+): void {
+  const { series } = input;
+  if (series.length === 0) {
+    return;
+  }
+  context.save();
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  for (let index = window.from + 1; index <= window.to; index += 1) {
+    const bar = series.at(index);
+    const before = series.at(index - 1);
+    if (bar === undefined || before === undefined) {
+      continue;
+    }
+    if (dayOfMs(bar.timeMs) === dayOfMs(before.timeMs)) {
+      continue;
+    }
+    const left = frame.plotLeft + (index - window.from) * slot;
+    if (left < frame.plotLeft - slot || left > frame.plotRight + slot) {
+      continue;
+    }
+    context.strokeStyle = theme.sessionLine;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(Math.round(left) + 0.5, frame.plotTop);
+    context.lineTo(Math.round(left) + 0.5, frame.timeAxisTop);
+    context.stroke();
+  }
+  context.restore();
+}
 
 function drawPriceGrid(
   context: CanvasRenderingContext2D,
@@ -250,7 +517,7 @@ function drawPriceGrid(
 ): void {
   const ticks = niceTicks(prices.min - pad, prices.max + pad, 6);
   const decimals = decimalsFor(ticks.step);
-  context.font = "11px ui-sans-serif, system-ui, sans-serif";
+  context.font = "11px 'Segoe UI', system-ui, sans-serif";
   context.textAlign = "left";
   context.textBaseline = "middle";
   for (const value of ticks.values) {
@@ -264,59 +531,138 @@ function drawPriceGrid(
     context.fillStyle = theme.axisText;
     context.fillText(formatPrice(value, decimals), frame.plotRight + 6, y);
   }
+  // The separator between plot and price axis, the line every terminal has.
+  context.strokeStyle = theme.grid;
+  context.beginPath();
+  context.moveTo(Math.round(frame.plotRight) + 0.5, frame.plotTop);
+  context.lineTo(Math.round(frame.plotRight) + 0.5, frame.timeAxisTop);
+  context.stroke();
 }
 
+/**
+ * The time axis, labelled along the packed bars.
+ *
+ * Labels sit on bars at a fixed pixel stride, so they move with the candles
+ * when the reader pans and never drift into empty clock time that holds no
+ * bar. The label position is anchored to the series (index mod stride), so
+ * the same bar stays under the same time while the window slides.
+ */
 function drawTimeAxis(
   context: CanvasRenderingContext2D,
   input: RenderInput,
   frame: ChartGeometry,
   theme: RendererTheme,
+  window: SlotWindow,
+  xOf: (index: number) => number,
+  slot: number,
 ): void {
-  const labels = 6;
-  const spanMs = input.toMs - input.fromMs;
-  const crossesDay = formatDay(new Date(input.fromMs).toISOString()) !==
-    formatDay(new Date(input.toMs).toISOString());
-  const wide = spanMs > 36 * 3_600_000;
-  context.font = "11px ui-sans-serif, system-ui, sans-serif";
-  context.fillStyle = theme.axisText;
-  context.textAlign = "center";
-  context.textBaseline = "top";
-  for (let step = 0; step <= labels; step += 1) {
-    const moment = input.fromMs + (spanMs * step) / labels;
-    const x = frame.plotLeft + ((frame.plotRight - frame.plotLeft) * step) / labels;
-    const iso = new Date(moment).toISOString();
-    const text = wide
-      ? formatDay(iso)
-      : crossesDay && step === 0
-        ? `${formatDay(iso)} ${formatClock(iso)}`
-        : formatClock(iso);
+  const { series } = input;
+  const visible = window.to - window.from + 1;
+  // Every fillText is wrapped: axis text lives at the very bottom of the
+  // canvas, and one leaked fill style from an earlier drawing piece would
+  // silently paint it invisible.
+  const label = (text: string, x: number, y: number, size = 11): void => {
+    context.save();
+    context.font = `${size}px 'Segoe UI', system-ui, sans-serif`;
+    context.fillStyle = theme.axisText;
+    context.textAlign = "center";
+    context.textBaseline = "bottom";
     const width = context.measureText(text).width;
-    const clamped = Math.min(
-      frame.plotRight - width / 2,
-      Math.max(frame.plotLeft + width / 2, x),
-    );
-    context.fillText(text, clamped, frame.timeAxisTop + 2);
+    const clamped = Math.min(frame.plotRight - width / 2,
+                             Math.max(frame.plotLeft + width / 2, x));
+    context.fillText(text, clamped, y);
+    context.restore();
+  };
+  if (series.length === 0 || visible <= 0) {
+    // No bars: keep the classic even clock labels along the window, so an
+    // empty frame still shows which stretch of time was asked for.
+    const labels = 6;
+    const spanMs = input.toMs - input.fromMs;
+    for (let step = 0; step <= labels; step += 1) {
+      const moment = input.fromMs + (spanMs * step) / labels;
+      const x = frame.plotLeft + ((frame.plotRight - frame.plotLeft) * step) / labels;
+      const iso = new Date(moment).toISOString();
+      const text = spanMs > 36 * 3_600_000 ? formatDay(iso) : formatClock(iso);
+      label(text, x, frame.timeAxisTop);
+    }
+  } else {
+    // Where one packed session ends and the next begins, the axis says the
+    // date like every professional terminal does: dates on the joins, clock
+    // times elsewhere, never one crowding the other.
+    const dayStarts = new Map<number, string>();
+    for (let index = Math.max(1, window.from); index <= window.to; index += 1) {
+      const bar = series.at(index);
+      const before = series.at(index - 1);
+      if (bar === undefined || before === undefined) {
+        continue;
+      }
+      if (dayOfMs(bar.timeMs) !== dayOfMs(before.timeMs)) {
+        dayStarts.set(index, formatDay(new Date(bar.timeMs).toISOString()));
+      }
+    }
+    const clockLabelBlocked = (x: number): boolean => {
+      for (const startIndex of dayStarts.keys()) {
+        if (Math.abs(x - xOf(startIndex)) < 36) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const maxLabels = Math.max(2, Math.floor((frame.plotRight - frame.plotLeft) / 84));
+    const stride = Math.max(1, Math.ceil(visible / maxLabels));
+    // Anchor on the series, not on the window's left edge, so labels do not
+    // slide under the candles while panning.
+    const start = window.from + (stride - (window.from % stride)) % stride;
+    for (let index = start; index <= window.to; index += stride) {
+      const bar = series.at(index);
+      if (bar === undefined || dayStarts.has(index) ||
+          clockLabelBlocked(xOf(index))) {
+        continue;
+      }
+      label(formatClock(new Date(bar.timeMs).toISOString()), xOf(index),
+        frame.timeAxisTop - 2);
+    }
+    for (const [startIndex, text] of dayStarts) {
+      label(text, xOf(startIndex), frame.timeAxisTop - 2, 10.5);
+    }
   }
-  context.textAlign = "left";
-  context.textBaseline = "alphabetic";
+  void slot;
 }
 
+/**
+ * A measured missing stretch, shaded and labelled.
+ *
+ * On a packed chart a hole in a session occupies exactly one empty slot (the
+ * hours it names exist between its neighbouring bars, and the axes say how
+ * long they were), so the shade is one slot wide and the label carries the *
+ * measured minutes-of-absence the server computed.
+ */
 function drawGaps(
   context: CanvasRenderingContext2D,
   input: RenderInput,
   frame: ChartGeometry,
-  timeScale: (value: number) => number,
   theme: RendererTheme,
+  window: SlotWindow,
+  slot: number,
 ): void {
   const gaps = gapsInWindow(input.gaps, input.fromMs, input.toMs);
   if (gaps.length === 0) {
     return;
   }
-  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.font = "10px 'Segoe UI', system-ui, sans-serif";
+  const slotLeft = (index: number): number =>
+    frame.plotLeft + (index - window.from) * slot;
   for (const gap of gaps) {
-    const left = timeScale(timeMs(gap.start));
-    const right = timeScale(timeMs(gap.end) + 60_000);
-    const width = Math.max(2, right - left);
+    // The bars around the gap bound the empty slot in the packed chart. The
+    // first bar at or after the gap's end is the slot the shade may reach;
+    // before it, the gap is outside this window.
+    const firstAfter = input.series.indexAtOrBefore(
+      new Date(gap.end).getTime()) + 1;
+    if (firstAfter <= 0 || firstAfter > window.to) {
+      continue;
+    }
+    const left = slotLeft(firstAfter);
+    const width = Math.max(2, slot);
     const height = frame.volumeBottom - frame.plotTop;
     context.fillStyle = theme.gapFill;
     context.fillRect(left, frame.plotTop, width, height);
@@ -356,7 +702,7 @@ function drawLineSeries(
   series: ColumnSeries,
   values: Float64Array,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  xOf: (index: number) => number,
   yScale: (value: number) => number,
   color: string,
   width = 1.5,
@@ -378,10 +724,7 @@ function drawLineSeries(
     if (bar === undefined) {
       continue;
     }
-    // Anchor every series at its timestamp. Adding half a slot here was
-    // harmless on a dense chart but pushed a single bar off the right edge:
-    // the slot can be the whole plot when only one bar is in view.
-    const x = timeScale(bar.timeMs);
+    const x = xOf(index);
     const y = yScale(value);
     if (drawing) {
       context.lineTo(x, y);
@@ -399,13 +742,14 @@ function drawOverlays(
   input: RenderInput,
   frame: ChartGeometry,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  xOf: (index: number) => number,
+  slot: number,
   priceScale: (value: number) => number,
   theme: RendererTheme,
 ): void {
   for (const output of input.overlays ?? []) {
     for (const line of output.lines) {
-      drawLineSeries(context, input.series, line.values, window, timeScale,
+      drawLineSeries(context, input.series, line.values, window, xOf,
         priceScale, line.color, 1.4);
     }
   }
@@ -415,7 +759,7 @@ function drawOverlays(
     return;
   }
   context.save();
-  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.font = "10px 'Segoe UI', system-ui, sans-serif";
   context.textAlign = "left";
   context.textBaseline = "top";
   let x = frame.plotLeft + 4;
@@ -438,6 +782,7 @@ function drawOverlays(
     x += width + 22;
   }
   context.restore();
+  void slot;
 }
 
 function drawIndicatorPanes(
@@ -445,7 +790,7 @@ function drawIndicatorPanes(
   input: RenderInput,
   frame: ChartGeometry,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  xOf: (index: number) => number,
   slot: number,
   theme: RendererTheme,
 ): void {
@@ -458,7 +803,7 @@ function drawIndicatorPanes(
       continue;
     }
     drawIndicatorPane(context, input, frame, pane, output, window,
-      timeScale, slot, theme);
+      xOf, slot, theme);
   }
 }
 
@@ -510,7 +855,7 @@ function drawIndicatorPane(
   pane: PaneFrame,
   output: IndicatorOutput,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  xOf: (index: number) => number,
   slot: number,
   theme: RendererTheme,
 ): void {
@@ -533,7 +878,7 @@ function drawIndicatorPane(
   const yScale = linearScale([low, high], [pane.bottom - 3, pane.top + 14]);
   const zeroY = yScale(0);
 
-  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.font = "10px 'Segoe UI', system-ui, sans-serif";
   context.textAlign = "left";
   context.textBaseline = "top";
   context.fillStyle = theme.muted;
@@ -581,19 +926,18 @@ function drawIndicatorPane(
     for (let index = Math.max(0, window.from);
          index <= window.to && index < input.series.length; index += 1) {
       const value = histogram.values[index] ?? Number.NaN;
-      const bar = input.series.at(index);
-      if (!Number.isFinite(value) || bar === undefined) {
+      if (!Number.isFinite(value)) {
         continue;
       }
       const y = yScale(value);
       context.fillStyle = value >= 0 ? histogram.positive : histogram.negative;
-      context.fillRect(timeScale(bar.timeMs) - bodyWidth / 2,
+      context.fillRect(xOf(index) - bodyWidth / 2,
         Math.min(y, base), bodyWidth, Math.max(1, Math.abs(base - y)));
     }
   }
 
   for (const line of output.lines) {
-    drawLineSeries(context, input.series, line.values, window, timeScale,
+    drawLineSeries(context, input.series, line.values, window, xOf,
       yScale, line.color, 1.3);
   }
   context.restore();
@@ -613,16 +957,17 @@ function drawIndicatorPane(
 function drawCandles(
   context: CanvasRenderingContext2D,
   input: RenderInput,
-  frame: ChartGeometry,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  xOf: (index: number) => number,
+  slot: number,
   priceScale: (value: number) => number,
   theme: RendererTheme,
 ): void {
-  const visible = window.to - window.from + 1;
-  const slot = (frame.plotRight - frame.plotLeft) / Math.max(1, visible);
-  const bodyWidth = Math.max(1, Math.min(14, slot * 0.7));
-  const half = bodyWidth / 2;
+  // TradingView's candle proportion: the body takes most of the slot with
+  // a thin air gap between neighbours, so a dense chart reads as candles
+  // rather than a row of touch hairlines. Two pixels is still a body, not
+  // a dot: under that the drawn shape is the wick alone.
+  const bodyWidth = Math.max(2, Math.min(22, Math.round(slot * 0.85)));
   for (let index = window.from; index <= window.to; index += 1) {
     const bar = input.series.at(index);
     if (bar === undefined) {
@@ -630,18 +975,27 @@ function drawCandles(
     }
     const rising = bar.c >= bar.o;
     const colour = rising ? theme.up : theme.down;
-    const x = timeScale(bar.timeMs);
+    const x = Math.round(xOf(index));
     context.strokeStyle = colour;
     context.fillStyle = colour;
     context.lineWidth = 1;
+    // The wick first, the full high-low span, pixel centred. The body
+    // paints over its middle afterwards, exactly like the references
+    // a reader knows.
     context.beginPath();
-    context.moveTo(Math.round(x) + 0.5, priceScale(bar.h));
-    context.lineTo(Math.round(x) + 0.5, priceScale(bar.l));
+    context.moveTo(x + 0.5, Math.round(priceScale(bar.h)));
+    context.lineTo(x + 0.5, Math.round(priceScale(bar.l)));
     context.stroke();
-    const top = priceScale(Math.max(bar.o, bar.c));
-    const bottom = priceScale(Math.min(bar.o, bar.c));
+    if (bodyWidth < 2) {
+      // Smaller than two pixels a body adds nothing a coloured tick has
+      // not already said; the wick alone keeps the shape readable.
+      continue;
+    }
+    const top = Math.round(priceScale(Math.max(bar.o, bar.c)));
+    const bottom = Math.round(priceScale(Math.min(bar.o, bar.c)));
     const height = Math.max(1, bottom - top);
-    context.fillRect(x - half, top, bodyWidth, height);
+    context.fillRect(x - Math.floor((bodyWidth - 1) / 2), top, bodyWidth,
+      height);
   }
 }
 
@@ -657,7 +1011,7 @@ function drawVolumePane(
   input: RenderInput,
   frame: ChartGeometry,
   window: { from: number; to: number },
-  timeScale: (value: number) => number,
+  slot: number,
   volumeMax: number,
   theme: RendererTheme,
 ): void {
@@ -670,7 +1024,7 @@ function drawVolumePane(
   context.stroke();
   context.restore();
 
-  context.font = "10px ui-sans-serif, system-ui, sans-serif";
+  context.font = "10px 'Segoe UI', system-ui, sans-serif";
   context.fillStyle = theme.axisText;
   context.textAlign = "left";
   context.textBaseline = "top";
@@ -683,9 +1037,7 @@ function drawVolumePane(
     return;
   }
 
-  const visible = window.to - window.from + 1;
-  const slot = (frame.plotRight - frame.plotLeft) / Math.max(1, visible);
-  const bodyWidth = Math.max(1, Math.min(14, slot * 0.7));
+  const bodyWidth = Math.max(1, Math.min(16, slot * 0.75));
   // The label sits in the top of the pane, so the columns start below it.
   const top = frame.volumeTop + 14;
   const height = Math.max(4, frame.volumeBottom - top);
@@ -695,7 +1047,7 @@ function drawVolumePane(
       continue;
     }
     const barHeight = Math.max(0.5, height * (bar.v / volumeMax));
-    const x = timeScale(bar.timeMs);
+    const x = frame.plotLeft + (index - window.from + 0.5) * slot;
     context.fillStyle = bar.c >= bar.o ? theme.volumeUp : theme.volumeDown;
     context.fillRect(x - bodyWidth / 2, frame.volumeBottom - barHeight,
       bodyWidth, barHeight);
@@ -725,7 +1077,7 @@ function drawLastPrice(
   context.restore();
 
   const label = formatPrice(last.c, 2);
-  context.font = "11px ui-sans-serif, system-ui, sans-serif";
+  context.font = "11px 'Segoe UI', system-ui, sans-serif";
   const width = context.measureText(label).width + 10;
   context.fillStyle = last.c >= last.o ? theme.up : theme.down;
   context.fillRect(frame.plotRight + 2, y - 8, width, 16);
@@ -733,6 +1085,50 @@ function drawLastPrice(
   context.textAlign = "left";
   context.textBaseline = "middle";
   context.fillText(label, frame.plotRight + 7, y);
+  context.textBaseline = "alphabetic";
+  drawCountdown(context, input, frame, y, width, theme);
+}
+
+/**
+ * The bar-close countdown, under the last price on the axis.
+ *
+ * The TradingView detail a live reader homes in on: how long the newest
+ * candle still has to form. Only drawn while a live stream says the bar
+ * is closing; a stored session has no living bar and stays silent.
+ */
+function drawCountdown(
+  context: CanvasRenderingContext2D,
+  input: RenderInput,
+  frame: ChartGeometry,
+  lastY: number,
+  priceLabelWidth: number,
+  theme: RendererTheme,
+): void {
+  const ends = input.barEndsAtMs;
+  if (ends === undefined || ends === null || !Number.isFinite(ends)) {
+    return;
+  }
+  const remain = Math.round((ends - Date.now()) / 1000);
+  if (remain < 0) {
+    return;
+  }
+  const hours = Math.floor(remain / 3600);
+  const minutes = Math.floor((remain % 3600) / 60);
+  const seconds = remain % 60;
+  const label = hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+  const width = Math.max(priceLabelWidth, context.measureText(label).width + 12);
+  const top = lastY + 8;
+  context.fillStyle = theme.background;
+  context.fillRect(frame.plotRight + 2, top, width, 15);
+  context.strokeStyle = theme.crosshair;
+  context.strokeRect(frame.plotRight + 2.5, top + 0.5, width, 14);
+  context.fillStyle = theme.axisText;
+  context.font = "10.5px 'Segoe UI', system-ui, sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillText(label, frame.plotRight + 7, top + 8);
   context.textBaseline = "alphabetic";
 }
 
@@ -761,10 +1157,11 @@ function drawCrosshair(
   context.restore();
 
   const readout =
+    `${formatDay(new Date(bar.timeMs).toISOString())} ` +
     `${formatClock(new Date(bar.timeMs).toISOString())}  ` +
     `O ${formatPrice(bar.o)}  H ${formatPrice(bar.h)}  ` +
     `L ${formatPrice(bar.l)}  C ${formatPrice(bar.c)}  V ${formatVolume(bar.v)}`;
-  context.font = "11px ui-sans-serif, system-ui, sans-serif";
+  context.font = "11px 'Segoe UI', system-ui, sans-serif";
   const width = context.measureText(readout).width + 12;
   context.fillStyle = theme.background;
   context.globalAlpha = 0.92;
@@ -782,7 +1179,7 @@ function drawCrosshair(
     context.fillStyle = theme.crosshair;
     context.fillRect(frame.plotRight + 2, crosshair.y - 8,
       frame.priceAxisWidth - 2, 16);
-    context.fillStyle = "#0e1116";
+    context.fillStyle = theme.background;
     context.fillText(formatPrice(pointerPrice, 2), frame.plotRight + 6,
       crosshair.y);
   }
