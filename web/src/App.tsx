@@ -1,39 +1,77 @@
 /**
- * The application shell: a charting terminal, not a dashboard.
+ * The application shell, in TradingView's shape for the PSX tape.
  *
- * The layout is deliberately the one a person who reads charts all day
- * expects: a thin toolbar, a watchlist on the left, the chart taking every
- * remaining pixel, a status bar under it, and one collapsible panel for the
- * detail (notes, measured gaps, ingestion health) that is available rather
- * than in the way.
+ * A thin rail on the left for the working toggles, the chart taking every
+ * pixel between it and the watchlist, and the watchlist pane on the right
+ * holding exactly the symbols the reader put on it. The heavy status text
+ * lives behind a single "data detail" fold, and the chart's own state bar
+ * stays where a reader reads it: under the candles.
  *
  * What lives here is only what a human chooses (symbol, resolution, session,
- * theme) and what the service says about itself (catalogue, sessions,
- * resolutions). The series belongs to the feed hook and the pixels belong to
- * the canvas.
- *
- * The session is the owner's own requirement: the chart has to work when the
- * exchange does not, so the day selector is built from the service's own
- * answer and offers the live session plus every stored one.
+ * theme, watchlist) and what the service says about itself. The series
+ * belongs to the feed hook and the pixels belong to the canvas.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiError, ChartClient } from "./api/client";
-import { type Resolution, type SessionRow, type SymbolRow, parseHealth } from "./api/types";
+import {
+  type PrintEvent,
+  type Resolution,
+  type SessionRow,
+  type SymbolRow,
+  parseHealth,
+} from "./api/types";
 import { ChartCanvas } from "./components/ChartCanvas";
 import { IndicatorsPanel } from "./components/IndicatorsPanel";
 import { NotesPanel } from "./components/NotesPanel";
 import { StatusBar } from "./components/StatusBar";
+import { SymbolSearch } from "./components/SymbolSearch";
 import { Toolbar } from "./components/Toolbar";
 import { Watchlist } from "./components/Watchlist";
 import { useChartFeed } from "./hooks/useChartFeed";
 import { useIndicators } from "./hooks/useIndicators";
+import { usePrints } from "./hooks/usePrints";
+import { timeframeShort } from "./chart/timeframes";
 
 const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
 
 /** A session in play for longer than this gets a visible warning (minutes). */
 const STALE_AFTER_MINUTES = 12;
+
+/**
+ * Recently how many sessions the default chart spans.
+ *
+ * The empty session choice is the merged one: an intraday chart that shows
+ * the previous sessions beside this one is what a reader expects to see, and
+ * a specific day on the selector asks for that one session as a snapshot.
+ * Five is roughly a trading week; the service imposes the wider limit.
+ */
+const SPAN_SESSIONS = 5;
+
+const WATCHLIST_KEY = "charts-watchlist";
+
+/** One shared empty list, so a poll without a ledger never re-renders. */
+const EMPTY_PRINTS: readonly PrintEvent[] = [];
+
+/** The list a reader starts with: the two breadth indexes the tape computes. */
+const DEFAULT_WATCHLIST: readonly string[] = ["KSE100", "KMIALLSHR"];
+
+function readWatchlist(): string[] {
+  try {
+    const raw = window.localStorage.getItem(WATCHLIST_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string =>
+          typeof item === "string" && item.length > 0).slice(0, 64);
+      }
+    }
+  } catch {
+    // A corrupt note is still a note, not a crash: the default returns.
+  }
+  return [...DEFAULT_WATCHLIST];
+}
 
 function hash(): { symbol: string; day: string } {
   const raw = window.location.hash.replace(/^#/, "");
@@ -63,15 +101,19 @@ export function App() {
     useState<readonly Resolution[]>(FALLBACK_RESOLUTIONS);
   const [rows, setRows] = useState<readonly SymbolRow[]>([]);
   const [sessions, setSessions] = useState<readonly SessionRow[]>([]);
-  const [today, setToday] = useState("");
-  const [catalogue, setCatalogue] = useState<readonly string[]>([]);
   const [bootError, setBootError] = useState<string | null>(null);
   const [catalogueLoading, setCatalogueLoading] = useState(true);
   const [watchlistOpen, setWatchlistOpen] = useState(true);
   const [indicatorsOpen, setIndicatorsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [theme, setTheme] = useTheme();
+  const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
+
+  useEffect(() => {
+    window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watch));
+  }, [watch]);
 
   // The service's own facts, read once per mount and again after a refresh.
   useEffect(() => {
@@ -110,18 +152,6 @@ export function App() {
       .then((report) => {
         if (!cancelled) {
           setSessions(report.sessions);
-          setToday(report.today);
-        }
-      })
-      .catch(() => undefined);
-    client
-      .symbols()
-      .then((items) => {
-        if (!cancelled) {
-          // The picker's own list. Choosing the starting symbol is the
-          // watchlist's job, because only that answer says which symbols the
-          // session actually printed.
-          setCatalogue(items);
         }
       })
       .catch(() => undefined);
@@ -140,9 +170,9 @@ export function App() {
         if (!cancelled) {
           setRows(items);
           setCatalogueLoading(false);
-          // The service orders traded symbols first, so opening on the first
-          // row opens on a symbol the session actually printed: a chart that
-          // starts on an empty symbol looks broken when it is only empty.
+          // Opening on a chart the reader put in the list is the point of a
+          // watchlist; only when there is none does the session's own most
+          // traded symbol answer.
           const first = items.find((row) => (row.bars ?? 0) > 0) ?? items[0];
           setSymbol((current) =>
             current.length > 0 ? current : (first?.symbol ?? ""));
@@ -159,10 +189,20 @@ export function App() {
     };
   }, [client, day]);
 
-  const feed = useChartFeed(client, symbol, resolution, { day });
+  const feed = useChartFeed(client, symbol, resolution, {
+    day,
+    days: day.length === 0 ? SPAN_SESSIONS : undefined,
+  });
+
+  // The order ledger, polled on the tape's own minute grain. It follows the
+  // day the reader is on: the live tape while the selector says “recent,"
+  // that day's stored capture when a specific session is chosen.
+  const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
+    symbol.length > 0);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
+    setSearchOpen(false);
     window.location.hash = day.length > 0 ? `${next}/${day}` : next;
   }, [day]);
 
@@ -194,20 +234,24 @@ export function App() {
     ? "No session reported."
     : `${session.day}${session.archived ? ", stored session" : ""}.`;
 
+  const watchComplete = useMemo(() => {
+    const shown = new Set(watch);
+    return symbol.length > 0 && !shown.has(symbol)
+      ? [...watch, symbol]
+      : watch;
+  }, [watch, symbol]);
+
   return (
     <div className={["app", watchlistOpen ? "app--with-watchlist" : "",
       indicatorsOpen ? "app--with-indicators" : ""].filter(Boolean).join(" ")}>
       <Toolbar
         symbol={symbol}
-        onSymbol={chooseSymbol}
-        catalogue={catalogue}
         resolution={resolution}
         onResolution={setResolution}
         resolutions={resolutions}
         day={day}
         onDay={chooseDay}
         sessions={sessions}
-        today={today}
         theme={theme}
         onTheme={setTheme}
         onRefresh={feed.refresh}
@@ -216,18 +260,43 @@ export function App() {
         onToggleWatchlist={() => setWatchlistOpen((open) => !open)}
         indicatorsOpen={indicatorsOpen}
         onToggleIndicators={() => setIndicatorsOpen((open) => !open)}
+        onSearch={() => setSearchOpen(true)}
       />
 
       <div className="app__body">
-        {watchlistOpen ? (
-          <Watchlist
-            rows={rows}
-            symbol={symbol}
-            day={day}
-            loading={catalogueLoading}
-            onSymbol={chooseSymbol}
-          />
-        ) : null}
+        <nav className="rail" aria-label="view controls">
+          <button
+            type="button"
+            className={indicatorsOpen ? "rail__button rail__button--on"
+              : "rail__button"}
+            aria-pressed={indicatorsOpen}
+            aria-label={indicatorsOpen ? "hide indicators" : "show indicators"}
+            title="Indicators"
+            onClick={() => setIndicatorsOpen((open) => !open)}
+          >
+            ƒ
+          </button>
+          <div className="rail__sep" aria-hidden="true" />
+          <button
+            type="button"
+            className="rail__button"
+            aria-label="reload the chart from the service"
+            title={feed.status === "loading" ? "loading…" : "Reload"}
+            disabled={feed.status === "loading"}
+            onClick={feed.refresh}
+          >
+            ↻
+          </button>
+          <button
+            type="button"
+            className="rail__button"
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            aria-label={`switch to the ${theme === "dark" ? "light" : "dark"} theme`}
+            title="Light or dark"
+          >
+            {theme === "dark" ? "☾" : "☀"}
+          </button>
+        </nav>
 
         <main className="app__main">
           <ChartCanvas
@@ -241,6 +310,12 @@ export function App() {
             sessionLabel={sessionLabel}
             emptyNote={emptyNote}
             indicators={indicators.specs}
+            prints={prints.report?.events ?? EMPTY_PRINTS}
+            printTotals={prints.report?.totals ?? null}
+            heading={symbol.length > 0
+              ? `${symbol} · ${timeframeShort(resolution)} · PSX`
+              : ""}
+            live={feed.status === "live"}
           />
           <StatusBar
             status={feed.status}
@@ -261,6 +336,7 @@ export function App() {
             asOf={feed.meta.payload?.as_of ?? ""}
             volumeAvailable={session?.volume_available ?? false}
             staleAfterMinutes={STALE_AFTER_MINUTES}
+            ordersTotal={prints.report?.totals?.orders ?? null}
             error={feed.error ?? (bootError === null ? null
               : { category: "INTERNAL", detail: bootError })}
           />
@@ -276,6 +352,30 @@ export function App() {
         </main>
 
         {indicatorsOpen ? <IndicatorsPanel controller={indicators} /> : null}
+
+        {watchlistOpen ? (
+          <Watchlist
+            rows={rows}
+            watch={watchComplete}
+            symbol={symbol}
+            day={day}
+            loading={catalogueLoading}
+            onSymbol={chooseSymbol}
+            onWatchChange={setWatch}
+            searchOpen={searchOpen}
+            onSearchOpen={() => setSearchOpen(true)}
+            onSearchClose={() => setSearchOpen(false)}
+          />
+        ) : (
+          <SymbolSearch
+            open={searchOpen}
+            rows={rows}
+            loading={catalogueLoading}
+            action="add"
+            onPick={chooseSymbol}
+            onClose={() => setSearchOpen(false)}
+          />
+        )}
       </div>
     </div>
   );
