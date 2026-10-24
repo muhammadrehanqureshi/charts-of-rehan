@@ -42,6 +42,8 @@ export interface StatusBarProps {
   readonly asOf: string;
   readonly volumeAvailable: boolean;
   readonly staleAfterMinutes: number;
+  /** The venue's own cumulative order counter for this session, when it has one. */
+  readonly ordersTotal: number | null;
   readonly error: { category: string; detail: string } | null;
 }
 
@@ -58,14 +60,16 @@ export function StatusBar(props: StatusBarProps) {
   const {
     status, resolution, market, symbol, day, sessionNote, archived,
     captureName, sha256, bars, gaps, missingMinutes, sourceLabel,
-    delaySeconds, lastBarAt, asOf, volumeAvailable, staleAfterMinutes, error,
+    delaySeconds, lastBarAt, asOf, volumeAvailable, staleAfterMinutes,
+    ordersTotal, error,
   } = props;
 
   // A local tick so "2 min ago" keeps counting while a quiet session sits on
-  // screen. It re-renders once every ten seconds and nothing else.
+  // screen. It re-renders once a second, which is also what the bar's own
+  // clock wants: the reading of now is the service's frame, not faith.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 10_000);
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -114,6 +118,11 @@ export function StatusBar(props: StatusBarProps) {
         <span className="status__item">
           <span className="status__key">bars</span> {bars}
         </span>
+        {ordersTotal !== null ? (
+          <span className="status__item" title="the venue's own cumulative order counter for this session">
+            <span className="status__key">orders</span> {ordersTotal.toLocaleString("en-GB")}
+          </span>
+        ) : null}
         <span className="status__item">
           <span className="status__key">gaps</span> {gaps}
           {missingMinutes > 0 ? ` (${formatMinutes(missingMinutes)} missing)` : ""}
@@ -134,6 +143,9 @@ export function StatusBar(props: StatusBarProps) {
           {ageMinutes !== null
             ? ` · ${formatMinutes(Math.max(0, Math.round(ageMinutes)))} ago`
             : ""}
+        </span>
+        <span className="status__item status__item--clock">
+          {clockState(now)}{" "}UTC+5
         </span>
       </div>
 
@@ -183,4 +195,12 @@ function ageInMinutes(stamp: string, now: number): number | null {
     return null;
   }
   return (now - then) / 60_000;
+}
+
+/** The reader's clock, on Karachi time, as a chart terminal shows it. */
+function clockState(now: number): string {
+  return new Date(now).toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Karachi",
+    hour12: false,
+  });
 }
