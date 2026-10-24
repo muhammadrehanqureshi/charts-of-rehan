@@ -353,7 +353,20 @@ describe("named sessions and the catalogue facts", () => {
       return Promise.resolve(jsonResponse(200, payloadBody()));
     });
     await client.bars("OGDC", "1m", { day: "2026-10-14", limit: 500 });
-    expect(seen[0]).toBe("/api/bars?symbol=OGDC&resolution=1m&limit=500&day=2026-10-14");
+    expect(seen[0]).toContain("day=2026-10-14");
+  });
+
+  it("asks for a merged span with the day count in the query", async () => {
+    const seen: string[] = [];
+    const { client } = clientWith((input) => {
+      seen.push(String(input));
+      return Promise.resolve(jsonResponse(200, payloadBody()));
+    });
+    await client.bars("OGDC", "1m", { days: 5, limit: 500 });
+    expect(seen[0]).toContain("days=5");
+    // One requested day is the ordinary chart, never a "merge".
+    await client.bars("OGDC", "1m", { days: 1, limit: 500 });
+    expect(seen[1]).not.toContain("days=");
   });
 
   it("does not put an empty day in the query", async () => {

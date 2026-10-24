@@ -24,6 +24,7 @@ import {
   type BarEvent,
   type ChartPayload,
   type ErrorCategory,
+  type PrintReport,
   type Resolution,
   type SessionsReport,
   type SymbolRow,
@@ -31,6 +32,7 @@ import {
   parseBarEvent,
   parseErrorBody,
   parsePayload,
+  parsePrints,
   parseSessions,
   parseSymbolRows,
   parseSymbols,
@@ -150,7 +152,13 @@ export class ChartClient {
   async bars(
     symbol: string,
     resolution: Resolution,
-    options: { limit?: number; day?: string; signal?: AbortSignal } = {},
+    options: {
+      limit?: number;
+      day?: string;
+      /** Merge this many newest sessions into one chart (2+). */
+      days?: number | undefined;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<ChartPayload> {
     const query = new URLSearchParams({ symbol, resolution });
     if (options.limit !== undefined) {
@@ -159,10 +167,39 @@ export class ChartClient {
     if (options.day !== undefined && options.day.length > 0) {
       query.set("day", options.day);
     }
+    if (options.days !== undefined && options.days > 1) {
+      query.set("days", String(Math.round(options.days)));
+    }
     const url = `${this.baseUrl}/api/bars?${query.toString()}`;
     const raw = await this.request(url, options.signal);
     try {
       return parsePayload(raw);
+    } catch (error) {
+      if (error instanceof ContractViolation) {
+        throw new ApiError("CONTRACT", error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * One symbol's order prints: the tape's own ledger, on which a chart
+   * can draw the trades as they came. A source without a ledger answers
+   * events: [] with a note, so a missing feature is not an error state.
+   */
+  async prints(
+    symbol: string,
+    day = "",
+    signal?: AbortSignal,
+  ): Promise<PrintReport> {
+    const query = new URLSearchParams({ symbol });
+    if (day.length > 0) {
+      query.set("day", day);
+    }
+    const raw = await this.request(
+      `${this.baseUrl}/api/prints?${query.toString()}`, signal);
+    try {
+      return parsePrints(raw);
     } catch (error) {
       if (error instanceof ContractViolation) {
         throw new ApiError("CONTRACT", error.message);
