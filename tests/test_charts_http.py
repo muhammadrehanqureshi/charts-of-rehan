@@ -400,13 +400,19 @@ class TapeRoutesTest(ServerCase):
             encoding="utf-8")
 
     def rows(self, minutes: int = 4) -> list[dict]:
+        return self.rows_for(SESSION_MOMENT.date(), minutes)
+
+    def rows_for(self, day, minutes: int = 4) -> list[dict]:
         out: list[dict] = []
         for index in range(minutes):
-            moment = SESSION_OPEN + timedelta(minutes=index + 1)
+            moment = (datetime(day.year, day.month, day.day, 9, 32,
+                               tzinfo=SESSION_MOMENT.tzinfo)
+                      + timedelta(minutes=index + 1))
+            base = 200.0 if day < SESSION_DAY else 100.0
             out.append({
                 "kind": "MKT-FEED*x", "ts": moment.isoformat(),
                 "ticks": [
-                    {"scrip": f"{symbol}:REG", "last": str(100.0 + index),
+                    {"scrip": f"{symbol}:REG", "last": str(base + index),
                      "volume": str(1000 * (index + 1)),
                      "tick_time": f"{moment:%H:%M:%S}"}
                     for symbol in ("OGDC", "PPL")],
@@ -431,6 +437,67 @@ class TapeRoutesTest(ServerCase):
         # payload labels is the one the tape was built for.
         return self.make_server(source=source, symbols=("OGDC", "PPL"),
                                 clock=clock)
+
+    def test_days_merge_packs_the_last_two_sessions_on_one_chart(self):
+        # A second capture, an older session, so "days=2" has two sessions
+        # to merge: exactly the TradingView-style multi-day intraday chart.
+        older = self.captures / "capture_20261009.ndjson"
+        older.write_text("\n".join(json.dumps(row) for row in
+                                   self.rows_for(datetime(
+                                       2026, 10, 9).date())) + "\n",
+                         encoding="utf-8")
+        server = self.taping_server()
+        body = self.body(server, "/api/bars?symbol=OGDC&days=2")
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["bar_count"], 8)
+        stamps = [row["t"] for row in body["bars"]]
+        self.assertEqual(stamps, sorted(stamps))
+        days = {row["t"][:10] for row in body["bars"]}
+        self.assertEqual(days, {"2026-10-09", "2026-10-12"})
+        # The newest session owns the session block, as a chart of today does.
+        self.assertEqual(body["session"]["day"], "2026-10-12")
+        self.assertTrue(body["session"]["current"])
+        text = " ".join(body["notes"])
+        self.assertIn("merged 2 session(s)", text)
+        self.assertIn("session break", text)
+
+    def test_days_merge_on_a_calendar_rung_ignores_the_merge(self):
+        older = self.captures / "capture_20261009.ndjson"
+        older.write_text("\n".join(json.dumps(row) for row in
+                                   self.rows_for(datetime(
+                                       2026, 10, 9).date())) + "\n",
+                         encoding="utf-8")
+        server = self.taping_server()
+        body = self.body(server,
+                         "/api/bars?symbol=OGDC&days=4&resolution=1d")
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["bar_count"], 2)
+        self.assertEqual([row["t"][:10] for row in body["bars"]],
+                         ["2026-10-09", "2026-10-12"])
+
+    def test_days_without_a_session_store_is_the_callers_400(self):
+        server = self.make_server()
+        connection = http.client.HTTPConnection("127.0.0.1",
+                                                server.server_address[1],
+                                                timeout=10)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/api/bars?symbol=REPLAY1&days=3")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        body = json.loads(response.read())
+        self.assertEqual(body["error"]["code"], "UNSUPPORTED_DAY")
+
+    def test_a_bad_days_value_is_the_callers_400(self):
+        server = self.taping_server()
+        connection = http.client.HTTPConnection("127.0.0.1",
+                                                server.server_address[1],
+                                                timeout=10)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/api/bars?symbol=OGDC&days=next")
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        body = json.loads(response.read())
+        self.assertEqual(body["error"]["code"], "BAD_DAYS")
 
     def test_sessions_lists_what_this_service_can_draw(self):
         server = self.taping_server()

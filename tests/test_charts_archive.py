@@ -152,15 +152,19 @@ class IdentifyTest(ArchiveCase):
 
 class CaptureLookupTest(ArchiveCase):
 
-    def test_the_canonical_name_is_searched_first_then_the_dirs(self):
+    def test_the_configured_directories_are_searched_then_the_builder(self):
         elsewhere = self.tmp / "second"
         elsewhere.mkdir()
         for directory in (elsewhere, self.captures):
             (directory / self.capture.name).write_text("{}\n", encoding="utf-8")
         with self.patched_capture():
             found = capture_candidates(MONDAY, (elsewhere, self.captures))
+        # A caller that names its directories gets exactly those files in
+        # that order; the builder's own location is the last candidate, so
+        # repository-local history can never stand in for an explicitly
+        # named recording directory.
         self.assertEqual([path.parent for path in found],
-                         [self.captures, elsewhere])
+                         [elsewhere, self.captures])
 
     def test_a_day_with_no_file_anywhere_is_an_empty_list(self):
         with self.patched_capture():

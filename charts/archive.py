@@ -111,22 +111,25 @@ def capture_candidates(day: date, dirs: tuple[Path, ...] | list[Path],
     """Every capture file for `day` that exists, in the order it is looked for.
 
     The vendored bar builder owns the naming convention *and* its own default
-    location (``capture_YYYYMMDD.ndjson`` beside the parent project's data),
-    so its path is the first candidate. The configured directories are
-    searched after it by the same file name, which is what lets a deployment
-    point the service at a second recording directory without a second naming
-    convention appearing anywhere.
+    location (``capture_YYYYMMDD.ndjson`` beside the parent project's data).
+    The configured directories win, and the builder's own path is only the
+    last candidate, so a caller that points the service at a recording
+    directory gets exactly the captures that directory holds, even when a
+    part of the repository keeps its own files with the same name. A caller
+    using the default directories still gets both: they share the same
+    directory as the builder, so the order cannot put older history above
+    the working recording.
     """
     from src.data import tape_bars  # local import: keeps import cost off boot
 
     canonical = tape_bars.capture_path(day)
     found: list[Path] = []
-    if canonical.is_file():
-        found.append(canonical)
     for directory in dirs:
         candidate = Path(directory) / canonical.name
         if candidate.is_file() and candidate not in found:
             found.append(candidate)
+    if canonical.is_file() and canonical not in found:
+        found.append(canonical)
     return found
 
 
