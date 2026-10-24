@@ -154,6 +154,13 @@ export interface SymbolRow {
   readonly first: string | null;
   readonly last: string | null;
   readonly close: number | null;
+  /** The session's own open and measured range, for change and range columns.
+   * Absent facts stay null; an older service answers without them. */
+  readonly open?: number | null;
+  readonly high?: number | null;
+  readonly low?: number | null;
+  /** The session's summed volume across the printed minutes. */
+  readonly volume?: number | null;
   readonly day: string | null;
 }
 
@@ -593,9 +600,103 @@ export function parseSymbolRows(raw: unknown): SymbolRow[] {
       first: optionalStr(row["first"]),
       last: optionalStr(row["last"]),
       close: optionalNum(row["close"]),
+      open: optionalNum(row["open"]),
+      high: optionalNum(row["high"]),
+      low: optionalNum(row["low"]),
+      volume: optionalNum(row["volume"]),
       day: optionalStr(row["day"]),
     };
   });
+}
+
+/** The prints answer: one symbol's order ledger, as the tape printed it. */
+export function parsePrints(raw: unknown): PrintReport {
+  const value = record(raw, "prints");
+  const noteList = value["notes"];
+  const totalsRaw = value["totals"];
+  let totals: PrintTotals | null = null;
+  if (totalsRaw !== null && totalsRaw !== undefined) {
+    const row = record(totalsRaw, "prints.totals");
+    totals = {
+      orders: optionalNum(row["orders"]),
+      volume: optionalNum(row["volume"]),
+      prints: num(row["prints"], "prints.totals.prints"),
+      buy_volume: optionalNum(row["buy_volume"]),
+      sell_volume: optionalNum(row["sell_volume"]),
+      classified_volume: optionalNum(row["classified_volume"]),
+      unclassified_volume: optionalNum(row["unclassified_volume"]),
+      coverage: optionalNum(row["coverage"]),
+    };
+  }
+  return {
+    symbol: str(value["symbol"], "prints.symbol"),
+    day: optionalStr(value["day"]) ?? "",
+    totals,
+    events_total: num(value["events_total"], "prints.events_total"),
+    notes: noteList === undefined ? [] : array(noteList, "prints.notes").map(String),
+    events: array(value["events"] ?? [], "prints.events").map(
+      (item, index) => {
+        const row = record(item, `prints.events[${index}]`);
+        return {
+          t: str(row["t"], `prints.events[${index}].t`),
+          price: num(row["price"], `prints.events[${index}].price`),
+          size: optionalNum(row["size"]),
+          trades: optionalNum(row["trades"]),
+          volume: optionalNum(row["volume"]),
+          change: optionalStr(row["change"]) ?? "flat",
+          side: optionalStr(row["side"]) ?? "",
+        };
+      }),
+  };
+}
+
+/** One order print the tape itself carried: a trade as the venue saw it. */
+export interface PrintEvent {
+  /** Print clock, ISO with the +05:00 offset the tape speaks. */
+  readonly t: string;
+  readonly price: number;
+  /** The venue's own size of this last print, when it reports one. */
+  readonly size: number | null;
+  /** The venue's cumulative order counter at this moment. */
+  readonly trades: number | null;
+  /** The venue's cumulative share counter at this moment. */
+  readonly volume: number | null;
+  /** Against the print before it: "up", "down" or "flat". */
+  readonly change: string;
+  /**
+   * The print's own side, classified from the venue's book: "B" when the
+   * print sat at the ask (a buyer lifted), "S" at the bid, and "" when the
+   * carry no evidence. The same quote-then-tick law the buy/sell split uses.
+   */
+  readonly side: string;
+}
+
+export interface PrintTotals {
+  /** The venue's own highest order counter for the session. */
+  readonly orders: number | null;
+  /** The venue's own highest share counter for the session. */
+  readonly volume: number | null;
+  /** How many fresh prints this tape saw for the symbol. */
+  readonly prints: number;
+  /** Share count the evidence assigned to the buyer. */
+  readonly buy_volume: number | null;
+  /** Share count the evidence assigned to the seller. */
+  readonly sell_volume: number | null;
+  /** Buy plus sell, carried for audit; null when no window was classified. */
+  readonly classified_volume: number | null;
+  /** Shares the tape saw before it had a previous print to carry from. */
+  readonly unclassified_volume: number | null;
+  /** Classified share of the counter; null when the counter is absent or zero. */
+  readonly coverage: number | null;
+}
+
+export interface PrintReport {
+  readonly symbol: string;
+  readonly day: string;
+  readonly totals: PrintTotals | null;
+  readonly events: readonly PrintEvent[];
+  readonly events_total: number;
+  readonly notes: readonly string[];
 }
 
 /** The sessions answer: what this service can draw right now, and where. */
