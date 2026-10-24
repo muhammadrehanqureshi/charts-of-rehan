@@ -764,8 +764,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
         <div className="chart__readout" ref={readout} aria-live="off" />
         {/* The tape is the one surface that carries the venue counters, so
             it draws when there are prints to list OR counters to show; a
-            source with counters but no prints keeps its facts visible. */}
-        {(prints !== undefined && prints.length > 0) || printTotals ? (
+            source with counters but no prints keeps its facts visible, and
+            a source that has neither draws no box at all. */}
+        {(prints !== undefined && prints.length > 0)
+          || (printTotals != null
+            && [printTotals.buy_volume, printTotals.sell_volume,
+                printTotals.volume, printTotals.orders]
+              .some((value) => value !== null && Number.isFinite(value)
+                && value > 0)) ? (
           <div className="chart__tape" aria-label="order tape, newest first">
             <div className="chart__tape__head">order tape</div>
             {printTotals != null ? (
