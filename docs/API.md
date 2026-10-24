@@ -10,6 +10,9 @@ All routes are served by `charts/http.py`. Every answer is JSON with
 | `GET /api/health` | service identity, the Karachi clock, the resolved market phase, the source's own claims, ingest counters, per-symbol failures |
 | `GET /api/symbols` | the symbols this deployment can serve, with each one's coverage note |
 | `GET /api/bars?symbol=..&resolution=..&limit=..` | one chart payload |
+| `GET /api/bars?symbol=..&resolution=..&limit=..&day=..&days=N` | one chart payload; `day` names one stored session, `days` bigger than one merges that many newest sessions into a single intraday chart with gaps kept honest |
+| `GET /api/sessions` | every session this service can draw, newest first, with today and the timezone stated |
+| `GET /api/prints?symbol=..&day=..&limit=..` | one symbol's order-print report for a day, see below |
 | `GET /api/stream?symbol=..&resolution=..` | Server-Sent Events, see below |
 | `GET /api/stream/health` | the same health object, streamed once, for a dashboard that does not want to poll |
 | everything else | the built web app from `--static`, with single page app fallback |
@@ -73,6 +76,37 @@ refuses it instead of guessing.
   counter that the payload discloses.
 - **An empty series explains itself.** A symbol with nothing to show carries a
   note saying why, instead of a row of zeroes.
+
+
+## The order prints report
+
+`GET /api/prints?symbol=..&day=..&limit=..` turns the broker tape's own order
+events for one session into the ledger a chart can draw beside the candles:
+
+```json
+{
+  "ok": true, "day": "2026-10-22", "symbol": "OGDC",
+  "totals": { "orders": .., "volume": .., "prints": .., "buy_volume": ..,
+              "sell_volume": .., "classified_volume": ..,
+              "unclassified_volume": .., "windows": ..,
+              "quote_windows": .., "tick_windows": .., "gap_windows": ..,
+              "backward_windows": .., "coverage": 0.81 },
+  "events": [ { "t": "10:05:41+05:00", "price": 118.41, "size": ..,
+                "trades": .., "volume": .., "change": "up", "side": "B" } ],
+  "events_total": 812
+}
+```
+
+`limit` bounds the tail (at most 8000) and `events_total` always names how
+many events the day produced, so a client that wants more knows to ask.
+The totals are the tape's own running counters split by the same window
+rules the volume card uses, so the ledger and the card can never disagree;
+everything traded before the tape first saw the symbol is reported as
+`unclassified_volume`, never attributed to a side.
+
+A source that serves bars without a tape answers a documented empty report
+(`totals: null`, no events) rather than an error, because "no print ledger"
+is a fact about the source, not a failure.
 
 ## The event stream
 
