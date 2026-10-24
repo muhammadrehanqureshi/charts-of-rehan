@@ -62,6 +62,7 @@ import {
 } from "../chart/overlay";
 import { formatClock, formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries, timeMs } from "../chart/series";
+import type { ChartAppearance } from "../hooks/useAppearance";
 import type {
   IndicatorOutput,
   IndicatorSpec,
@@ -154,6 +155,8 @@ export interface ChartCanvasProps {
   readonly drawingsHidden?: boolean;
   /** A drawing the reader just committed: the note belongs to the app. */
   readonly onDrawingComplete?: (drawing: Drawing) => void;
+  /** The settings dialog's appearance: colours and what shows behind price. */
+  readonly appearance?: ChartAppearance;
 }
 
 interface PaneRef {
@@ -175,6 +178,20 @@ interface EngineState {
   readonly index: Map<number, number>;
   readonly volumeShown: boolean;
   data: SeriesData | null;
+}
+
+/** A hex colour at an alpha, for the muted volume under the candles. */
+function withAlpha(hex: string, alpha: number): string {
+  const raw = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  const digits = raw?.[1];
+  if (digits === undefined) {
+    return hex;
+  }
+  const value = Number.parseInt(digits, 16);
+  const r = (value >> 16) & 0xff;
+  const g = (value >> 8) & 0xff;
+  const b = value & 0xff;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 /** decimals the tape's own closes use, so the axis is exact. */
@@ -235,6 +252,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     drawings,
     drawingsHidden,
     onDrawingComplete,
+    appearance,
   } = props;
   void live; // the status bar owns liveness; the chart owns candles
   void props.gaps; // the status bar owns the gap ledger; see it there
@@ -290,12 +308,27 @@ export function ChartCanvas(props: ChartCanvasProps) {
     [indicators],
   );
 
+  /** A one-token identity of the dialog's appearance, for the engine deps. */
+  const appearanceKey = useMemo(
+    () => appearance === undefined ? "" : JSON.stringify(appearance),
+    [appearance],
+  );
+
   useEffect(() => {
     const surfaceEl = surface.current;
     if (surfaceEl === null) {
       return;
     }
-    const tokens = tvTheme(themeRef.current);
+    const tokens = { ...tvTheme(themeRef.current) };
+    if (appearance !== undefined) {
+      // The volume bars wear the candles' own colours at TV's muted alpha.
+      tokens.up = appearance.up;
+      tokens.down = appearance.down;
+      tokens.volumeUp = withAlpha(appearance.up, themeRef.current === "light"
+        ? 0.30 : 0.45);
+      tokens.volumeDown = withAlpha(appearance.down,
+        themeRef.current === "light" ? 0.30 : 0.45);
+    }
 
     // The decimals come from the tape's own closes, before any axis print.
     const columns = series.columns();
@@ -310,10 +343,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
         fontFamily: "'Trebuchet MS', 'Segoe UI', Verdana, sans-serif",
         panes: { separatorColor: tokens.border },
       },
-      grid: {
-        vertLines: { color: tokens.grid },
-        horzLines: { color: tokens.grid },
-      },
+      grid: appearance?.gridOn === false
+        ? { vertLines: { visible: false }, horzLines: { visible: false } }
+        : {
+            vertLines: { color: tokens.grid },
+            horzLines: { color: tokens.grid },
+          },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
@@ -379,7 +414,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
     }
 
     // The TV watermark: the symbol, then the timeframe, behind the candles.
-    if (heading !== undefined && heading.length > 0) {
+    if (heading !== undefined && heading.length > 0
+        && appearance?.watermarkOn !== false) {
       const parts = heading.split("·");
       const symbolLine = (parts[0] ?? "").trim();
       const restLine = parts.slice(1).join("·").trim();
@@ -454,7 +490,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     };
     // The full build is keyed to the chart's identity only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewKey, indicatorsKey, theme, volumeAvailable]);
+  }, [viewKey, indicatorsKey, theme, volumeAvailable, appearanceKey]);
 
   /**
    * The data effect: every bar version flows through setData on the

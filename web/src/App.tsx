@@ -23,6 +23,10 @@ import {
   parseHealth,
 } from "./api/types";
 import { ChartCanvas } from "./components/ChartCanvas";
+import {
+  ChartSettingsDialog,
+  IndicatorSettingsDialog,
+} from "./components/SettingsDialog";
 import { DrawToolRail } from "./components/DrawToolRail";
 import { IndicatorsPanel } from "./components/IndicatorsPanel";
 import { NotesPanel } from "./components/NotesPanel";
@@ -31,9 +35,11 @@ import { SymbolSearch } from "./components/SymbolSearch";
 import { Toolbar } from "./components/Toolbar";
 import { Watchlist } from "./components/Watchlist";
 import { useChartFeed } from "./hooks/useChartFeed";
+import { useAppearance } from "./hooks/useAppearance";
 import { useIndicators } from "./hooks/useIndicators";
 import { usePrints } from "./hooks/usePrints";
 import { timeframeShort } from "./chart/timeframes";
+import { definitionFor } from "./indicators/registry";
 import {
   clearDrawings,
   loadDrawings,
@@ -118,6 +124,9 @@ export function App() {
   const [theme, setTheme] = useTheme();
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
+  const [appearance, setAppearance, resetAppearance] = useAppearance();
+  const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
+  const [indicatorTarget, setIndicatorTarget] = useState<string | null>(null);
 
   // The drawings the reader keeps on this chart, one tool at a time.
   const [tool, setTool] = useState<DrawTool>("cursor");
@@ -291,6 +300,7 @@ export function App() {
         indicatorsOpen={indicatorsOpen}
         onToggleIndicators={() => setIndicatorsOpen((open) => !open)}
         onSearch={() => setSearchOpen(true)}
+        onOpenSettings={() => setChartSettingsOpen(true)}
       />
 
       <div className="app__body">
@@ -325,6 +335,7 @@ export function App() {
             drawings={drawings as readonly Drawing[]}
             drawingsHidden={drawingsHidden}
             onDrawingComplete={onDrawingComplete}
+            appearance={appearance}
           />
           <StatusBar
             status={feed.status}
@@ -361,7 +372,9 @@ export function App() {
           {detailsOpen ? <NotesPanel meta={feed.meta} /> : null}
         </main>
 
-        {indicatorsOpen ? <IndicatorsPanel controller={indicators} /> : null}
+        {indicatorsOpen ? (
+          <IndicatorsPanel controller={indicators} onOpen={setIndicatorTarget} />
+        ) : null}
 
         {watchlistOpen ? (
           <Watchlist
@@ -370,7 +383,9 @@ export function App() {
             symbol={symbol}
             day={day}
             loading={catalogueLoading}
-            onSymbol={chooseSymbol}
+            onSymbol={(next) => {
+              chooseSymbol(next);
+            }}
             onWatchChange={setWatch}
             searchOpen={searchOpen}
             onSearchOpen={() => setSearchOpen(true)}
@@ -387,6 +402,29 @@ export function App() {
           />
         )}
       </div>
+
+      {chartSettingsOpen ? (
+        <ChartSettingsDialog
+          appearance={appearance}
+          onAppearance={setAppearance}
+          onReset={resetAppearance}
+          onClose={() => setChartSettingsOpen(false)}
+        />
+      ) : null}
+      {indicatorTarget !== null ? (() => {
+        const spec = indicators.specs.find((item) => item.id === indicatorTarget);
+        if (spec === undefined) {
+          return null;
+        }
+        return (
+          <IndicatorSettingsDialog
+            spec={spec}
+            definition={definitionFor(spec.type)}
+            controller={indicators}
+            onClose={() => setIndicatorTarget(null)}
+          />
+        );
+      })() : null}
     </div>
   );
 }

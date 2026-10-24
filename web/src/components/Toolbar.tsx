@@ -32,6 +32,7 @@ export interface ToolbarProps {
   readonly indicatorsOpen: boolean;
   readonly onToggleIndicators: () => void;
   readonly onSearch: () => void;
+  readonly onOpenSettings: () => void;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -39,6 +40,7 @@ export function Toolbar(props: ToolbarProps) {
     symbol, resolution, onResolution, resolutions, day, onDay, sessions,
     theme, onTheme, onRefresh, busy, watchlistOpen, onToggleWatchlist,
     indicatorsOpen, onToggleIndicators, onSearch,
+    onOpenSettings,
   } = props;
   const available = TIMEFRAMES.filter((item) => resolutions.includes(item.id));
 
@@ -137,6 +139,12 @@ export function Toolbar(props: ToolbarProps) {
                 aria-label="reload the chart from the service"
                 title={busy ? "loading…" : "Reload"}>
           ↻
+        </button>
+        <button type="button" className="toolbar__icon"
+                aria-label="open the chart settings"
+                title="Chart settings"
+                onClick={onOpenSettings}>
+          ⚙
         </button>
         <button
           type="button"
