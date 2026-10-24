@@ -12,6 +12,13 @@
  *    for 2026-10-14 is a question with one answer, and opening a live stream
  *    for it would be an invitation to show a stale price as a moving one. The
  *    hook fetches it, labels the status "snapshot" and stops.
+ *  * **A session span is one chart, not several.** With ``days`` above one
+ *    the service merges the newest sessions into one payload, and the chart
+ *    keeps reading it as the chart whose newest session happens to be live:
+ *    the stream still moves it, but a stream snapshot only ever *adds or
+ *    refreshes* bars (and the live market phase); it never deletes the stored
+ *    days that preceded it, and it does not overwrite the merged answer's own
+ *    session facts with one session's.
  *  * **A switch is a switch.** On a symbol, day or resolution change the
  *    series is cleared, the stream is torn down and the in-flight fetch is
  *    aborted before the next one starts, so one symbol's candles can never be
@@ -69,9 +76,12 @@ export function useChartFeed(
   client: ChartClient,
   symbol: string,
   resolution: Resolution,
-  options: { day?: string; limit?: number } = {},
+  options: { day?: string; days?: number | undefined; limit?: number } = {},
 ): FeedState {
   const day = options.day ?? "";
+  const days = Math.max(0, Math.floor(options.days ?? 0));
+  // A merge of one day is no merge: that is the ordinary live chart.
+  const merged = days > 1 && day.length === 0;
   const limit = options.limit ?? 2000;
   const series = useMemo(() => new ColumnSeries(limit), [limit]);
   const [meta, setMeta] = useState<FeedMeta>(EMPTY_META);
@@ -94,23 +104,41 @@ export function useChartFeed(
     setError(null);
     bump();
 
-    const adopt = (payload: ChartPayload) => {
+    const adopt = (payload: ChartPayload, spanFacts = false) => {
       series.upsertMany(payload.bars);
-      setMeta({
-        symbol: payload.symbol,
-        resolution: payload.resolution,
-        market: payload.market,
-        session: payload.session,
-        source: payload.source,
-        notes: payload.notes,
-        gaps: payload.gaps,
-        payload,
+      setMeta((current) => {
+        if (!spanFacts || current.payload === null) {
+          return {
+            symbol: payload.symbol,
+            resolution: payload.resolution,
+            market: payload.market,
+            session: payload.session,
+            source: payload.source,
+            notes: payload.notes,
+            gaps: payload.gaps,
+            payload,
+          };
+        }
+        // A span's identity is the merged answer: which sessions it spans,
+        // how they are stored, what is missing between them. A live snapshot
+        // refreshes the bars and the market phase under that identity and
+        // replaces nothing about it.
+        return {
+          ...current,
+          market: payload.market,
+          payload: { ...payload, bar_count: current.payload.bar_count },
+        };
       });
       bump();
     };
 
     void client
-      .bars(symbol, resolution, { limit, day, signal: controller.signal })
+      .bars(symbol, resolution, {
+        limit,
+        day,
+        days: merged ? days : undefined,
+        signal: controller.signal,
+      })
       .then((payload) => {
         if (!cancelled) {
           adopt(payload);
@@ -146,7 +174,7 @@ export function useChartFeed(
     const handle = client.stream(symbol, resolution, {
       onSnapshot: (payload) => {
         if (!cancelled) {
-          adopt(payload);
+          adopt(payload, merged);
         }
       },
       onBars: (event) => {
@@ -175,7 +203,7 @@ export function useChartFeed(
       handle.close();
       series.clear();
     };
-  }, [client, symbol, resolution, limit, day, series, bump, manual]);
+  }, [client, symbol, resolution, limit, day, days, series, bump, manual]);
 
   const refresh = useCallback(() => setManual((value) => value + 1), []);
 
