@@ -156,6 +156,9 @@ class ChartHandler(BaseHTTPRequestHandler):
         if path == "/api/sessions":
             self._sessions()
             return
+        if path == "/api/prints":
+            self._prints(query)
+            return
         if path == "/api/stream":
             self._stream(query)
             return
@@ -177,16 +180,18 @@ class ChartHandler(BaseHTTPRequestHandler):
         return symbol
 
     def _payload(self, symbol: str, resolution: str, limit: int,
-                 day: str | None = None) -> dict:
+                 day: str | None = None, days: int = 0) -> dict:
         """The chart payload for one symbol, via the shared builder.
 
         ``day`` names one session; without it the builder describes today and
         falls back to the newest stored session when today has nothing, which
-        is what makes the chart useful at 02:00 on a Sunday.
+        is what makes the chart useful at 02:00 on a Sunday. ``days`` bigger
+        than one merges the newest sessions into one intraday chart.
         """
         body = build_payload(self.state.store, self.state.source, symbol,
                              resolution, limit=limit,
-                             moment=self.state.moment(), day=day).as_dict()
+                             moment=self.state.moment(), day=day,
+                             days=days).as_dict()
         body["ok"] = True
         body["ingest"] = self.state.ingestor.health()
         return body
@@ -217,6 +222,45 @@ class ChartHandler(BaseHTTPRequestHandler):
         if not wants_facts:
             rows = [{"symbol": row["symbol"]} for row in rows]
         self._send_json({"ok": True, "day": day or None, "symbols": rows})
+
+    def _prints(self, query: dict) -> None:
+        """The tape's own order prints for one symbol, the live paper trail.
+
+        ``?symbol=SYMBOL&day=YYYY-MM-DD&limit=N``. The events are the venue's
+        prints as the capture held them and the totals are its own running
+        counters, so a chart can draw the orders as they came and name how
+        many there were. A source with no tape behind it (a snapshot source,
+        say) answers a documented empty report rather than an error, because
+        "no print ledger" is a fact about the source, not a failure.
+        """
+        symbol = self._symbol_or_error(query)
+        if symbol is None:
+            return
+        day = self._day_or_error(query)
+        if day is None:
+            return
+        try:
+            limit = max(1, min(8000, int(query.get("limit", "3000"))))
+        except ValueError:
+            self._send_error_json(400, "BAD_LIMIT",
+                                  "limit must be a whole number")
+            return
+        prints_for = getattr(self.state.source, "prints_for", None)
+        if not callable(prints_for):
+            self._send_json({
+                "ok": True,
+                "symbol": symbol,
+                "day": day or None,
+                "totals": None,
+                "events": [],
+                "events_total": 0,
+                "notes": [f"this source ({self.state.source.name}) serves "
+                          f"bars without a print tape, so no order ledger "
+                          f"exists to show"],
+            })
+            return
+        report = prints_for(symbol, day or None, limit=limit)
+        self._send_json({"ok": True, **report})
 
     def _sessions(self) -> None:
         """Every session this service can draw, newest first.
@@ -269,23 +313,34 @@ class ChartHandler(BaseHTTPRequestHandler):
             self._send_error_json(400, "BAD_LIMIT",
                                   "limit must be a whole number")
             return
+        try:
+            days = max(0, min(60, int(query.get("days", "0"))))
+        except ValueError:
+            self._send_error_json(400, "BAD_DAYS",
+                                  "days must be a whole number")
+            return
+        if days < 2:
+            # A merge of one day is not a merge: it is the ordinary chart.
+            days = 0
         day = self._day_or_error(query)
         if day is None:
             return
-        if day and not callable(getattr(self.state.source, "sessions", None)):
+        if (day or days) and not callable(getattr(self.state.source, "sessions", None)):
             # Asking a source for a named session it cannot list is the
             # caller's mistake, not a server fault, so it is a 400 and not a
             # 500: the source in play has no session store to read.
+            wanted = "that day from" if day else "several days from"
             self._send_error_json(
                 400, "UNSUPPORTED_DAY",
                 f"source {self.state.source.name} serves the running session "
-                f"only; it keeps no session archive to read a past day from")
+                f"only; it keeps no session archive to read {wanted}")
             return
         if not day:
             # Today's live route: a symbol nobody has asked for yet is worth
             # warming, because the next poll of this chart will want it.
             self.state.ingestor.watch(symbol)
-        self._send_json(self._payload(symbol, resolution, limit, day or None))
+        self._send_json(self._payload(symbol, resolution, limit, day or None,
+                                      days))
 
     # ----------------------------------------------------------------- SSE
     def _stream(self, query: dict) -> None:

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 
@@ -265,6 +266,9 @@ class TapeSource:
         #: Keyed like the tape cache: a growing live file has a new
         #: (day, path, size, mtime), so today's newest frames arrive.
         self._index_cache: dict[str, tuple[tuple, dict[str, list[Bar]]]] = {}
+        #: Order-print reports, cached per (day, symbol) file identity, the
+        #: same identity rule the bar and index caches use.
+        self._prints_cache: dict[tuple[str, str], tuple[tuple, dict]] = {}
 
     # ------------------------------------------------------- configuration
     @property
@@ -384,25 +388,48 @@ class TapeSource:
         """
         symbol = symbol.strip().upper()
         if symbol in INDEX_SYMBOLS:
+            # The chart serves the exchange's own level first (see history);
+            # the watchlist must report the series the chart will actually
+            # draw, so the facts go through the same reader. The computed
+            # proxy is the fallback only when no index frame was banked.
             try:
-                rows = self._index_intraday(symbol, session, "1m")
+                real = self._exchange_index(symbol, session, "1m")
             except UpstreamError:
-                rows = []
-            if not rows:
-                return {"bars": 0, "first": None, "last": None,
-                        "close": None, "day": session.isoformat()}
-            return {"bars": len(rows), "first": rows[0].t,
-                    "last": rows[-1].t, "close": rows[-1].c,
-                    "day": session.isoformat()}
+                real = None
+            rows = real
+            if rows is None:
+                try:
+                    rows = self._index_intraday(symbol, session, "1m")
+                except UpstreamError:
+                    rows = []
+            return self._facts_from_rows(rows, session)
         try:
             rows = self._minute_history(symbol, session)
         except UpstreamError:
             rows = []
+        return self._facts_from_rows(rows, session)
+
+    @staticmethod
+    def _facts_from_rows(rows: Sequence[Bar], session: date) -> dict:
+        """One measured report from the bars the chart will draw.
+
+        The catalogue used to carry only the count, the two minutes and the
+        last close. A TradingView-style watchlist also shows the day's change
+        and its range, so the open, the measured high and low and the session's
+        own volume sum ride along: the reader's previous close is the
+        session's first stamp, which is exactly what this tape saw.
+        """
         if not rows:
-            return {"bars": 0, "first": None, "last": None, "close": None,
+            return {"bars": 0, "first": None, "last": None, "open": None,
+                    "high": None, "low": None, "close": None, "volume": None,
                     "day": session.isoformat()}
         return {"bars": len(rows), "first": rows[0].t, "last": rows[-1].t,
-                "close": rows[-1].c, "day": session.isoformat()}
+                "open": rows[0].o,
+                "high": round(max(row.h for row in rows), 4),
+                "low": round(min(row.l for row in rows), 4),
+                "close": rows[-1].c,
+                "volume": round(sum(row.v for row in rows), 4),
+                "day": session.isoformat()}
 
     # ---------------------------------------------------------- the universe
     def _universe_for(self, day: date, capture: Path | None) -> tuple[list[str], list[str]]:
@@ -431,6 +458,41 @@ class TapeSource:
                 f"symbols are the {len(cached)} the tape itself carried "
                 f"({capture.name})")
         return cached, [note]
+
+    # ------------------------------------------------------------ prints
+    def prints_for(self, symbol: str, day: date | str | None = None,
+                   limit: int = 3000) -> dict:
+        """The tape's own order prints for one symbol, by day.
+
+        The events and the totals are the venue's own facts (the same capture
+        the candle bars are built from), so a chart can draw the orders as
+        they came and name how many there were. A growing live file is
+        re-read when its identity changes, exactly like the bar cache.
+        """
+        wanted = symbol.strip().upper()
+        session = _as_date(day) or self.session_day()
+        path = self.capture_for(session)
+        if path is None:
+            raise UpstreamError(
+                UpstreamError.EMPTY_ACK,
+                f"no broker tape is banked for {session.isoformat()}, so "
+                f"there are no order prints to show; the chart for this "
+                f"session is served from the archive, which keeps bars, "
+                f"not the print tape")
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise UpstreamError(UpstreamError.CONNECTION,
+                                f"cannot stat {path.name}: {exc}") from exc
+        identity = (str(path), stat.st_size, stat.st_mtime_ns, limit)
+        key = (session.isoformat(), wanted)
+        cached = self._prints_cache.get(key)
+        if cached is not None and cached[0] == identity:
+            return cached[1]
+        report = tape_bars.prints(path, wanted, session,
+                                  as_of=self._clock(), limit=limit)
+        self._prints_cache[key] = (identity, report)
+        return report
 
     # ------------------------------------------------------------- reading
     def _day(self, day: date) -> "tape_bars.TapeBars":
@@ -630,8 +692,16 @@ class TapeSource:
             # capture holds no index frames falls back to the computed
             # proxy, and the facts say which one answered.
             real = self._exchange_index(symbol, session, canonical)
-            if real is not None:
+            if real is not None and (not spec.calendar or day is not None):
                 return self._cal_tail(real, limit)
+            # On a calendar rung with no day asked for, the exchange's own
+            # chain is the whole daily series, like the symbols' own
+            # calendar path: a default daily chart is the history of every
+            # capture this service holds, not today's one bar amputated.
+            if spec.calendar:
+                chain = self._exchange_index_calendar(symbol, canonical)
+                if chain:
+                    return self._cal_tail(chain, limit)
             if spec.calendar:
                 rows = self._index_calendar(symbol, canonical)
                 if day is not None:
