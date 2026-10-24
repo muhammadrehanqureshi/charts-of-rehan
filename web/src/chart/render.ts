@@ -23,7 +23,7 @@
  * showing an empty price axis that could be mistaken for a flat market.
  */
 
-import { type Gap, type PrintEvent, type PrintTotals } from "../api/types";
+import { type Gap, type PrintEvent } from "../api/types";
 import type { IndicatorOutput } from "../indicators/types";
 import { formatClock, formatDay, formatPrice, formatVolume } from "./format";
 import { decimalsFor, linearScale, niceTicks } from "./scale";
@@ -206,8 +206,6 @@ export interface RenderInput {
    * an empty list and nothing is drawn - absence stays absence.
    */
   readonly prints?: readonly PrintEvent[];
-  /** The session's venue counters, for the orders badge on the chart. */
-  readonly printTotals?: PrintTotals | null;
   /**
    * The headline the chart carries, TradingView-style: symbol, timeframe
    * and venue (`PRL · 1h · PSX`), drawn large and muted behind the candles.
@@ -282,7 +280,6 @@ export function drawChart(
   drawPrints(context, input, frame, window, xOf, priceScale, theme);
   drawOverlays(context, input, frame, window, xOf, slot, priceScale,
     theme);
-  drawPrintsBadge(context, input, frame, theme);
   drawIndicatorPanes(context, input, frame, window, xOf, slot, theme);
   drawLastPrice(context, input, frame, priceScale, window, theme);
 
@@ -382,76 +379,6 @@ function drawPrints(
     }
   }
   context.restore();
-}
-
-/**
- * The live-orders badge, top right of the plot.
- *
- * The venue's own counters, never a recompute: the orders number is the
- * tape's cumulative order count and the volume its own share counter. When
- * the source carries no counters the badge is simply not drawn - a missing
- * measurement is not a zero (GOVERNANCE SO-3 in spirit, in the renderer).
- */
-function drawPrintsBadge(
-  context: CanvasRenderingContext2D,
-  input: RenderInput,
-  frame: ChartGeometry,
-  theme: RendererTheme,
-): void {
-  const totals = input.printTotals;
-  if (totals === undefined || totals === null) {
-    return;
-  }
-  const segments: Array<{ text: string; colour: string | null }> = [];
-  if (totals.orders !== null && Number.isFinite(totals.orders)) {
-    segments.push({ text: `orders ${formatInt(totals.orders)}`, colour: null });
-  }
-  if (totals.buy_volume !== null && Number.isFinite(totals.buy_volume) && totals.buy_volume > 0) {
-    segments.push({ text: `buy ${formatVolume(totals.buy_volume)}`, colour: theme.up });
-  }
-  if (totals.sell_volume !== null && Number.isFinite(totals.sell_volume) && totals.sell_volume > 0) {
-    segments.push({ text: `sell ${formatVolume(totals.sell_volume)}`, colour: theme.down });
-  }
-  if (totals.volume !== null && Number.isFinite(totals.volume)) {
-    segments.push({ text: `vol ${formatVolume(totals.volume)}`, colour: null });
-  }
-  if (segments.length === 0) {
-    return;
-  }
-  context.font = "11px 'Segoe UI', system-ui, sans-serif";
-  let width = 14;
-  const widths: number[] = [];
-  for (const segment of segments) {
-    const w = context.measureText(segment.text).width;
-    widths.push(w);
-    width += w + 12;
-  }
-  const drawn: Array<{ text: string; colour: string | null; width: number }> =
-    segments.map((segment, i) => {
-      const w = widths[i] ?? 0;
-      return { text: segment.text, colour: segment.colour, width: w };
-    });
-  const left = frame.plotRight - width;
-  context.fillStyle = theme.background;
-  context.globalAlpha = 0.85;
-  context.fillRect(left, frame.plotTop + 2, width, 17);
-  context.globalAlpha = 1;
-  context.strokeStyle = theme.grid;
-  context.strokeRect(left + 0.5, frame.plotTop + 2.5, width - 1, 16);
-  context.textAlign = "left";
-  context.textBaseline = "middle";
-  let x = left + 7;
-  for (const segment of drawn) {
-    context.fillStyle = segment.colour === null ? theme.axisText : segment.colour;
-    context.fillText(segment.text, x, frame.plotTop + 11);
-    x += segment.width + 12;
-  }
-  context.textBaseline = "alphabetic";
-}
-
-/** Grouped thousands with commas, no locale surprises. */
-function formatInt(value: number): string {
-  return Math.round(value).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /** Inclusive index window of one visible stretch of bars. */
