@@ -17,6 +17,8 @@ import type { IndicatorSpec, ParamDef } from "../indicators/types";
 
 export interface IndicatorsPanelProps {
   readonly controller: IndicatorController;
+  /** Opening an indicator's own settings dialog, as the legend does on TV. */
+  readonly onOpen?: (id: string) => void;
 }
 
 function paramValue(spec: IndicatorSpec, param: ParamDef): string {
@@ -40,7 +42,9 @@ function formulaError(spec: IndicatorSpec): string | null {
   }
 }
 
-export function IndicatorsPanel({ controller }: IndicatorsPanelProps) {
+export function IndicatorsPanel(
+  { controller, onOpen }: IndicatorsPanelProps,
+) {
   const { specs, add, remove, update, setParam, toggle, setColor, reset } =
     controller;
   const [adding, setAdding] = useState("ema");
@@ -106,7 +110,20 @@ export function IndicatorsPanel({ controller }: IndicatorsPanelProps) {
                     title="Line colour"
                     onChange={(event) => setColor(spec.id, event.target.value)}
                   />
-                  <span className="indicator__title">{definition.label}</span>
+                  {definition?.formula
+                    ? (
+                      <button
+                        type="button"
+                        className="indicator__title indicator__title--open"
+                        title="open this indicator's settings"
+                        onClick={() => onOpen?.(spec.id)}
+                      >
+                        {definition.label}
+                      </button>
+                    )
+                    : (
+                      <span className="indicator__title">{definition?.label}</span>
+                    )}
                   <button
                     type="button"
                     className="indicator__icon"
