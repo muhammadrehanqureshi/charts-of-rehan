@@ -44,8 +44,8 @@ invented level (SO-3).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
-from datetime import date, datetime, timedelta
+from collections.abc import Iterator
+from datetime import date, datetime
 from pathlib import Path
 
 from src.data.sessions import KARACHI
@@ -201,17 +201,3 @@ def minute_bars(path: Path, day: date, name: str) -> list[dict]:
                                         quote["low"])
     return [buckets[start] | {"t": start}
             for start in sorted(buckets)]
-
-
-def session_summary(bars: list[Mapping]) -> dict:
-    """The facts a payload's note can state, measured, not assumed."""
-    if not bars:
-        return {}
-    first, last = bars[0], bars[-1]
-    return {
-        "runs": len(bars),
-        "first": first["t"],
-        "last": last["t"],
-        "session_high": max(bar["h"] for bar in bars),
-        "session_low": min(bar["l"] for bar in bars),
-    }

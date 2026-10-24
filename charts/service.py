@@ -164,6 +164,117 @@ def _served_from_archive(source: BarSource, symbol: str, day) -> bool:
         return False
 
 
+def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
+                         resolution: str, *, limit: int, context,
+                         moment: datetime | None, today: date,
+                         days: int) -> ChartPayload:
+    """The newest ``days`` sessions, concatenated into one contiguous chart.
+
+    This is the TradingView habit the owner asked for: an intraday chart that
+    keeps more of the market's history than one session. The sessions are the
+    source's own list, newest first, so the merge can only ever read sessions
+    that exist; each one is read through the same per-session path a named-day
+    chart uses, so an archived day contributes exactly the bars and gaps it
+    would alone.
+
+    Sessions are packed, not stretched: the hours between one session's close
+    and the next open are drawn as a session break, not as elapsed time on a
+    clock axis. The payload says so, because a reader who expects 24 hours of
+    market deserves to know why Sunday night is missing from the screen.
+    """
+    lister = getattr(source, "sessions", None)
+    if not callable(lister):
+        raise ContractError(
+            f"source {getattr(source, 'name', source)} serves the running "
+            f"session only; it keeps no store to merge several from")
+    try:
+        rows = lister() or []
+    except Exception as exc:  # noqa: BLE001 - a listing failure is a 502 door
+        raise ContractError(
+            f"the session store could not be listed: {type(exc).__name__}") from exc
+    wanted_days = [str(row.get("day", "")) for row in rows]
+    wanted_days = [day for day in wanted_days if day][:max(1, int(days))]
+    if not wanted_days:
+        raise ContractError("the session store holds no day to merge")
+    payloads: list[ChartPayload] = []
+    for name in wanted_days:
+        try:
+            payloads.append(_session_payload(
+                source, symbol, resolution, day=name, limit=0,
+                context=context, moment=moment))
+        except ContractError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one session may not undo all
+            payloads.append(ChartPayload(
+                symbol=symbol, resolution=resolution,
+                source=source.capabilities().source, market=context,
+                as_of=context.as_of, bars=[], gaps=[],
+                notes=[f"session {name} could not be read ({type(exc).__name__}), "
+                       f"so it is absent from this chart rather than invented"],
+                session=ChartSession(day=name, current=False, archived=False,
+                                     note="session unread")))
+    payloads.reverse()  # oldest first
+    bars: list[Bar] = []
+    seen: dict[str, Bar] = {}
+    held = 0
+    empty_days: list[str] = []
+    for payload in payloads:
+        if not payload.bars:
+            empty_days.append(payload.session.day)
+            continue
+        held += 1
+        for bar in payload.bars:
+            seen[bar.t] = bar
+    bars = [seen[key] for key in sorted(seen)]
+    if limit > 0 and len(bars) > limit:
+        bars = bars[-limit:]
+    gaps: list = []
+    for payload in payloads:
+        gaps.extend(payload.gaps)
+    gaps.sort(key=lambda gap: gap.start)
+    notes: list[str] = []
+    if held:
+        notes.append(
+            f"merged {held} session(s) with bars for {symbol} of "
+            f"{len(wanted_days)} session(s) requested, from "
+            f"{payloads[0].session.day} to {payloads[-1].session.day}")
+    if empty_days:
+        notes.append(
+            f"{len(empty_days)} of these session(s) held no bar for {symbol} "
+            f"(holiday or no trades), which is an absence, not a flat zero")
+    notes.append(
+        "sessions are packed edge to edge: the hours between one session's "
+        "close and the next open are a session break on the chart, not "
+        "elapsed time")
+    newest = payloads[-1]
+    if newest.bars:
+        notes.append(
+            f"the newest candle is the {newest.session.day} session's latest "
+            "bar" + (", still forming" if newest.session.current
+                     else ", finished"))
+    else:
+        notes.insert(
+            0, f"no bar exists for {symbol} in any of the {len(wanted_days)} "
+               f"session(s) read, which is not a price of zero")
+    session_day = newest.session.day if newest.bars else wanted_days[0]
+    info = getattr(source, "source_info", None)
+    source_info = (info(symbol, day=session_day) if callable(info)
+                   else source.capabilities().source)
+    return ChartPayload(
+        symbol=symbol, resolution=resolution, source=source_info,
+        market=context, as_of=context.as_of, bars=bars, gaps=gaps,
+        notes=notes,
+        session=ChartSession(
+            day=session_day,
+            current=newest.session.current,
+            archived=bool(newest.session.archived),
+            source=newest.session.source, capture=newest.session.capture,
+            built_at=newest.session.built_at,
+            volume_available=any(bar.v > 0 for bar in bars),
+            note=(f"merged chart over {len(wanted_days)} session(s); newest "
+                  f"session {newest.session.day}. {newest.session.note}")))
+
+
 def _session_payload(source: BarSource, symbol: str, resolution: str, *,
                      day: str, limit: int, context, moment: datetime | None,
                      ) -> ChartPayload:
@@ -408,7 +519,7 @@ def _live_multi_payload(store: BarStore, source: BarSource, symbol: str,
 def build_payload(store: BarStore, source: BarSource, symbol: str,
                   resolution: str, *, limit: int = 1500,
                   moment: datetime | None = None,
-                  day: date | str | None = None) -> ChartPayload:
+                  day: date | str | None = None, days: int = 0) -> ChartPayload:
     """One symbol's chart payload, ready for the wire.
 
     ``limit`` keeps a long session from shipping thousands of bars to a screen
@@ -426,6 +537,10 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
     ``day`` asks for one specific session by name. Without it, the payload
     describes the session the clock calls today, and falls back to the newest
     archived session that holds this symbol when today has nothing to show.
+
+    ``days`` bigger than one (and no ``day`` named) asks for the newest
+    sessions merged into one contiguous intraday chart. A calendar rung
+    ignores it: its whole point is that the bars already span the sessions.
     """
     symbol = symbol.strip().upper()
     try:
@@ -448,6 +563,12 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
                 f"session only; it keeps no store to read {wanted} from")
         return _session_payload(source, symbol, resolution, day=wanted,
                                 limit=limit, context=context, moment=moment)
+
+    spec = ladder.spec_for(resolution)
+    if days > 1 and not spec.calendar:
+        return _merged_days_payload(store, source, symbol, resolution,
+                                    limit=limit, context=context,
+                                    moment=moment, today=today, days=days)
 
     if resolution != "1m":
         return _live_multi_payload(store, source, symbol, resolution,
