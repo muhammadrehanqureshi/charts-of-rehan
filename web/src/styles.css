@@ -760,6 +760,18 @@ button:disabled {
 }
 
 .chart__range,
+.chart__readout {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chart__range {
+  flex: 1 1 auto;
+}
+
+.chart__range,
 .chart__hint,
 .chart__readout {
   color: var(--muted);
@@ -769,17 +781,17 @@ button:disabled {
 
 .chart__hint {
   margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .chart__readout {
   position: absolute;
   top: 26px;
   left: 8px;
-  max-width: calc(100% - 16px);
-  overflow: hidden;
+  /* The order tape floats top-right: the readout stops short of it
+   * instead of running underneath the box and colliding with it. */
+  max-width: calc(100% - 244px);
   color: var(--text);
-  white-space: nowrap;
-  text-overflow: ellipsis;
   pointer-events: none;
 }
 
