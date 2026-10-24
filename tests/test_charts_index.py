@@ -9,7 +9,8 @@ precisely what it is serving when it does not:
   * an EXS-FEED frame with a real layout becomes the real level (measured
     against the 2026-10-16 capture: KSE100 166,231.18 to 166,532.86);
   * a minute bucket is OHLC of the values banked in that minute, at the
-    arrival minute, with the venue's own session volume attached;
+    arrival minute, with the venue's own session volume counter differenced
+    into it (a minute carries what was traded inside it, never the total);
   * a stamp outside the session bands is not charted, and a capture with no
     index frames returns no bars and no invented level;
   * the payload's facts name which rail answered: ``exchange_index`` when
@@ -163,9 +164,43 @@ class ServedIndexTest(IndexFeedCase):
         self.assertEqual(bars[-1].c, 166532.86)
         self.assertEqual(source.source_info("KSE100", day=MONDAY).id,
                          SOURCE_INDEX.id)
-        # The volume arrives from the frame's own session counter.
-        self.assertGreaterEqual(bars[-1].v, bars[0].v)
-        self.assertGreater(bars[-1].v, 0.0)
+        # The volume is the exchange's own counter differenced per minute:
+        # the first frame is a base, then each minute carries exactly the
+        # shares the exchange printed between its own frames.
+        self.assertEqual(bars[0].v, 0.0)
+        self.assertEqual(bars[1].v, 1000.0)
+        self.assertEqual(bars[-1].v, 1000.0)
+
+    def test_volume_is_the_differenced_counter_not_the_running_total(self):
+        # Three KSE100 frames inside one minute and one in the next: the
+        # bar's volume is the sum of the deltas inside that minute, exactly
+        # what was traded, and never the session total itself.
+        self.write_captures(
+            exs_frame("10/12/2026 10:05:34 AM", 166231.18, volume=16_000),
+            exs_frame("10/12/2026 10:05:50 AM", 166300.0, volume=16_550),
+            exs_frame("10/12/2026 10:05:59 AM", 166280.0, volume=17_200),
+            exs_frame("10/12/2026 10:06:34 AM", 166350.0, volume=18_100),
+        )
+        bars = index_feed.minute_bars(self.capture, MONDAY, "KSE100")
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[0]["v"], 17_200 - 16_000)
+        self.assertEqual(bars[1]["v"], 18_100 - 17_200)
+
+    def test_a_counter_that_moves_backwards_contributes_nothing(self):
+        # The venue restarted its counter mid session: a declining figure can
+        # be attributed to a side of the day, so nothing is invented from it,
+        # and the next honest delta counts from the restarted base.
+        self.write_captures(
+            exs_frame("10/12/2026 10:05:34 AM", 166231.18, volume=16_000),
+            exs_frame("10/12/2026 10:06:34 AM", 166300.0, volume=17_000),
+            exs_frame("10/12/2026 10:07:34 AM", 166350.0, volume=900),
+            exs_frame("10/12/2026 10:08:34 AM", 166400.0, volume=1_400),
+        )
+        bars = index_feed.minute_bars(self.capture, MONDAY, "KSE100")
+        volumes = {bar["t"].minute: bar["v"] for bar in bars}
+        self.assertEqual(volumes[6], 1000.0)
+        self.assertEqual(volumes.get(7, 0.0), 0.0)
+        self.assertEqual(volumes[8], 1_400 - 900)
 
     def test_the_facts_say_the_exchange_frames_answered(self):
         self.write_captures(*[exs_frame(stamp, level) for stamp, level in

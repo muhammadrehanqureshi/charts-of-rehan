@@ -28,6 +28,14 @@ minute, open is the first value seen, close the last, and high/low span the
 values seen in that minute; the session's running extremes are reported in
 the session note rather than forged into a single minute.
 
+Fields[10] is the exchange's own session volume running counter (shares).
+A minute's volume is that counter differenced, never the running total
+itself: the sum of the positive deltas seen inside the minute, exactly what
+was traded between the frames the exchange printed. The counter's opening
+total on the capture's first frame is a base, not a trade, so the first
+minute carries only the deltas after it; a counter that moves backwards
+(a reset) contributes nothing, because attributing a would be invention.
+
 ``ALLSHR`` is the exchange's own all-shares index, which this service serves
 as ``KMIALLSHR`` — the name the card and the watchlist already used. The
 level is authoritative; the mental model "all shares" is unchanged.
@@ -174,6 +182,7 @@ def minute_bars(path: Path, day: date, name: str) -> list[dict]:
     """
     wanted = name.strip().upper()
     buckets: dict[datetime, dict] = {}
+    last_total: float | None = None
     for quote in iter_index_quotes(path, day):
         if quote["name"] != wanted:
             continue
@@ -191,8 +200,15 @@ def minute_bars(path: Path, day: date, name: str) -> list[dict]:
             bucket["h"] = max(bucket["h"], value)
             bucket["l"] = min(bucket["l"], value)
             bucket["c"] = value
-        if quote["volume"] is not None:
-            buckets[start]["v"] = quote["volume"]  # session running total
+        total = quote["volume"]
+        if total is not None:
+            previous = last_total
+            last_total = total
+            # The exchange's own counter, differenced: a minute carries what
+            # was traded inside it, and a backwards counter is a reset that
+            # contributes nothing. The first frame is a base, never a trade.
+            if previous is not None and total > previous:
+                buckets[start]["v"] += total - previous
         if quote["high"] is not None:
             buckets[start]["high"] = max(buckets[start]["high"],
                                          quote["high"])
