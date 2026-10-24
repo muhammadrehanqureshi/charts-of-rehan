@@ -331,7 +331,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
         overlays,
         panes,
         prints: prints ?? [],
-        printTotals: printTotals ?? null,
         heading: heading ?? "",
         barEndsAtMs: live && bounds !== null
           ? bounds.lastMs + bounds.stepMs
@@ -763,7 +762,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
         </div>
         <span className="chart__range" ref={rangeReadout} aria-live="off" />
         <div className="chart__readout" ref={readout} aria-live="off" />
-        {prints !== undefined && prints.length > 0 ? (
+        {/* The tape is the one surface that carries the venue counters, so
+            it draws when there are prints to list OR counters to show; a
+            source with counters but no prints keeps its facts visible. */}
+        {(prints !== undefined && prints.length > 0) || printTotals ? (
           <div className="chart__tape" aria-label="order tape, newest first">
             <div className="chart__tape__head">order tape</div>
             {printTotals != null ? (
@@ -796,7 +798,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
                   ) : null}
               </div>
             ) : null}
-            {prints.slice(-TAPE_ROWS).reverse().map((row, index) => {
+            {(prints ?? []).slice(-TAPE_ROWS).reverse().map((row, index) => {
               const sideClass = row.side === "B"
                 ? " chart__tape__row--buy"
                 : row.side === "S"
