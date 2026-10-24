@@ -23,6 +23,7 @@ import {
   parseHealth,
 } from "./api/types";
 import { ChartCanvas } from "./components/ChartCanvas";
+import { DrawToolRail } from "./components/DrawToolRail";
 import { IndicatorsPanel } from "./components/IndicatorsPanel";
 import { NotesPanel } from "./components/NotesPanel";
 import { StatusBar } from "./components/StatusBar";
@@ -33,6 +34,13 @@ import { useChartFeed } from "./hooks/useChartFeed";
 import { useIndicators } from "./hooks/useIndicators";
 import { usePrints } from "./hooks/usePrints";
 import { timeframeShort } from "./chart/timeframes";
+import {
+  clearDrawings,
+  loadDrawings,
+  saveDrawings,
+  type Drawing,
+  type DrawTool,
+} from "./chart/drawings";
 
 const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
 
@@ -110,6 +118,28 @@ export function App() {
   const [theme, setTheme] = useTheme();
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
+
+  // The drawings the reader keeps on this chart, one tool at a time.
+  const [tool, setTool] = useState<DrawTool>("cursor");
+  const [drawingsHidden, setDrawingsHidden] = useState(false);
+  const viewKey = `${symbol}|${day}|${resolution}`;
+  const [drawings, setDrawings] = useState<readonly Drawing[]>(
+    () => loadDrawings(`${initial.symbol}|${initial.day}|1m`),
+  );
+  useEffect(() => {
+    setDrawings(loadDrawings(viewKey));
+  }, [viewKey]);
+  const onDrawingComplete = useCallback((drawing: Drawing) => {
+    setDrawings((current) => {
+      const next = [...current, drawing];
+      saveDrawings(viewKey, next);
+      return next;
+    });
+  }, [viewKey]);
+  const onClearDrawings = useCallback(() => {
+    clearDrawings(viewKey, window.localStorage);
+    setDrawings([]);
+  }, [viewKey]);
 
   useEffect(() => {
     window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watch));
@@ -264,39 +294,14 @@ export function App() {
       />
 
       <div className="app__body">
-        <nav className="rail" aria-label="view controls">
-          <button
-            type="button"
-            className={indicatorsOpen ? "rail__button rail__button--on"
-              : "rail__button"}
-            aria-pressed={indicatorsOpen}
-            aria-label={indicatorsOpen ? "hide indicators" : "show indicators"}
-            title="Indicators"
-            onClick={() => setIndicatorsOpen((open) => !open)}
-          >
-            ƒ
-          </button>
-          <div className="rail__sep" aria-hidden="true" />
-          <button
-            type="button"
-            className="rail__button"
-            aria-label="reload the chart from the service"
-            title={feed.status === "loading" ? "loading…" : "Reload"}
-            disabled={feed.status === "loading"}
-            onClick={feed.refresh}
-          >
-            ↻
-          </button>
-          <button
-            type="button"
-            className="rail__button"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            aria-label={`switch to the ${theme === "dark" ? "light" : "dark"} theme`}
-            title="Light or dark"
-          >
-            {theme === "dark" ? "☾" : "☀"}
-          </button>
-        </nav>
+        <DrawToolRail
+          tool={tool}
+          onTool={setTool}
+          hidden={drawingsHidden}
+          onHideToggle={() => setDrawingsHidden((hidden) => !hidden)}
+          count={drawings.length}
+          onClear={onClearDrawings}
+        />
 
         <main className="app__main">
           <ChartCanvas
@@ -316,6 +321,10 @@ export function App() {
               ? `${symbol} · ${timeframeShort(resolution)} · PSX`
               : ""}
             live={feed.status === "live"}
+            tool={tool}
+            drawings={drawings as readonly Drawing[]}
+            drawingsHidden={drawingsHidden}
+            onDrawingComplete={onDrawingComplete}
           />
           <StatusBar
             status={feed.status}

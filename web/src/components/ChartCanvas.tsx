@@ -31,11 +31,11 @@ import {
   type SeriesMarker,
   type Time,
   type UTCTimestamp,
-  ColorType,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
   CrosshairMode,
+  ColorType,
   createChart,
   createSeriesMarkers,
   createTextWatermark,
@@ -47,14 +47,27 @@ import {
 } from "react";
 
 import type { Gap, PrintEvent, PrintTotals, Resolution } from "../api/types";
+import {
+  measureBetween,
+  newDrawingId,
+  type AnchoredPoint,
+  type Drawing,
+  type DrawTool,
+  type MeasureResult,
+} from "../chart/drawings";
+import {
+  anchorAt,
+  frameFor,
+  paintOverlay,
+} from "../chart/overlay";
 import { formatClock, formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries, timeMs } from "../chart/series";
-import { computeIndicators, seriesData } from "../indicators/compute";
 import type {
   IndicatorOutput,
   IndicatorSpec,
   SeriesData,
 } from "../indicators/types";
+import { computeIndicators, seriesData } from "../indicators/compute";
 
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 220;
@@ -133,32 +146,35 @@ export interface ChartCanvasProps {
   readonly heading?: string;
   /** True while a live stream is open; the chart itself does not need it. */
   readonly live?: boolean;
+  /** The active drawing tool, or "cursor" when the chart is being read. */
+  readonly tool?: DrawTool;
+  /** Committed drawings on this chart, oldest first. */
+  readonly drawings?: readonly Drawing[];
+  /** Every drawing hidden, the eye toggle. */
+  readonly drawingsHidden?: boolean;
+  /** A drawing the reader just committed: the note belongs to the app. */
+  readonly onDrawingComplete?: (drawing: Drawing) => void;
 }
 
 interface PaneRef {
-  readonly lines: readonly ISeriesApi<"Line">[];
-  readonly histogram: ISeriesApi<"Histogram"> | undefined;
+  readonly lines: readonly ISeriesApi<"Line", Time>[];
+  readonly histogram?: ISeriesApi<"Histogram", Time>;
 }
 
 type MarkerApi = {
-  setSeriesMarkers(markers: SeriesMarker<Time>[]): void;
+  setMarkers(markers: SeriesMarker<Time>[]): void;
 };
 
 interface EngineState {
   readonly chart: IChartApi;
-  readonly candles: ISeriesApi<"Candlestick">;
-  readonly volume: ISeriesApi<"Histogram"> | null;
+  readonly candles: ISeriesApi<"Candlestick", Time>;
+  readonly volume: ISeriesApi<"Histogram", Time> | null;
   readonly markers: MarkerApi | null;
   readonly panes: Map<string, PaneRef>;
   /** epoch-second → bar index, for the legend's previous close. */
   readonly index: Map<number, number>;
   readonly volumeShown: boolean;
   data: SeriesData | null;
-}
-
-/** A definite number from a typed-array slot: missing reads as 0. */
-function f64(value: number | undefined): number {
-  return value === undefined ? 0 : value;
 }
 
 /** decimals the tape's own closes use, so the axis is exact. */
@@ -215,6 +231,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
     printTotals,
     heading,
     live,
+    tool,
+    drawings,
+    drawingsHidden,
+    onDrawingComplete,
   } = props;
   void live; // the status bar owns liveness; the chart owns candles
   void props.gaps; // the status bar owns the gap ledger; see it there
@@ -227,6 +247,16 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const didFit = useRef(false);
   const themeRef = useRef(theme);
   themeRef.current = theme;
+
+  // The drawing overlay: its canvas, the capture in progress and one
+  // batched repaint, so a pointer move costs one frame, not a render.
+  const overlay = useRef<HTMLCanvasElement | null>(null);
+  const dragRef = useRef<{
+    kind: "trend" | "flatTop" | "flatBottom" | "measure";
+    a: AnchoredPoint;
+    b: AnchoredPoint | null;
+  } | null>(null);
+  const paintQueued = useRef(false);
 
   const showSeconds = resolution === "1s" || resolution === "10s";
 
@@ -329,10 +359,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
       lastValueVisible: true,
     });
 
-    let volume: ISeriesApi<"Histogram"> | null = null;
+    let volume: ISeriesApi<"Histogram", Time> | null = null;
     if (volumeAvailable) {
       chart.addPane();
-      volume = chart.addSeries(
+      const volumeSeries = chart.addSeries(
         HistogramSeries,
         {
           priceScaleId: "right",
@@ -342,29 +372,30 @@ export function ChartCanvas(props: ChartCanvasProps) {
         },
         1,
       );
-      if (volume !== null) {
-        volume.priceScale().applyOptions({
-          scaleMargins: { top: 0.6, bottom: 0 },
-        });
-      }
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.6, bottom: 0 },
+      });
+      volume = volumeSeries;
     }
 
     // The TV watermark: the symbol, then the timeframe, behind the candles.
-    const pricePane = chart.panes()[0];
-    if (heading !== undefined && heading.length > 0 && pricePane) {
+    if (heading !== undefined && heading.length > 0) {
       const parts = heading.split("·");
       const symbolLine = (parts[0] ?? "").trim();
       const restLine = parts.slice(1).join("·").trim();
-      void createTextWatermark(pricePane, {
-        horzAlign: "center",
-        vertAlign: "center",
-        lines: [
-          { text: symbolLine, color: tokens.watermark, fontSize: 44 },
-          ...(restLine.length > 0
-            ? [{ text: restLine, color: tokens.watermark, fontSize: 26 }]
-            : []),
-        ],
-      });
+      const pricePane = chart.panes()[0];
+      if (pricePane !== undefined) {
+        createTextWatermark(pricePane, {
+          horzAlign: "center",
+          vertAlign: "center",
+          lines: [
+            { text: symbolLine, color: tokens.watermark, fontSize: 44 },
+            ...(restLine.length > 0
+              ? [{ text: restLine, color: tokens.watermark, fontSize: 26 }]
+              : []),
+          ],
+        });
+      }
     }
 
     const markersApi = createSeriesMarkers(candles, []);
@@ -398,6 +429,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
     observer.observe(surfaceEl);
     resize();
 
+    // Pan or zoom moves the drawings too: repaint once per viewport change.
+    const rangeSub = () => scheduleOverlayPaint();
+    chart.timeScale().subscribeVisibleTimeRangeChange(rangeSub);
+
     engine.current = {
       chart,
       candles,
@@ -412,6 +447,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
 
     return () => {
       observer.disconnect();
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(rangeSub);
       chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
       engine.current = null;
@@ -441,17 +477,29 @@ export function ChartCanvas(props: ChartCanvasProps) {
     state.data = data;
     state.index.clear();
     for (let i = 0; i < length; i += 1) {
-      state.index.set(Math.floor(f64(data.time[i]) / 1000), i);
+      const t = data.time[i];
+      if (t !== undefined) {
+        state.index.set(Math.floor(t / 1000), i);
+      }
     }
 
     const candlesData: CandlestickData[] = new Array(length);
     for (let i = 0; i < length; i += 1) {
+      const t = data.time[i];
+      const open = data.open[i];
+      const high = data.high[i];
+      const low = data.low[i];
+      const close = data.close[i];
+      if (t === undefined || open === undefined || high === undefined
+        || low === undefined || close === undefined) {
+        continue;
+      }
       candlesData[i] = {
-        time: (f64(data.time[i]) / 1000) as UTCTimestamp,
-        open: f64(data.open[i]),
-        high: f64(data.high[i]),
-        low: f64(data.low[i]),
-        close: f64(data.close[i]),
+        time: (t / 1000) as UTCTimestamp,
+        open,
+        high,
+        low,
+        close,
       };
     }
     state.candles.setData(candlesData);
@@ -459,19 +507,25 @@ export function ChartCanvas(props: ChartCanvasProps) {
     if (state.volumeShown && state.volume !== null) {
       const volumeData: HistogramData[] = new Array(length);
       for (let i = 0; i < length; i += 1) {
+        const t = data.time[i];
+        const open = data.open[i];
+        const close = data.close[i];
+        const value = data.volume[i];
+        if (t === undefined || open === undefined || close === undefined
+          || value === undefined) {
+          continue;
+        }
         volumeData[i] = {
-          time: (f64(data.time[i]) / 1000) as UTCTimestamp,
-          value: f64(data.volume[i]),
-          color: f64(data.close[i]) >= f64(data.open[i])
-            ? tokens.volumeUp
-            : tokens.volumeDown,
+          time: (t / 1000) as UTCTimestamp,
+          value,
+          color: close >= open ? tokens.volumeUp : tokens.volumeDown,
         };
       }
       state.volume.setData(volumeData);
     }
 
     if (state.markers !== null) {
-      state.markers.setSeriesMarkers(
+      state.markers.setMarkers(
         printMarkers(data, prints, tokens),
       );
     }
@@ -491,6 +545,187 @@ export function ChartCanvas(props: ChartCanvasProps) {
   }, [version]);
 
   const hasBars = series.length > 0;
+  const activeTool = tool ?? "cursor";
+  const drawingActive = activeTool !== "cursor";
+
+  useEffect(() => {
+    if (!drawingActive) {
+      const pressed = (event: KeyboardEvent) => {
+        if (event.key === "Escape") {
+          dragRef.current = null;
+          scheduleOverlayPaint();
+        }
+      };
+      window.addEventListener("keydown", pressed, { capture: true });
+      return () =>
+        window.removeEventListener("keydown", pressed, { capture: true });
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingActive]);
+
+  useEffect(() => {
+    scheduleOverlayPaint();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, drawings, drawingsHidden, version, viewKey]);
+
+  const scheduleOverlayPaint = () => {
+    if (paintQueued.current) {
+      return;
+    }
+    paintQueued.current = true;
+    requestAnimationFrame(() => {
+      paintQueued.current = false;
+      paintOverlayNow();
+    });
+  };
+
+  const paintOverlayNow = () => {
+    const canvas = overlay.current;
+    const wrapperEl = wrapper.current;
+    const state = engine.current;
+    if (canvas === null || wrapperEl === null || state === null) {
+      return;
+    }
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const cssWidth = wrapperEl.clientWidth;
+    const cssHeight = wrapperEl.clientHeight;
+    if (canvas.width !== Math.round(cssWidth * dpr)
+      || canvas.height !== Math.round(cssHeight * dpr)) {
+      canvas.width = Math.round(cssWidth * dpr);
+      canvas.height = Math.round(cssHeight * dpr);
+    }
+    const context = canvas.getContext("2d");
+    if (context === null) {
+      return;
+    }
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const frame = frameFor(state.chart, cssWidth, cssHeight);
+    const drag = dragRef.current;
+    const midDrag: MeasureResult | null = drag !== null
+      && drag.kind === "measure" && drag.b !== null
+      ? measureBetween(drag.a, drag.b)
+      : null;
+    paintOverlay(context, state.chart, state.candles, frame, {
+      drawings: drawings ?? [],
+      hidden: drawingsHidden ?? false,
+      toolColor: "#2962ff",
+      midDrag,
+    });
+    if (drag !== null) {
+      paintLive(context, state.chart, state.candles, frame, drag);
+    }
+  };
+
+  const paintLive = (
+    context: CanvasRenderingContext2D,
+    chart: ReturnType<typeof createChart>,
+    candles: ISeriesApi<"Candlestick", Time>,
+    frame: ReturnType<typeof frameFor>,
+    drag: NonNullable<typeof dragRef.current>,
+  ) => {
+    if (drag.b === null) {
+      return;
+    }
+    if (drag.kind === "measure") {
+      return; // painted by paintOverlay's measure block
+    }
+    const points: [AnchoredPoint, AnchoredPoint | null] =
+      drag.kind === "flatTop" || drag.kind === "flatBottom"
+        // A flat never slants: hold the first anchor's level.
+        ? [{ t: drag.a.t, price: drag.a.price },
+           { t: drag.b.t, price: drag.a.price }]
+        : [drag.a, drag.b];
+    paintOne(context, chart, candles, frame, {
+      id: "live",
+      kind: drag.kind,
+      points,
+    });
+  };
+
+  const onOverlayDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const state = engine.current;
+    if (state === null || !drawingActive) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const anchor = anchorAt(state.chart, state.candles, x, y);
+    if (anchor === null) {
+      return;
+    }
+    if (activeTool === "hline" || activeTool === "hray") {
+      const drawing: Drawing = {
+        id: newDrawingId(),
+        kind: activeTool,
+        points: [anchor, null],
+      };
+      onDrawingComplete?.(drawing);
+      return;
+    }
+    dragRef.current = {
+      kind: activeTool === "trend" ? "trend"
+        : activeTool === "flatTop" ? "flatTop"
+        : activeTool === "flatBottom" ? "flatBottom"
+        : "measure",
+      a: anchor,
+      b: null,
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // A synthetic pointer (assistive or test) cannot be captured; keep it.
+    }
+    scheduleOverlayPaint();
+  };
+
+  const onOverlayMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    const state = engine.current;
+    if (drag === null || state === null) {
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const anchor = anchorAt(
+      state.chart,
+      state.candles,
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+    );
+    if (anchor !== null) {
+      drag.b = anchor;
+      scheduleOverlayPaint();
+    }
+  };
+
+  const onOverlayUp = () => {
+    const drag = dragRef.current;
+    const state = engine.current;
+    if (drag === null || state === null) {
+      return;
+    }
+    dragRef.current = null;
+    if (drag.kind === "measure") {
+      scheduleOverlayPaint();
+      return; // a measure is read, never kept
+    }
+    const points: [AnchoredPoint, AnchoredPoint | null] =
+      drag.kind === "flatTop" || drag.kind === "flatBottom"
+        ? [{ t: drag.a.t, price: drag.a.price },
+           drag.b === null
+             ? null
+             : { t: drag.b.t, price: drag.a.price }]
+        : [drag.a, drag.b];
+    onDrawingComplete?.({
+      id: newDrawingId(),
+      kind: drag.kind,
+      points,
+    });
+    scheduleOverlayPaint();
+  };
 
   return (
     <div className="chart tv-chart" ref={wrapper}>
@@ -509,6 +744,23 @@ export function ChartCanvas(props: ChartCanvasProps) {
       ) : null}
       {/* The TV legend: OHLC + change, live under the pointer. */}
       <div className="tv-legend" ref={legend} aria-live="off" />
+      {/* The drawing overlay: interactive only while a tool is picked, so
+          reading (pan, zoom, crosshair) is never blocked by it. */}
+      <canvas
+        ref={overlay}
+        className="tv-overlay"
+        style={drawingActive
+          ? { pointerEvents: "auto", cursor: "crosshair" }
+          : { pointerEvents: "none" } as React.CSSProperties}
+        onPointerDown={onOverlayDown}
+        onPointerMove={onOverlayMove}
+        onPointerUp={onOverlayUp}
+        onPointerCancel={onOverlayUp}
+        aria-hidden={drawingActive ? "false" : "true"}
+        aria-label={drawingActive
+          ? "drawing surface: click or drag to place the selected tool"
+          : "drawings"}
+      />
       {printTape(prints, printTotals)}
     </div>
   );
@@ -530,41 +782,72 @@ function writeLegend(
     return;
   }
   const i = at;
-  const close = f64(state.data.close[i]);
-  const prior = i > 0 ? f64(state.data.close[i - 1]) : close;
+  const close = state.data.close[i];
+  if (close === undefined) {
+    return;
+  }
+  const priorRaw = i > 0 ? state.data.close[i - 1] : close;
+  const prior = priorRaw ?? close;
   const change = close - prior;
   const changePct = prior !== 0 ? (change / prior) * 100 : 0;
   const tone = change > 0 ? "var(--tv-up)" : change < 0
     ? "var(--tv-down)" : "var(--tv-muted)";
-  const stampMs = f64(state.data.time[i]);
+  const stampMs = state.data.time[i];
+  if (stampMs === undefined) {
+    return;
+  }
   const colour = (value: number): string => {
-    const previous = i > 0 ? f64(state.data!.close[i - 1]) : value;
+    const previous = i > 0 ? (state.data!.close[i - 1] ?? value) : value;
     const own = value - previous;
     return own > 0 ? "var(--tv-up)" : own < 0 ? "var(--tv-down)"
       : "var(--tv-muted)";
   };
+  const open = state.data.open[i] ?? close;
+  const high = state.data.high[i] ?? close;
+  const low = state.data.low[i] ?? close;
+  const stampedVolume = state.data.volume[i] ?? Number.NaN;
 
   const volumeHtml = withVolume && state.volumeShown
     ? `<span class="tv-legend__field">V <b>` +
-      `${formatVolume(f64(state.data!.volume[i]))}</b></span>`
+      `${formatVolume(stampedVolume)}</b></span>`
     : "";
   legendEl.innerHTML =
     `<span class="tv-legend__stamp">` +
     karachiStamp.format(new Date(stampMs)) +
     ` <span class="tv-legend__day">` +
     karachiDay.format(new Date(stampMs)) + `</span></span>` +
-    `<span class="tv-legend__field">O <b style="color:${colour(f64(state.data!.open[i]))}">` +
-    `${formatPrice(f64(state.data!.open[i]), 2)}</b></span>` +
-    `<span class="tv-legend__field">H <b style="color:${colour(f64(state.data!.high[i]))}">` +
-    `${formatPrice(f64(state.data!.high[i]), 2)}</b></span>` +
-    `<span class="tv-legend__field">L <b style="color:${colour(f64(state.data!.low[i]))}">` +
-    `${formatPrice(f64(state.data!.low[i]), 2)}</b></span>` +
+    `<span class="tv-legend__field">O <b style="color:${colour(open)}">` +
+    `${formatPrice(open, 2)}</b></span>` +
+    `<span class="tv-legend__field">H <b style="color:${colour(high)}">` +
+    `${formatPrice(high, 2)}</b></span>` +
+    `<span class="tv-legend__field">L <b style="color:${colour(low)}">` +
+    `${formatPrice(low, 2)}</b></span>` +
     `<span class="tv-legend__field">C <b style="color:${colour(close)}">` +
     `${formatPrice(close, 2)}</b></span>` +
     `<span class="tv-legend__field" style="color:${tone}">` +
     `${change >= 0 ? "+" : ""}${formatPrice(change, 2)} ` +
     `(${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%)</span>` +
     volumeHtml;
+}
+
+// ---------------------------------------------------------------------------
+// Live-shape paint: the mid-drag line, through the kept painter.
+// ---------------------------------------------------------------------------
+
+function paintOne(
+  context: CanvasRenderingContext2D,
+  chart: ReturnType<typeof createChart>,
+  candles: ISeriesApi<"Candlestick", Time>,
+  frame: ReturnType<typeof frameFor>,
+  shape: Drawing,
+): void {
+  // The live shape draws through the same painter as the kept ones.
+  paintOverlay(context, chart, candles, frame, {
+    drawings: [shape],
+    hidden: false,
+    toolColor: "#2962ff",
+    midDrag: null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -598,22 +881,28 @@ function printMarkers(
     // The bar whose time is the greatest one at or before this print.
     let lo = 0;
     let hi = data.time.length - 1;
-    if (ms < f64(data.time[0])) {
+    const first = data.time[0];
+    if (first === undefined || ms < first) {
       continue; // before the tape watched: no bar owns it
     }
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (f64(data.time[mid]) <= ms) {
+      const midT = data.time[mid];
+      if (midT !== undefined && midT <= ms) {
         lo = mid;
       } else {
         hi = mid - 1;
       }
     }
+    const barT = data.time[lo];
+    if (barT === undefined) {
+      continue;
+    }
     const newest = i === prints.length - 1;
     const buy = event.side === "B";
     const sell = event.side === "S";
     markers.push({
-      time: (f64(data.time[lo]) / 1000) as UTCTimestamp,
+      time: (barT / 1000) as UTCTimestamp,
       position: sell ? "belowBar" : "inBar",
       shape: "circle",
       color: buy ? tokens.up : sell ? tokens.down : tokens.crosshair,
@@ -650,15 +939,12 @@ function buildIndicators(
     const isPane = output.placement === "pane";
     const existing = state.panes.get(output.id);
     if (existing !== undefined) {
-      // Same indicator, new bars: feed the series it already holds.
-      for (let li = 0; li < output.lines.length
-        && li < existing.lines.length; li += 1) {
-        const held = existing.lines[li];
-        const line = output.lines[li];
-        if (held === undefined || line === undefined) {
-          continue;
+      for (let li = 0; li < output.lines.length && li < existing.lines.length; li += 1) {
+        const priorLine = existing.lines[li];
+        const nextLine = output.lines[li];
+        if (priorLine !== undefined && nextLine !== undefined) {
+          priorLine.setData(lineData(data, nextLine.values));
         }
-        held.setData(lineData(data, line.values));
       }
       if (existing.histogram !== undefined && output.histogram !== undefined) {
         existing.histogram.setData(histData(data, output));
@@ -671,7 +957,7 @@ function buildIndicators(
       state.chart.addPane();
       nextPane += 1;
     }
-    const lines: ISeriesApi<"Line">[] = [];
+    const    lines: ISeriesApi<"Line", Time>[] = [];
     for (const line of output.lines) {
       const points = lineData(data, line.values);
       if (points.length === 0) {
@@ -687,7 +973,7 @@ function buildIndicators(
       fixRange(lineSeries, output.range);
       lines.push(lineSeries);
     }
-    let histogram: ISeriesApi<"Histogram"> | undefined;
+    let histogram: ISeriesApi<"Histogram", Time> | undefined;
     if (output.histogram !== undefined) {
       const bars = histData(data, output);
       if (bars.length > 0) {
@@ -699,19 +985,21 @@ function buildIndicators(
         fixRange(histogram, output.range);
       }
     }
-    state.panes.set(output.id, { lines, histogram });
+    const ref: PaneRef = histogram === undefined
+      ? { lines }
+      : { lines, histogram };
+    state.panes.set(output.id, ref);
   }
 }
 
 /** A fixed indicator range (RSI 0-100) pins its pane's scale. */
-function fixRange(
-  series: ISeriesApi<"Line"> | ISeriesApi<"Histogram">,
+function fixRange(    series: ISeriesApi<"Line", Time> | ISeriesApi<"Histogram", Time>,
   range: readonly [number, number] | null | undefined,
 ): void {
   if (range === undefined || range === null) {
     return;
   }
-  series.applyOptions({
+  (series as unknown as ISeriesApi<"Line", Time>).applyOptions({
     autoscaleInfoProvider: () => ({
       priceRange: {
         minValue: range[0],
@@ -725,14 +1013,12 @@ function lineData(data: SeriesData, values: Float64Array): LineData[] {
   const length = Math.min(data.time.length, values.length);
   const points: LineData[] = [];
   for (let i = 0; i < length; i += 1) {
-    const value = f64(values[i]);
-    if (!Number.isFinite(value)) {
+    const value = values[i];
+    const t = data.time[i];
+    if (value === undefined || t === undefined || !Number.isFinite(value)) {
       continue; // the warm-up bars an indicator does not have yet
     }
-    points.push({
-      time: (f64(data.time[i]) / 1000) as UTCTimestamp,
-      value,
-    });
+    points.push({ time: (t / 1000) as UTCTimestamp, value });
   }
   return points;
 }
@@ -748,12 +1034,13 @@ function histData(
   const length = Math.min(data.time.length, histogram.values.length);
   const points: HistogramData[] = [];
   for (let i = 0; i < length; i += 1) {
-    const value = f64(histogram.values[i]);
-    if (!Number.isFinite(value)) {
+    const value = histogram.values[i];
+    const t = data.time[i];
+    if (value === undefined || t === undefined || !Number.isFinite(value)) {
       continue;
     }
     points.push({
-      time: (f64(data.time[i]) / 1000) as UTCTimestamp,
+      time: (t / 1000) as UTCTimestamp,
       value,
       color: value >= 0 ? histogram.positive : histogram.negative,
     });
@@ -774,9 +1061,6 @@ function printTape(
   prints: readonly PrintEvent[] | undefined,
   printTotals: PrintTotals | null | undefined,
 ): React.ReactNode {
-  if (printTotals === undefined) {
-    printTotals = null;
-  }
   const hasPrints = prints !== undefined && prints.length > 0;
   const hasCounters = printTotals != null
     && [printTotals.buy_volume, printTotals.sell_volume,
