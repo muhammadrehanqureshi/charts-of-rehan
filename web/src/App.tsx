@@ -348,6 +348,7 @@ export function App() {
             ordersTotal={prints.report?.totals?.orders ?? null}
             error={feed.error ?? (bootError === null ? null
               : { category: "INTERNAL", detail: bootError })}
+            details={detailsOpen}
           />
           <button
             type="button"
