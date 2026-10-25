@@ -1,19 +1,28 @@
 /**
- * The watchlist, on the right, the way a chart terminal has it.
+ * The watchlist, on the right, in the terminal's own shape.
  *
- * It holds exactly the symbols the reader put on it - nothing more - and
- * every column is measured, not invented: the last price is the session's
- * last close, the change is against the session's first print, the volume
- * is the session's summed tape. A symbol without bars in this session says
- * "no bars" instead of a blank or a zero.
+ * Four facts and a name per row - the session's last price, its change in
+ * percent, and the tape's own buy and sell share counts - right aligned and
+ * tabular, in a list that is nothing but rows: a hairline under the header,
+ * no grid, no badges shouting. The row being charted sits in a lighter plate
+ * with a teal edge, so the eye finds it without reading. Removing a symbol is
+ * the small x that appears while the pointer is on its row (or on keyboard
+ * focus), not furniture on every line.
  *
- * The list persists in localStorage, so a reload is no cardoso of work.
+ * The list is the reader's own: adding a symbol appends it and keeps it,
+ * whatever the chart is showing. There is no ceiling on how many rows a
+ * watchlist may hold - the panel scrolls.
+ *
+ * Under the list, the detail card: the symbol's last price, the change
+ * against the session's first print, the session range, and the tape's own
+ * volume split (buy, sell, delta) exactly as the venue's counters measured
+ * them, never an estimate.
  */
 
 import { useMemo } from "react";
 
-import type { SymbolRow } from "../api/types";
-import { formatClock, formatPrice } from "../chart/format";
+import type { SymbolFlow, SymbolRow } from "../api/types";
+import { formatClock, formatPrice, formatVolume } from "../chart/format";
 import { SymbolSearch } from "./SymbolSearch";
 
 export interface WatchlistProps {
@@ -24,11 +33,15 @@ export interface WatchlistProps {
   readonly day: string;
   readonly loading: boolean;
   readonly onSymbol: (symbol: string) => void;
+  /** Append one symbol to the list and open it. */
+  readonly onAdd: (symbol: string) => void;
   readonly onWatchChange: (next: readonly string[]) => void;
   /** The quick-add dialog is owned by the parent so the toolbar shares it. */
   readonly searchOpen: boolean;
   readonly onSearchOpen: () => void;
   readonly onSearchClose: () => void;
+  /** Every symbol's buy/sell split for this session, when the tape has one. */
+  readonly flow?: ReadonlyMap<string, SymbolFlow>;
 }
 
 /** The change of the session so far, measured against its first print. */
@@ -43,10 +56,28 @@ export function sessionChange(
   return { change, percent: change / row.open * 100 };
 }
 
+function tone(percent: number | null | undefined): string {
+  if (percent === null || percent === undefined || percent === 0) {
+    return "";
+  }
+  return percent > 0 ? " wrow__cell--up" : " wrow__cell--down";
+}
+
+function side(
+  value: number | null | undefined,
+  kind: "buy" | "sell",
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)
+      || value <= 0) {
+    return "-";
+  }
+  return `${kind === "buy" ? "" : ""}${formatVolume(value)}`;
+}
+
 export function Watchlist(props: WatchlistProps) {
   const {
-    rows, watch, symbol, day, loading, onSymbol, onWatchChange,
-    searchOpen, onSearchOpen, onSearchClose,
+    rows, watch, symbol, day, loading, onSymbol, onAdd, onWatchChange,
+    searchOpen, onSearchOpen, onSearchClose, flow,
   } = props;
   const bySymbol = useMemo(() => {
     const map = new Map<string, SymbolRow>();
@@ -58,6 +89,7 @@ export function Watchlist(props: WatchlistProps) {
 
   const traded = rows.filter((row) => (row.bars ?? 0) > 0).length;
   const detail = bySymbol.get(symbol);
+  const detailFlow = flow?.get(symbol);
   const detailChange = sessionChange(detail);
 
   const remove = (name: string) => {
@@ -71,121 +103,148 @@ export function Watchlist(props: WatchlistProps) {
         rows={rows}
         loading={loading}
         action="add"
-        onPick={onSymbol}
+        onPick={onAdd}
         onClose={onSearchClose}
       />
 
       <section className="watchlist" aria-label="watchlist">
         <header className="watchlist__head">
-          <span className="watchlist__title">Watchlist</span>
-          <button type="button" className="watchlist__add"
-                  aria-label="add symbol to the watchlist"
-                  title="Add a symbol"
-                  onClick={onSearchOpen}>
-            +
-          </button>
+          <h2 className="watchlist__title">Watchlist</h2>
+          <div className="watchlist__tools">
+            <button
+              type="button"
+              className="watchlist__tool"
+              aria-label="search the catalogue"
+              title="Search the catalogue"
+              onClick={onSearchOpen}
+            >
+              ⌕
+            </button>
+            <button
+              type="button"
+              className="watchlist__tool"
+              aria-label="add symbol to the watchlist"
+              title="Add a symbol"
+              onClick={onSearchOpen}
+            >
+              +
+            </button>
+          </div>
         </header>
-        <p className="watchlist__count">
-          {rows.length === 0
-            ? "no catalogue"
-            : `${traded} of ${rows.length} traded this session`}
-        </p>
 
-        <table className="watchlist__table">
-          <thead>
-            <tr>
-              <th scope="col" className="watchlist__th watchlist__th--symb">Symb</th>
-              <th scope="col" className="watchlist__th">Last</th>
-              <th scope="col" className="watchlist__th">Chg</th>
-              <th scope="col" className="watchlist__th">Chg%</th>
-              <th scope="col" className="watchlist__th watchlist__th--vol">Vol</th>
-            </tr>
-          </thead>
-          <tbody>
-            {watch.length === 0 ? (
+        <div className="watchlist__body">
+          <table className="watchlist__table">
+            <thead>
               <tr>
-                <td colSpan={5} className="watchlist__quiet">
-                  {loading
-                    ? "reading the catalogue…"
-                    : "Your list is empty. Use + to put symbols on it."}
-                </td>
+                <th scope="col" className="watchlist__th watchlist__th--symb">
+                  Symbol
+                </th>
+                <th scope="col" className="watchlist__th">Last</th>
+                <th scope="col" className="watchlist__th">Chg%</th>
+                <th scope="col" className="watchlist__th">Buy</th>
+                <th scope="col" className="watchlist__th">Sell</th>
               </tr>
-            ) : watch.map((name) => {
-              const row = bySymbol.get(name);
-              const change = sessionChange(row);
-              const active = name === symbol;
-              const bars = row?.bars ?? 0;
-              const volume = row?.volume ?? null;
-              return (
-                <tr key={name} className={active ? "wrow wrow--active" : "wrow"}
-                    aria-current={active ? "true" : undefined}>
-                  <td className="wrow__cell wrow__cell--symb">
-                    <button
-                      type="button"
-                      className="wrow__open"
-                      onClick={() => onSymbol(name)}
-                      title={`open ${name}`}
-                    >
-                      {name}
-                      {row?.index === true
-                        ? <span className="row__badge">index</span>
-                        : null}
-                    </button>
-                    <button
-                      type="button"
-                      className="wrow__remove"
-                      aria-label={`remove ${name} from the watchlist`}
-                      title={`remove ${name}`}
-                      onClick={() => remove(name)}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                  <td className="wrow__cell">
-                    {row?.close === null || row === undefined
-                      ? <span className="wrow__absent">
-                          {loading ? "…" : bars > 0 ? "no price" : "no bars"}
-                        </span>
-                      : formatPrice(row.close)}
-                  </td>
-                  <td className={"wrow__cell" + (change && change.change < 0
-                    ? " wrow__cell--down"
-                    : change ? " wrow__cell--up" : "")}>
-                    {change === null
-                      ? "-"
-                      : change.change.toFixed(2)}
-                  </td>
-                  <td className={"wrow__cell" + (change && change.percent < 0
-                    ? " wrow__cell--down"
-                    : change ? " wrow__cell--up" : "")}>
-                    {change === null
-                      ? "-"
-                      : change.percent.toFixed(2)}
-                  </td>
-                  <td className="wrow__cell wrow__cell--vol">
-                    {volume === null
-                      ? <span className="wrow__absent">-</span>
-                      : volume.toLocaleString()}
+            </thead>
+            <tbody>
+              {watch.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="watchlist__quiet">
+                    {loading
+                      ? "reading the catalogue…"
+                      : "Your list is empty. Use + to put symbols on it."}
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              ) : watch.map((name) => {
+                const row = bySymbol.get(name);
+                const change = sessionChange(row);
+                const active = name === symbol;
+                const bars = row?.bars ?? 0;
+                const own = tone(change?.percent);
+                const money = flow?.get(name);
+                return (
+                  <tr
+                    key={name}
+                    className={active ? "wrow wrow--active" : "wrow"}
+                    aria-current={active ? "true" : undefined}
+                    onClick={() => onSymbol(name)}
+                  >
+                    <th scope="row" className="wrow__cell wrow__cell--symb">
+                      <button
+                        type="button"
+                        className="wrow__open"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSymbol(name);
+                        }}
+                        title={`open ${name} on the chart`}
+                      >
+                        {name}
+                      </button>
+                      {row?.index === true
+                        ? <span className="wrow__tag">IDX</span>
+                        : null}
+                      <button
+                        type="button"
+                        className="wrow__remove"
+                        aria-label={`remove ${name} from the watchlist`}
+                        title={`remove ${name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          remove(name);
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </th>
+                    <td className="wrow__cell">
+                      {row?.close === null || row === undefined
+                        ? <span className="wrow__absent">
+                            {loading ? "…" : bars > 0 ? "no price" : "no bars"}
+                          </span>
+                        : formatPrice(row.close)}
+                    </td>
+                    <td className={"wrow__cell" + own}>
+                      {change === null
+                        ? "-"
+                        : `${change.percent >= 0 ? "+" : ""}` +
+                          `${change.percent.toFixed(2)}%`}
+                    </td>
+                    <td className="wrow__cell wrow__cell--buy">
+                      {side(money?.buy_volume, "buy")}
+                    </td>
+                    <td className="wrow__cell wrow__cell--sell">
+                      {side(money?.sell_volume, "sell")}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
         <p className="watchlist__note">
+          {traded} of {rows.length} traded ·{" "}
           {day.length > 0
-            ? `facts are this stored session (${day});`
-            : "facts are this live session,"}{" "}
-          measured against its own first print.
+            ? `stored session ${day}`
+            : "this live session"}{" "}
+          · change against the first print
         </p>
       </section>
 
       <section className="detail" aria-label="symbol detail">
-        {detail === undefined ? null : (
+        {detail === undefined ? (
+          <p className="detail__quiet">
+            {symbol.length === 0
+              ? "no symbol chosen"
+              : `${symbol} has no row in this session's catalogue`}
+          </p>
+        ) : (
           <>
             <div className="detail__who">
               <span className="detail__symbol">{detail.symbol}</span>
-              <span className="detail__market">PSX</span>
+              <span className="detail__market">
+                {detail.index === true ? "INDEX · PSX" : "PSX"}
+              </span>
             </div>
             <p className="detail__price">
               {detail.close === null
@@ -196,18 +255,10 @@ export function Watchlist(props: WatchlistProps) {
                   ? "detail__chg detail__chg--down"
                   : "detail__chg detail__chg--up"}>
                   {" "}{detailChange.change.toFixed(2)}{" "}
-                  ({detailChange.percent.toFixed(2)}%)
+                  ({detailChange.percent >= 0 ? "+" : ""}
+                  {detailChange.percent.toFixed(2)}%)
                 </span>
               ) : null}
-            </p>
-            <p className="detail__row">
-              {detail.bars ?? 0} bars
-              {detail.first !== null
-                ? ` · from ${formatClock(detail.first)}`
-                : ""}
-              {detail.last !== null
-                ? ` to ${formatClock(detail.last)}`
-                : ""}
             </p>
             {typeof detail.high === "number" && typeof detail.low === "number"
               && detail.close !== null
@@ -225,6 +276,51 @@ export function Watchlist(props: WatchlistProps) {
                 </div>
               )
               : null}
+            <dl className="detail__stats detail__stats--flow">
+              <div>
+                <dt>buy</dt>
+                <dd className="detail__buy">
+                  {detailFlow?.buy_volume == null
+                    ? "-" : formatVolume(detailFlow.buy_volume)}
+                </dd>
+              </div>
+              <div>
+                <dt>sell</dt>
+                <dd className="detail__sell">
+                  {detailFlow?.sell_volume == null
+                    ? "-" : formatVolume(detailFlow.sell_volume)}
+                </dd>
+              </div>
+              <div>
+                <dt>delta</dt>
+                <dd className={(detailFlow?.delta ?? 0) < 0
+                  ? "detail__sell" : "detail__buy"}>
+                  {detailFlow?.delta == null
+                    ? "-"
+                    : `${detailFlow.delta > 0 ? "+" : ""}` +
+                      formatVolume(detailFlow.delta)}
+                </dd>
+              </div>
+            </dl>
+            <dl className="detail__stats">
+              <div>
+                <dt>volume</dt>
+                <dd>{detail.volume == null
+                  ? "-" : formatVolume(detail.volume)}</dd>
+              </div>
+              <div>
+                <dt>bars</dt>
+                <dd>{detail.bars ?? 0}</dd>
+              </div>
+              <div>
+                <dt>first</dt>
+                <dd>{detail.first === null ? "-" : formatClock(detail.first)}</dd>
+              </div>
+              <div>
+                <dt>last</dt>
+                <dd>{detail.last === null ? "-" : formatClock(detail.last)}</dd>
+              </div>
+            </dl>
           </>
         )}
       </section>

@@ -47,10 +47,18 @@ export function SymbolSearch(props: SymbolSearchProps) {
     if (needle.length === 0) {
       return list.slice(0, 40);
     }
-    return list
-      .filter((row) =>
-        needle.split(/\s+/).every((part) => row.symbol.includes(part)))
-      .slice(0, 40);
+    const found = list.filter((row) =>
+      needle.split(/\s+/).every((part) => row.symbol.includes(part)));
+    // Typing a symbol and pressing Enter must open that symbol, not the first
+    // row that merely contains its letters: "PPL" sits inside "CPPL", and an
+    // alphabetical list put CPPL first. The exact name leads, then names that
+    // start with the query, then the rest.
+    const rank = (symbol: string): number =>
+      symbol === needle ? 0 : symbol.startsWith(needle) ? 1 : 2;
+    found.sort((left, right) =>
+      rank(left.symbol) - rank(right.symbol)
+      || left.symbol.localeCompare(right.symbol));
+    return found.slice(0, 40);
   }, [list, query]);
 
   useEffect(() => {
@@ -94,7 +102,13 @@ export function SymbolSearch(props: SymbolSearchProps) {
   };
 
   const pick = (index: number) => {
-    const row = matches[index];
+    const needle = query.trim().toUpperCase();
+    // Enter on a typed name is a request for that name when the catalogue has
+    // it, whatever row the cursor happened to be on.
+    const exact = needle.length > 0
+      ? matches.find((row) => row.symbol === needle)
+      : undefined;
+    const row = exact ?? matches[index];
     if (row !== undefined) {
       onPick(row.symbol);
       onClose();
