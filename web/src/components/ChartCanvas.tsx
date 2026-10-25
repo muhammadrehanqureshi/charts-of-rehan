@@ -49,8 +49,6 @@ import {
 import type {
   DeltaMinute,
   Gap,
-  PrintEvent,
-  PrintTotals,
   Resolution,
 } from "../api/types";
 import {
@@ -142,10 +140,6 @@ export interface ChartCanvasProps {
   readonly emptyNote: string;
   /** Configured indicators; unlimited overlays, up to eight panes. */
   readonly indicators: readonly IndicatorSpec[];
-  /** Order prints the tape carried, drawn as markers on their candles. */
-  readonly prints?: readonly PrintEvent[];
-  /** The venue's own session counters, for the on-chart order tape. */
-  readonly printTotals?: PrintTotals | null;
   /** The tape's per-minute buy/sell split, for the volume-delta plate. */
   readonly delta?: readonly DeltaMinute[];
   /** The chart headline, TV-style: `PRL · 1h · PSX` watermark. */
