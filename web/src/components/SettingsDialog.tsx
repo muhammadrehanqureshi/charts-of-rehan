@@ -201,8 +201,9 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
                   />
                 ) : (
                   <textarea
-                    rows={2}
+                    rows={definition?.formula ? 12 : 3}
                     spellCheck={false}
+                    aria-label={param.label}
                     value={paramValue(spec, param)}
                     onChange={(event) =>
                       controller.setParam(spec.id, param.key,
@@ -243,6 +244,15 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
             ) : null}
           </>
         )}
+        {definition?.formula ? (
+          <p className="settings-dialog__note">
+            One statement per line: series (open, high, low, close, volume,
+            hl2, ohlc4), functions (sma, ema, rsi, atr, stddev, highest,
+            lowest, roc, change, obv, abs, sqrt, log, exp, min, max, nz,
+            plot), arithmetic, and `name = expression` lines. A script may be
+            up to 8,000 characters; its last line is what the chart draws.
+          </p>
+        ) : null}
         {formulaError !== null
           ? <p className="indicator__error" role="status">{formulaError}</p>
           : null}

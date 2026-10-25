@@ -16,13 +16,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiError, ChartClient } from "./api/client";
 import {
+  type DeltaMinute,
   type PrintEvent,
   type Resolution,
   type SessionRow,
+  type SymbolFlow,
   type SymbolRow,
   parseHealth,
 } from "./api/types";
 import { ChartCanvas } from "./components/ChartCanvas";
+import { Screener } from "./components/Screener";
 import {
   ChartSettingsDialog,
   IndicatorSettingsDialog,
@@ -37,6 +40,7 @@ import { Watchlist } from "./components/Watchlist";
 import { useChartFeed } from "./hooks/useChartFeed";
 import { useAppearance } from "./hooks/useAppearance";
 import { useIndicators } from "./hooks/useIndicators";
+import { useDelta } from "./hooks/useDelta";
 import { usePrints } from "./hooks/usePrints";
 import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
@@ -54,19 +58,35 @@ const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
 const STALE_AFTER_MINUTES = 12;
 
 /**
- * Recently how many sessions the default chart spans.
+ * How many sessions the default chart spans.
  *
- * The empty session choice is the merged one: an intraday chart that shows
- * the previous sessions beside this one is what a reader expects to see, and
- * a specific day on the selector asks for that one session as a snapshot.
- * Five is roughly a trading week; the service imposes the wider limit.
+ * Five: the reader can pan back through the week without leaving the chart,
+ * exactly as the terminal's own continuous series behaves. The sessions are
+ * packed edge to edge, so the chart draws a dashed divider and the day's
+ * label wherever the Karachi date changes - without that a merged chart
+ * reads as a clock running backwards. Naming a stored day in the session
+ * selector still opens exactly that day.
  */
 const SPAN_SESSIONS = 5;
 
 const WATCHLIST_KEY = "charts-watchlist";
 
+/**
+ * The chart this browser last opened.
+ *
+ * Opening the app used to land on whatever the catalogue listed first, which
+ * is an index: every visit began on KSE100 no matter what the reader was
+ * charting last night. The last symbol you charted is the one you meant to
+ * see again, so it is kept beside the watchlist and reopened on the next
+ * visit. A first visit has no last symbol and falls back to the session's
+ * own most traded name.
+ */
+const LAST_SYMBOL_KEY = "charts-symbol";
+
 /** One shared empty list, so a poll without a ledger never re-renders. */
 const EMPTY_PRINTS: readonly PrintEvent[] = [];
+/** The same, for a tape with no per-minute split. */
+const EMPTY_DELTA: readonly DeltaMinute[] = [];
 
 /** The list a reader starts with: the two breadth indexes the tape computes. */
 const DEFAULT_WATCHLIST: readonly string[] = ["KSE100", "KMIALLSHR"];
@@ -87,33 +107,64 @@ function readWatchlist(): string[] {
   return [...DEFAULT_WATCHLIST];
 }
 
+function readLastSymbol(): string {
+  try {
+    const stored = window.localStorage.getItem(LAST_SYMBOL_KEY);
+    return stored === null ? "" : stored.trim().toUpperCase();
+  } catch {
+    return ""; // a disabled storage is a first visit, not a crash
+  }
+}
+
+/**
+ * The name a first visit opens.
+ *
+ * The most traded scrip of the session, never a computed index: a reader who
+ * has never chosen anything is better served by the tape's busiest symbol
+ * than by a breadth gauge. An index answers only when nothing in the
+ * catalogue traded at all.
+ */
+export function openingSymbol(
+  items: readonly SymbolRow[],
+): SymbolRow | undefined {
+  const traded = items.filter((row) => (row.bars ?? 0) > 0);
+  const named = traded.filter((row) => row.index !== true);
+  const pool = named.length > 0 ? named : traded;
+  if (pool.length === 0) {
+    return items[0];
+  }
+  let best = pool[0];
+  for (const row of pool) {
+    if ((row.volume ?? 0) > (best?.volume ?? 0)) {
+      best = row;
+    }
+  }
+  return best;
+}
+
 function hash(): { symbol: string; day: string } {
   const raw = window.location.hash.replace(/^#/, "");
   const [symbol = "", day = ""] = raw.split("/");
   return { symbol: symbol.trim().toUpperCase(), day: day.trim() };
 }
 
-function useTheme(): ["dark" | "light", (mode: "dark" | "light") => void] {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const stored = window.localStorage.getItem("charts-theme");
-    return stored === "light" ? "light" : "dark";
-  });
-  useEffect(() => {
-    document.documentElement.dataset["theme"] = theme;
-    window.localStorage.setItem("charts-theme", theme);
-  }, [theme]);
-  return [theme, setTheme];
-}
-
 export function App() {
   const client = useMemo(() => new ChartClient(), []);
   const initial = useMemo(hash, []);
-  const [symbol, setSymbol] = useState(initial.symbol);
+  const [symbol, setSymbol] = useState(
+    () => initial.symbol.length > 0 ? initial.symbol : readLastSymbol(),
+  );
   const [day, setDay] = useState(initial.day);
   const [resolution, setResolution] = useState<Resolution>("1m");
   const [resolutions, setResolutions] =
     useState<readonly Resolution[]>(FALLBACK_RESOLUTIONS);
   const [rows, setRows] = useState<readonly SymbolRow[]>([]);
+  const [flow, setFlow] = useState<ReadonlyMap<string, SymbolFlow>>(
+    () => new Map(),
+  );
+  // The session the flow answer describes: the chart's own day when one is
+  // named, otherwise whichever session the tape actually kept.
+  const [flowDay, setFlowDay] = useState("");
   const [sessions, setSessions] = useState<readonly SessionRow[]>([]);
   const [bootError, setBootError] = useState<string | null>(null);
   const [catalogueLoading, setCatalogueLoading] = useState(true);
@@ -121,7 +172,7 @@ export function App() {
   const [indicatorsOpen, setIndicatorsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [theme, setTheme] = useTheme();
+  const [screenerOpen, setScreenerOpen] = useState(false);
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
   const [appearance, setAppearance, resetAppearance] = useAppearance();
@@ -153,6 +204,17 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watch));
   }, [watch]);
+
+  // The chart you were reading is the chart you get back.
+  useEffect(() => {
+    if (symbol.length > 0) {
+      try {
+        window.localStorage.setItem(LAST_SYMBOL_KEY, symbol);
+      } catch {
+        // A full storage must never stop the chart from opening.
+      }
+    }
+  }, [symbol]);
 
   // The service's own facts, read once per mount and again after a refresh.
   useEffect(() => {
@@ -212,7 +274,7 @@ export function App() {
           // Opening on a chart the reader put in the list is the point of a
           // watchlist; only when there is none does the session's own most
           // traded symbol answer.
-          const first = items.find((row) => (row.bars ?? 0) > 0) ?? items[0];
+          const first = openingSymbol(items);
           setSymbol((current) =>
             current.length > 0 ? current : (first?.symbol ?? ""));
         }
@@ -221,6 +283,34 @@ export function App() {
         if (!cancelled) {
           setRows([]);
           setCatalogueLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, day]);
+
+  // The tape's own buy/sell split for every symbol: one call per session, so
+  // a watchlist row costs no extra request. A source with no print tape
+  // answers an empty map, and the columns say so rather than showing zero.
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .orderFlow(day)
+      .then((report) => {
+        if (cancelled) {
+          return;
+        }
+        const next = new Map<string, SymbolFlow>();
+        for (const row of report.symbols) {
+          next.set(row.symbol, row);
+        }
+        setFlow(next);
+        setFlowDay(report.day);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFlow(new Map());
         }
       });
     return () => {
@@ -239,7 +329,27 @@ export function App() {
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0);
 
+  // The tape's own per-minute buy/sell split, for the volume-delta plate.
+  const delta = useDelta(client, symbol, feed.meta.session?.day ?? day,
+    symbol.length > 0);
+
   const chooseSymbol = useCallback((next: string) => {
+    setSymbol(next);
+    setSearchOpen(false);
+    window.location.hash = day.length > 0 ? `${next}/${day}` : next;
+  }, [day]);
+
+  /**
+   * Put a symbol on the watchlist and open it.
+   *
+   * Adding used to mean nothing more than switching the chart, so the list
+   * only ever showed the base rows plus whichever symbol was charted last -
+   * a fourth add silently replaced the third. An add is an append now, kept
+   * in the reader's own order and saved with the rest of the list.
+   */
+  const addToWatch = useCallback((next: string) => {
+    setWatch((current) =>
+      current.includes(next) ? current : [...current, next]);
     setSymbol(next);
     setSearchOpen(false);
     window.location.hash = day.length > 0 ? `${next}/${day}` : next;
@@ -273,16 +383,9 @@ export function App() {
     ? "No session reported."
     : `${session.day}${session.archived ? ", stored session" : ""}.`;
 
-  const watchComplete = useMemo(() => {
-    const shown = new Set(watch);
-    return symbol.length > 0 && !shown.has(symbol)
-      ? [...watch, symbol]
-      : watch;
-  }, [watch, symbol]);
-
   return (
-    <div className={["app", watchlistOpen ? "app--with-watchlist" : "",
-      indicatorsOpen ? "app--with-indicators" : ""].filter(Boolean).join(" ")}>
+    <div className={["app", watchlistOpen ? "app--with-watchlist" : ""]
+      .filter(Boolean).join(" ")}>
       <Toolbar
         symbol={symbol}
         resolution={resolution}
@@ -291,8 +394,6 @@ export function App() {
         day={day}
         onDay={chooseDay}
         sessions={sessions}
-        theme={theme}
-        onTheme={setTheme}
         onRefresh={feed.refresh}
         busy={feed.status === "loading"}
         watchlistOpen={watchlistOpen}
@@ -301,7 +402,15 @@ export function App() {
         onToggleIndicators={() => setIndicatorsOpen((open) => !open)}
         onSearch={() => setSearchOpen(true)}
         onOpenSettings={() => setChartSettingsOpen(true)}
+        screenerOpen={screenerOpen}
+        onToggleScreener={() => setScreenerOpen((open) => !open)}
       />
+
+      {/* The studies sit in a strip above the chart, not in a side column:
+          the candles keep every pixel of width. */}
+      {indicatorsOpen ? (
+        <IndicatorsPanel controller={indicators} onOpen={setIndicatorTarget} />
+      ) : null}
 
       <div className="app__body">
         <DrawToolRail
@@ -321,12 +430,12 @@ export function App() {
             viewKey={`${symbol}|${day}|${resolution}`}
             version={feed.version}
             volumeAvailable={session?.volume_available ?? false}
-            theme={theme}
             sessionLabel={sessionLabel}
             emptyNote={emptyNote}
             indicators={indicators.specs}
             prints={prints.report?.events ?? EMPTY_PRINTS}
             printTotals={prints.report?.totals ?? null}
+            delta={delta.report?.minutes ?? EMPTY_DELTA}
             heading={symbol.length > 0
               ? `${symbol} · ${timeframeShort(resolution)} · PSX`
               : ""}
@@ -370,23 +479,34 @@ export function App() {
             {detailsOpen ? "hide data detail" : "show data detail"}
           </button>
           {detailsOpen ? <NotesPanel meta={feed.meta} /> : null}
+          {screenerOpen ? (
+            <Screener
+              rows={rows}
+              loading={catalogueLoading}
+              day={day}
+            flow={flow}
+            onSymbol={(next) => {
+              chooseSymbol(next);
+              setScreenerOpen(false);
+            }}
+            onClose={() => setScreenerOpen(false)}
+          />
+          ) : null}
         </main>
-
-        {indicatorsOpen ? (
-          <IndicatorsPanel controller={indicators} onOpen={setIndicatorTarget} />
-        ) : null}
 
         {watchlistOpen ? (
           <Watchlist
             rows={rows}
-            watch={watchComplete}
+            watch={watch}
             symbol={symbol}
-            day={day}
+            day={day.length > 0 ? day : flowDay}
             loading={catalogueLoading}
             onSymbol={(next) => {
               chooseSymbol(next);
             }}
+            onAdd={addToWatch}
             onWatchChange={setWatch}
+            flow={flow}
             searchOpen={searchOpen}
             onSearchOpen={() => setSearchOpen(true)}
             onSearchClose={() => setSearchOpen(false)}
