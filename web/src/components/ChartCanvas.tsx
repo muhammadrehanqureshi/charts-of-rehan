@@ -1,12 +1,13 @@
 /**
  * The chart surface: TradingView's own engine, bound to the PSX tape.
  *
- * The renderer is the genuine thing: `lightweight-charts` is TradingView's
- * open-source chart (Apache-2.0, the same renderer behind their quick
- * charts), so pan, zoom, the price scale, the crosshair, the packed candles
- * and the attached volume pane are drawn by their code, themed to TV's
- * exact dark tokens (#131722 chart, #1e222d grid, #089981 up, #f23645
- * down, #758696 crosshair, Trebuchet MS text).
+ * The renderer is `lightweight-charts`, TradingView's open-source engine
+ * (Apache-2.0), so pan, zoom, the price scale, the crosshair and the candles
+ * are drawn by their code. The plate is true black (#000) with one step of
+ * separation for the grid (#141414) and the borders (#1f1f1f), the candles
+ * are TV's own teal (#089981) and red (#f23645), the crosshair is #758696
+ * and the type is Trebuchet MS. Their attribution badge is switched off: the
+ * chart is the owner's, and nothing here links off the page.
  *
  * The drawing rule survives from the previous renderer: React re-renders
  * for metadata only, the engine owns the pixels, and a pointer move goes
@@ -28,16 +29,15 @@ import {
   type LineData,
   LineStyle,
   type MouseEventParams,
-  type SeriesMarker,
   type Time,
   type UTCTimestamp,
+  TickMarkType,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
   CrosshairMode,
   ColorType,
   createChart,
-  createSeriesMarkers,
   createTextWatermark,
 } from "lightweight-charts";
 import {
@@ -46,7 +46,13 @@ import {
   useRef,
 } from "react";
 
-import type { Gap, PrintEvent, PrintTotals, Resolution } from "../api/types";
+import type {
+  DeltaMinute,
+  Gap,
+  PrintEvent,
+  PrintTotals,
+  Resolution,
+} from "../api/types";
 import {
   measureBetween,
   newDrawingId,
@@ -59,9 +65,12 @@ import {
   anchorAt,
   frameFor,
   paintOverlay,
+  paintSessionBreaks,
 } from "../chart/overlay";
+import { sessionBreaks } from "../chart/sessions";
+import { flowColumns } from "../chart/flow";
 import { formatClock, formatPrice, formatVolume } from "../chart/format";
-import { type ColumnSeries, timeMs } from "../chart/series";
+import { type ColumnSeries } from "../chart/series";
 import type { ChartAppearance } from "../hooks/useAppearance";
 import type {
   IndicatorOutput,
@@ -74,8 +83,10 @@ const MIN_WIDTH = 320;
 const MIN_HEIGHT = 220;
 const TAPE_ROWS = 9;
 const RIGHT_OFFSET_BARS = 5;
+/** How many bars the chart shows when it opens, TradingView's own window. */
+const WINDOW_BARS = 160;
 
-/** The chart's colour tokens, TV's exact values. */
+/** The chart's colour tokens: one theme, black, with TV's own candle hues. */
 export interface TvTheme {
   readonly background: string;
   readonly grid: string;
@@ -90,39 +101,28 @@ export interface TvTheme {
   readonly watermark: string;
 }
 
-/** TradingView's dark chart, token for token. */
+/**
+ * Black, and only black.
+ *
+ * The chart used to sit on TV's slate (#131722), which reads grey once it
+ * fills a screen. The plate is now true black so the candles, the grid and
+ * the axes are the only things with weight on it; the grid and the borders
+ * are one step off black so they separate without becoming lines of their
+ * own. The candle hues stay TV's own teal and red.
+ */
 export const TV_DARK_THEME: TvTheme = {
-  background: "#131722",
-  grid: "#1e222d",
+  background: "#000000",
+  grid: "#141414",
   text: "#d1d4dc",
-  border: "#2a2e39",
+  border: "#1f1f1f",
   up: "#089981",
   down: "#f23645",
   volumeUp: "rgba(8, 153, 129, 0.45)",
   volumeDown: "rgba(242, 54, 69, 0.45)",
   crosshair: "#758696",
-  labelBack: "#363a45",
-  watermark: "rgba(120, 123, 134, 0.18)",
+  labelBack: "#2a2a2a",
+  watermark: "rgba(120, 123, 134, 0.16)",
 };
-
-/** The same drawing code read on a bright screen. */
-export const TV_LIGHT_THEME: TvTheme = {
-  background: "#ffffff",
-  grid: "#e0e3eb",
-  text: "#131722",
-  border: "#d7dce3",
-  up: "#089981",
-  down: "#f23645",
-  volumeUp: "rgba(8, 153, 129, 0.30)",
-  volumeDown: "rgba(242, 54, 69, 0.30)",
-  crosshair: "#9598a1",
-  labelBack: "#f0f3fa",
-  watermark: "rgba(120, 123, 134, 0.14)",
-};
-
-export function tvTheme(mode: "dark" | "light"): TvTheme {
-  return mode === "light" ? TV_LIGHT_THEME : TV_DARK_THEME;
-}
 
 export interface ChartCanvasProps {
   readonly series: ColumnSeries;
@@ -132,7 +132,11 @@ export interface ChartCanvasProps {
   readonly viewKey: string;
   readonly version: number;
   readonly volumeAvailable: boolean;
-  readonly theme: "dark" | "light";
+  /**
+   * Kept so an older shell still type-checks. The chart has one plate now:
+   * true black, in both themes, because the owner asked for black only.
+   */
+  readonly theme?: "dark" | "light";
   /** A sentence for the accessible description: which session is on screen. */
   readonly sessionLabel: string;
   /** What to say when there is nothing to draw, and why. */
@@ -143,6 +147,8 @@ export interface ChartCanvasProps {
   readonly prints?: readonly PrintEvent[];
   /** The venue's own session counters, for the on-chart order tape. */
   readonly printTotals?: PrintTotals | null;
+  /** The tape's per-minute buy/sell split, for the volume-delta plate. */
+  readonly delta?: readonly DeltaMinute[];
   /** The chart headline, TV-style: `PRL · 1h · PSX` watermark. */
   readonly heading?: string;
   /** True while a live stream is open; the chart itself does not need it. */
@@ -164,19 +170,16 @@ interface PaneRef {
   readonly histogram?: ISeriesApi<"Histogram", Time>;
 }
 
-type MarkerApi = {
-  setMarkers(markers: SeriesMarker<Time>[]): void;
-};
-
 interface EngineState {
   readonly chart: IChartApi;
   readonly candles: ISeriesApi<"Candlestick", Time>;
   readonly volume: ISeriesApi<"Histogram", Time> | null;
-  readonly markers: MarkerApi | null;
   readonly panes: Map<string, PaneRef>;
   /** epoch-second → bar index, for the legend's previous close. */
   readonly index: Map<number, number>;
   readonly volumeShown: boolean;
+  /** The plate under the candles is delta (buy - sell), not raw volume. */
+  deltaShown: boolean;
   data: SeriesData | null;
 }
 
@@ -218,15 +221,6 @@ const karachiClock = new Intl.DateTimeFormat("en-GB", {
   hour12: false,
 });
 
-const karachiStamp = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Asia/Karachi",
-  day: "2-digit",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
 const karachiDay = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Karachi",
   day: "2-digit",
@@ -240,12 +234,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
     viewKey,
     version,
     volumeAvailable,
-    theme,
     sessionLabel,
     emptyNote,
     indicators,
     prints,
     printTotals,
+    delta,
     heading,
     live,
     tool,
@@ -256,15 +250,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
   } = props;
   void live; // the status bar owns liveness; the chart owns candles
   void props.gaps; // the status bar owns the gap ledger; see it there
+  void props.theme; // one plate, black; see TV_DARK_THEME
 
 
   const wrapper = useRef<HTMLDivElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const legend = useRef<HTMLDivElement | null>(null);
   const engine = useRef<EngineState | null>(null);
-  const didFit = useRef(false);
-  const themeRef = useRef(theme);
-  themeRef.current = theme;
+  const fitKey = useRef("");
+  const fitCount = useRef(0);
+  /** True once the reader pans, zooms or drags: no fit after that. */
+  const zoomed = useRef(false);
 
   // The drawing overlay: its canvas, the capture in progress and one
   // batched repaint, so a pointer move costs one frame, not a render.
@@ -278,7 +274,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
 
   const showSeconds = resolution === "1s" || resolution === "10s";
 
-  /** TV's tick marks and axis: the Karachi clock, whatever the viewer's PC. */
+  /**
+   * TV's tick marks and axis: the Karachi clock, whatever the viewer's PC.
+   *
+   * A tick that lands on a day's first bar is labelled with the day itself -
+   * "23 Oct" - exactly as TV does. Two sessions on one chart otherwise read
+   * as a clock that jumps backwards, which is precisely how a merged chart
+   * was being misread.
+   */
   const tickLabel = useMemo(() => {
     const secondsFormat = new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Karachi",
@@ -287,11 +290,15 @@ export function ChartCanvas(props: ChartCanvasProps) {
       second: "2-digit",
       hour12: false,
     });
-    return (time: Time): string => {
-      const ms = Number(time) * 1000;
-      const moment = new Date(ms);
+    return (time: Time, markType: TickMarkType): string => {
+      const moment = new Date(Number(time) * 1000);
       if (Number.isNaN(moment.getTime())) {
         return "";
+      }
+      if (markType === TickMarkType.DayOfMonth
+        || markType === TickMarkType.Month
+        || markType === TickMarkType.Year) {
+        return karachiDay.format(moment);
       }
       return showSeconds ? secondsFormat.format(moment)
         : karachiClock.format(moment);
@@ -319,15 +326,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
     if (surfaceEl === null) {
       return;
     }
-    const tokens = { ...tvTheme(themeRef.current) };
+    const tokens = { ...TV_DARK_THEME };
     if (appearance !== undefined) {
       // The volume bars wear the candles' own colours at TV's muted alpha.
       tokens.up = appearance.up;
       tokens.down = appearance.down;
-      tokens.volumeUp = withAlpha(appearance.up, themeRef.current === "light"
-        ? 0.30 : 0.45);
-      tokens.volumeDown = withAlpha(appearance.down,
-        themeRef.current === "light" ? 0.30 : 0.45);
+      tokens.volumeUp = withAlpha(appearance.up, 0.45);
+      tokens.volumeDown = withAlpha(appearance.down, 0.45);
     }
 
     // The decimals come from the tape's own closes, before any axis print.
@@ -340,6 +345,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
       layout: {
         background: { type: ColorType.Solid, color: tokens.background },
         textColor: tokens.text,
+        // No TV badge, and no link off this page: the chart is the owner's.
+        attributionLogo: false,
         fontFamily: "'Trebuchet MS', 'Segoe UI', Verdana, sans-serif",
         panes: { separatorColor: tokens.border },
       },
@@ -366,7 +373,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
       },
       rightPriceScale: {
         borderColor: tokens.border,
-        scaleMargins: { top: 0.12, bottom: 0.12 },
+        // Room for the volume bars at the foot of the price pane, so a candle
+        // never hides behind them.
+        scaleMargins: volumeAvailable
+          ? { top: 0.08, bottom: 0.24 }
+          : { top: 0.12, bottom: 0.12 },
       },
       timeScale: {
         borderColor: tokens.border,
@@ -375,7 +386,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         timeVisible: true,
         secondsVisible: showSeconds,
         tickMarkFormatter:
-          (time: Time) => tickLabel(time),
+          (time: Time, markType: TickMarkType) => tickLabel(time, markType),
       },
       localization: {
         priceFormatter: (price: number) => formatPrice(price, decimals),
@@ -396,19 +407,18 @@ export function ChartCanvas(props: ChartCanvasProps) {
 
     let volume: ISeriesApi<"Histogram", Time> | null = null;
     if (volumeAvailable) {
-      chart.addPane();
-      const volumeSeries = chart.addSeries(
-        HistogramSeries,
-        {
-          priceScaleId: "right",
-          priceLineVisible: false,
-          lastValueVisible: false,
-          base: 0,
-        },
-        1,
-      );
+      // Volume rides an overlay scale of the price pane - no axis of its own,
+      // no pane of its own - held to the bottom fifth as TV draws it, so the
+      // bars sit under the candles and never stretch the price axis.
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceScaleId: "",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        base: 0,
+        priceFormat: { type: "volume", precision: 0, minMove: 1 },
+      });
       volumeSeries.priceScale().applyOptions({
-        scaleMargins: { top: 0.6, bottom: 0 },
+        scaleMargins: { top: 0.82, bottom: 0 },
       });
       volume = volumeSeries;
     }
@@ -433,8 +443,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
         });
       }
     }
-
-    const markersApi = createSeriesMarkers(candles, []);
 
     // The pointer readout: one browser callback, one DOM write, no renders.
     const onCrosshair = (param: MouseEventParams) => {
@@ -465,6 +473,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
     observer.observe(surfaceEl);
     resize();
 
+    // Any real gesture is the reader taking the window: from then on the
+    // chart keeps their zoom, whatever data lands.
+    const tookTheWindow = () => {
+      zoomed.current = true;
+    };
+    surfaceEl.addEventListener("wheel", tookTheWindow, { passive: true });
+    surfaceEl.addEventListener("pointerdown", tookTheWindow);
+
     // Pan or zoom moves the drawings too: repaint once per viewport change.
     const rangeSub = () => scheduleOverlayPaint();
     chart.timeScale().subscribeVisibleTimeRangeChange(rangeSub);
@@ -473,16 +489,28 @@ export function ChartCanvas(props: ChartCanvasProps) {
       chart,
       candles,
       volume,
-      markers: markersApi as unknown as MarkerApi,
       panes: new Map(),
       index: new Map(),
       volumeShown: volumeAvailable,
+      deltaShown: false,
       data: null,
     };
-    didFit.current = false;
+
+    // The price pane is the chart; a study pane beneath it is a detail, so
+    // the candles keep the height and the studies share what is left.
+    chart.panes()[0]?.setStretchFactor(4);
+
+    // A rebuilt engine draws the bars it already has: a new study must never
+    // leave an empty plate waiting for the market to move.
+    fitKey.current = "";
+    fitCount.current = 0;
+    zoomed.current = false;
+    paintData();
 
     return () => {
       observer.disconnect();
+      surfaceEl.removeEventListener("wheel", tookTheWindow);
+      surfaceEl.removeEventListener("pointerdown", tookTheWindow);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(rangeSub);
       chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
@@ -490,36 +518,46 @@ export function ChartCanvas(props: ChartCanvasProps) {
     };
     // The full build is keyed to the chart's identity only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewKey, indicatorsKey, theme, volumeAvailable, appearanceKey]);
+  }, [viewKey, indicatorsKey, volumeAvailable, appearanceKey]);
 
   /**
-   * The data effect: every bar version flows through setData on the
-   * engine's series, prints become markers, indicator series are built on
-   * a fresh engine or fed their own series, and the legend reads the
-   * newest bar. Exactly the pattern the engine docs prescribe.
+   * One pass of the tape into the engine: candles, the volume plate, the
+   * study series, the legend, and the single fit a new view gets. It runs
+   * when bars arrive and again right after an engine is rebuilt, so a rebuild
+   * is never a blank chart waiting for the next tick.
+   *
+   * Times go in strictly increasing order because the engine asserts it: a
+   * repeated instant (two sources, one minute) is drawn once, at the newest
+   * reading, rather than throwing the whole series away.
    */
-  useEffect(() => {
+  function paintData(): void {
     const state = engine.current;
-    if (state === null || series.length === 0) {
+    if (state === null) {
       return;
     }
-    const tokens = tvTheme(themeRef.current);
-    const data = seriesData(series);
-    const length = data.time.length;
+    const base = seriesData(series);
+    const length = base.time.length;
     if (length === 0) {
       return;
     }
-
+    // The tape's own split, folded onto the bars this chart is drawing. Only
+    // minute-or-coarser charts take it: a five-second candle cannot borrow a
+    // minute's split without inventing detail.
+    const flow = delta !== undefined && delta.length > 0
+      ? flowColumns(delta, base.time, series.stepMs())
+      : null;
+    const hasFlow = flow !== null && flow.buy.some(Number.isFinite);
+    const data: SeriesData = hasFlow
+      ? { ...base, buy: flow.buy, sell: flow.sell }
+      : base;
+    state.deltaShown = hasFlow && volumeAvailable;
+    const tokens = TV_DARK_THEME;
     state.data = data;
     state.index.clear();
-    for (let i = 0; i < length; i += 1) {
-      const t = data.time[i];
-      if (t !== undefined) {
-        state.index.set(Math.floor(t / 1000), i);
-      }
-    }
 
-    const candlesData: CandlestickData[] = new Array(length);
+    const candlesData: CandlestickData[] = [];
+    const volumeData: HistogramData[] = [];
+    let previous = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < length; i += 1) {
       const t = data.time[i];
       const open = data.open[i];
@@ -530,40 +568,49 @@ export function ChartCanvas(props: ChartCanvasProps) {
         || low === undefined || close === undefined) {
         continue;
       }
-      candlesData[i] = {
-        time: (t / 1000) as UTCTimestamp,
-        open,
-        high,
-        low,
-        close,
-      };
+      if (!Number.isFinite(open) || !Number.isFinite(high)
+        || !Number.isFinite(low) || !Number.isFinite(close)) {
+        continue; // a bar the tape never priced is not a price of zero
+      }
+      const seconds = Math.floor(t / 1000);
+      if (seconds <= previous) {
+        continue;
+      }
+      previous = seconds;
+      state.index.set(seconds, i);
+      candlesData.push({
+        time: seconds as UTCTimestamp, open, high, low, close,
+      });
+      if (state.deltaShown) {
+        const bought = data.buy?.[i];
+        const sold = data.sell?.[i];
+        if (bought !== undefined && sold !== undefined
+            && Number.isFinite(bought) && Number.isFinite(sold)) {
+          const net = bought - sold;
+          volumeData.push({
+            time: seconds as UTCTimestamp,
+            value: net,
+            color: net >= 0 ? withAlpha(tokens.up, 0.55)
+              : withAlpha(tokens.down, 0.55),
+          });
+        }
+      } else {
+        const value = data.volume[i];
+        if (value !== undefined && Number.isFinite(value)) {
+          volumeData.push({
+            time: seconds as UTCTimestamp,
+            value,
+            color: close >= open ? tokens.volumeUp : tokens.volumeDown,
+          });
+        }
+      }
+    }
+    if (candlesData.length === 0) {
+      return;
     }
     state.candles.setData(candlesData);
-
     if (state.volumeShown && state.volume !== null) {
-      const volumeData: HistogramData[] = new Array(length);
-      for (let i = 0; i < length; i += 1) {
-        const t = data.time[i];
-        const open = data.open[i];
-        const close = data.close[i];
-        const value = data.volume[i];
-        if (t === undefined || open === undefined || close === undefined
-          || value === undefined) {
-          continue;
-        }
-        volumeData[i] = {
-          time: (t / 1000) as UTCTimestamp,
-          value,
-          color: close >= open ? tokens.volumeUp : tokens.volumeDown,
-        };
-      }
       state.volume.setData(volumeData);
-    }
-
-    if (state.markers !== null) {
-      state.markers.setMarkers(
-        printMarkers(data, prints, tokens),
-      );
     }
 
     buildIndicators(state, indicators, data, tokens);
@@ -573,10 +620,30 @@ export function ChartCanvas(props: ChartCanvasProps) {
       writeLegend(state, length - 1, legendEl, state.volumeShown);
     }
 
-    if (!didFit.current) {
-      didFit.current = true;
-      state.chart.timeScale().fitContent();
+    // Fit in logical bars rather than pixels, so the window is the same
+    // whatever width the pane happened to have when the data landed. A view
+    // change refits; so does a wider dataset arriving while the reader has
+    // not touched the chart (a merged span lands after the live snapshot of
+    // one session, and the chart must show the span, not the snapshot). Once
+    // the reader pans or zooms, nothing here moves their window again.
+    const widened = candlesData.length > fitCount.current;
+    if (fitKey.current !== viewKey || (!zoomed.current && widened)) {
+      fitKey.current = viewKey;
+      fitCount.current = candlesData.length;
+      // Open on the newest session's own width, not on five days squeezed
+      // into a few hundred pixels: at 464 bars a full fit draws one-pixel
+      // candles. The earlier sessions are a pan away, which is what a
+      // continuous series is for.
+      const newest = Math.min(WINDOW_BARS, candlesData.length);
+      state.chart.timeScale().setVisibleLogicalRange({
+        from: candlesData.length - newest,
+        to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
+      });
     }
+  }
+
+  useEffect(() => {
+    paintData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
@@ -648,6 +715,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
       toolColor: "#2962ff",
       midDrag,
     });
+    // The session dividers sit behind the reader's own drawings: where one
+    // Karachi trading day ends and the next begins, so a merged chart cannot
+    // be read as a clock running backwards.
+    if (state.data !== null) {
+      paintSessionBreaks(context, state.chart, frame,
+        sessionBreaks(state.data.time),
+        { line: "rgba(120, 123, 134, 0.32)", label: "#787b86" });
+    }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag);
     }
@@ -842,16 +917,26 @@ function writeLegend(
   const high = state.data.high[i] ?? close;
   const low = state.data.low[i] ?? close;
   const stampedVolume = state.data.volume[i] ?? Number.NaN;
+  const bought = state.data.buy?.[i];
+  const sold = state.data.sell?.[i];
+  const net = bought !== undefined && sold !== undefined
+    ? bought - sold : Number.NaN;
 
-  const volumeHtml = withVolume && state.volumeShown
-    ? `<span class="tv-legend__field">V <b>` +
-      `${formatVolume(stampedVolume)}</b></span>`
-    : "";
+  // The plate under the candles is the tape's own delta when it has one,
+  // and the raw volume counter when it does not. The legend says which.
+  const volumeHtml = !withVolume || !state.volumeShown
+    ? ""
+    : state.deltaShown && Number.isFinite(net)
+      ? `<span class="tv-legend__field">Δ <b style="color:${
+        net >= 0 ? "var(--tv-up)" : "var(--tv-down)"
+      }">${formatVolume(net)}</b></span>`
+      : `<span class="tv-legend__field">V <b>` +
+        `${formatVolume(stampedVolume)}</b></span>`;
   legendEl.innerHTML =
     `<span class="tv-legend__stamp">` +
-    karachiStamp.format(new Date(stampMs)) +
-    ` <span class="tv-legend__day">` +
-    karachiDay.format(new Date(stampMs)) + `</span></span>` +
+    `<span class="tv-legend__day">` + karachiDay.format(new Date(stampMs)) +
+    `</span> ` + karachiClock.format(new Date(stampMs)) +
+    `</span>` +
     `<span class="tv-legend__field">O <b style="color:${colour(open)}">` +
     `${formatPrice(open, 2)}</b></span>` +
     `<span class="tv-legend__field">H <b style="color:${colour(high)}">` +
@@ -887,69 +972,6 @@ function paintOne(
 }
 
 // ---------------------------------------------------------------------------
-// Order prints as TV-style markers
-// ---------------------------------------------------------------------------
-
-/**
- * A print rides the candle that was active when it printed — the same rule
- * the one-minute fold keeps — as a teal dot (buyer lifted) or a red dot
- * (seller hit) set on the bar it belongs to. Snap by matching time, in
- * order, to the bar whose own minute window covers the print.
- */
-function printMarkers(
-  data: SeriesData,
-  prints: readonly PrintEvent[] | undefined,
-  tokens: TvTheme,
-): SeriesMarker<Time>[] {
-  if (prints === undefined || prints.length === 0 || data.time.length === 0) {
-    return [];
-  }
-  const markers: SeriesMarker<Time>[] = [];
-  for (let i = 0; i < prints.length; i += 1) {
-    const event = prints[i];
-    if (event === undefined) {
-      continue;
-    }
-    const ms = timeMs(event.t);
-    if (!Number.isFinite(ms)) {
-      continue;
-    }
-    // The bar whose time is the greatest one at or before this print.
-    let lo = 0;
-    let hi = data.time.length - 1;
-    const first = data.time[0];
-    if (first === undefined || ms < first) {
-      continue; // before the tape watched: no bar owns it
-    }
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      const midT = data.time[mid];
-      if (midT !== undefined && midT <= ms) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    const barT = data.time[lo];
-    if (barT === undefined) {
-      continue;
-    }
-    const newest = i === prints.length - 1;
-    const buy = event.side === "B";
-    const sell = event.side === "S";
-    markers.push({
-      time: (barT / 1000) as UTCTimestamp,
-      position: sell ? "belowBar" : "inBar",
-      shape: "circle",
-      color: buy ? tokens.up : sell ? tokens.down : tokens.crosshair,
-      size: newest ? 2 : 1,
-      text: "",
-    });
-  }
-  return markers;
-}
-
-// ---------------------------------------------------------------------------
 // Indicator panes
 // ---------------------------------------------------------------------------
 
@@ -967,7 +989,9 @@ function buildIndicators(
 ): void {
   void tokens;
   const outputs = computeIndicators(specs, data);
-  let nextPane = state.volumeShown ? 2 : 1;
+  // Pane 0 is the price (volume rides its own overlay scale), so the first
+  // study pane is pane 1.
+  let nextPane = 1;
   for (const output of outputs) {
     if (output.error !== undefined) {
       continue;
@@ -990,7 +1014,9 @@ function buildIndicators(
 
     const paneIndex = isPane ? nextPane : 0;
     if (isPane) {
-      state.chart.addPane();
+      // Every study pane shares the height left under the price pane, never
+      // the price pane's own share.
+      state.chart.addPane().setStretchFactor(1);
       nextPane += 1;
     }
     const    lines: ISeriesApi<"Line", Time>[] = [];
@@ -1091,7 +1117,7 @@ function histData(
 /**
  * The order tape: the venue's own counters and the newest prints, floating
  * over the chart. It draws when the tape has either prints or counters to
- * show, and nothing when it has neither — no empty box.
+ * show, and nothing when it has neither - no empty box.
  */
 function printTape(
   prints: readonly PrintEvent[] | undefined,

@@ -5,7 +5,7 @@
  * inside it are placed with the engine's own mappings (time → x, price →
  * y), so a drawing glued to a bar stays glued when the reader pans, zooms
  * or the next bars arrive. A drawing the viewport left is simply not
- * drawn this frame — the engine's timeToCoordinate answers null there.
+ * drawn this frame - the engine's timeToCoordinate answers null there.
  */
 
 import type {
@@ -18,6 +18,7 @@ import {
   type Drawing,
   type MeasureResult,
 } from "./drawings";
+import type { SessionBreak } from "./sessions";
 
 export interface DrawingChip {
   /** Drawing colour, TV's active blue. */
@@ -88,6 +89,45 @@ export function pixelAt(
     return null;
   }
   return { x, y };
+}
+
+/**
+ * The session breaks: one dashed line where the Karachi day changes, with
+ * that day's label at the top of the plot. A merged chart packs its sessions
+ * edge to edge, so without this the clock appears to jump backwards at every
+ * boundary; with it the reader can see where one day ends and the next
+ * begins, exactly as the terminal's own session dividers read.
+ */
+export function paintSessionBreaks(
+  context: CanvasRenderingContext2D,
+  chart: IChartApi,
+  frame: OverlayFrame,
+  breaks: readonly SessionBreak[],
+  colors: { line: string; label: string },
+): void {
+  if (breaks.length < 2) {
+    return;
+  }
+  context.save();
+  context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
+  context.textBaseline = "top";
+  for (const item of breaks) {
+    const x = chart.timeScale().timeToCoordinate((item.t / 1000) as never);
+    if (x === null || item.first) {
+      continue;
+    }
+    context.setLineDash([2, 4]);
+    context.strokeStyle = colors.line;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(Math.round(x) + 0.5, 0);
+    context.lineTo(Math.round(x) + 0.5, frame.plotHeight);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = colors.label;
+    context.fillText(item.label, Math.round(x) + 5, 3);
+  }
+  context.restore();
 }
 
 export interface OverlayShapeInput {

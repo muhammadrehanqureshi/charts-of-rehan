@@ -83,4 +83,12 @@ export interface SeriesData {
   readonly low: Float64Array;
   readonly close: Float64Array;
   readonly volume: Float64Array;
+  /**
+   * The tape's own classified buy volume per bar, when the service has a
+   * print tape. NaN marks a bar the tape did not classify; a calculation must
+   * not read that as zero shares.
+   */
+  readonly buy?: Float64Array;
+  /** The same for the seller's side. */
+  readonly sell?: Float64Array;
 }
