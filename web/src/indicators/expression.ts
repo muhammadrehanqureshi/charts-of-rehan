@@ -39,7 +39,7 @@ type Value = number | Float64Array;
 
 interface Token {
   readonly kind: "number" | "ident" | "op" | "lparen" | "rparen" |
-    "comma" | "assign" | "end";
+    "comma" | "assign" | "string" | "end";
   readonly text: string;
   readonly at: number;
 }
@@ -49,6 +49,7 @@ type Node =
   | { kind: "ref"; name: string }
   | { kind: "unary"; op: string; operand: Node }
   | { kind: "binary"; op: string; left: Node; right: Node }
+  | { kind: "ternary"; cond: Node; then: Node; otherwise: Node }
   | { kind: "call"; name: string; args: Node[] };
 
 const SERIES = new Set([
@@ -58,8 +59,17 @@ const SERIES = new Set([
 const FUNCTIONS = new Set([
   "sma", "ema", "rsi", "atr", "stddev", "highest", "lowest", "roc",
   "change", "abs", "sqrt", "log", "exp", "min", "max", "nz", "obv",
-  "plot", "hline",
+  "plot", "hline", "round", "floor", "ceil", "pow", "sign", "shift",
+  "stdev", "na",
 ]);
+
+//: `color.yellow` and friends are settings, never values: a plot may name
+//: them, and the formula simply has no colour to give them.
+const SETTING_PREFIXES = [
+  "color.", "shape.", "style.", "size.", "location.", "position.",
+  "format.", "plot.", "display.", "scale.", "currency.", "barmerge.",
+  "font.", "hline.",
+];
 
 /**
  * A whole script, not a one-line formula.
@@ -120,10 +130,31 @@ function tokenize(source: string): Token[] {
       tokens.push({ kind: "number", text, at: start });
       continue;
     }
+    if (character === "\"" || character === "'") {
+      // A title, a tooltip, a colour name: a string is never a number, so it
+      // is read as one token and dropped where a call cannot use it.
+      const quote = character;
+      const start = index;
+      index += 1;
+      while (index < source.length && source[index] !== quote) {
+        index += source[index] === "\\" ? 2 : 1;
+      }
+      index += 1;
+      tokens.push({ kind: "string", text: source.slice(start, index), at: start });
+      continue;
+    }
     if (/[A-Za-z_]/.test(character)) {
       const start = index;
       while (index < source.length && /[A-Za-z0-9_]/.test(source[index] ?? "")) {
         index += 1;
+      }
+      // A namespace (`ta.ema`, `math.max`, `color.yellow`) is one name, not
+      // a member access this language does not have.
+      while (source[index] === "." && /[A-Za-z_]/.test(source[index + 1] ?? "")) {
+        index += 1;
+        while (index < source.length && /[A-Za-z0-9_]/.test(source[index] ?? "")) {
+          index += 1;
+        }
       }
       tokens.push({ kind: "ident", text: source.slice(start, index), at: start });
       continue;
@@ -145,17 +176,18 @@ function tokenize(source: string): Token[] {
       index += 1;
       continue;
     }
-    if ("+-*/%^".includes(character)) {
+    const pair = source.slice(index, index + 2);
+    if (pair === ">=" || pair === "<=" || pair === "==" || pair === "!=") {
+      tokens.push({ kind: "op", text: pair, at: index });
+      index += 2;
+      continue;
+    }
+    if ("+-*/%^?:<>[ ]".includes(character) && character !== " ") {
       tokens.push({ kind: "op", text: character, at: index });
       index += 1;
       continue;
     }
     if (character === "=") {
-      // `==` is a comparison this language does not have; say so plainly
-      // rather than reading half of it as an assignment.
-      if (source[index + 1] === "=") {
-        throw new FormulaError(`"==" is not supported (at ${index})`);
-      }
       tokens.push({ kind: "assign", text: character, at: index });
       index += 1;
       continue;
@@ -189,12 +221,12 @@ class Parser {
       if (first?.kind === "ident" && second?.kind === "assign") {
         this.take();
         this.take();
-        const value = this.additive();
+        const value = this.ternary();
         statements.push({
           kind: "assign", name: first.text.toLowerCase(), value,
         });
       } else {
-        statements.push({ kind: "expr", value: this.additive() });
+        statements.push({ kind: "expr", value: this.ternary() });
       }
       const next = this.peek();
       if (next !== undefined && next.kind !== "end") {
@@ -219,6 +251,48 @@ class Parser {
     }
     this.index += 1;
     return token;
+  }
+
+  /** `cond ? a : b`, right associative, the way Pine writes a conditional plot. */
+  private ternary(): Node {
+    const cond = this.logic();
+    if (this.peek()?.kind === "op" && this.peek()?.text === "?") {
+      this.take();
+      const then = this.ternary();
+      const colon = this.take();
+      if (colon.kind !== "op" || colon.text !== ":") {
+        throw new FormulaError(`"?" needs a matching ":" (at ${colon.at})`);
+      }
+      const otherwise = this.ternary();
+      return { kind: "ternary", cond, then, otherwise };
+    }
+    return cond;
+  }
+
+  /** Pine's `and`/`or`, which bind looser than a comparison and tighter
+   * than the ternary. */
+  private logic(): Node {
+    let left = this.comparison();
+    while (this.peek()?.kind === "ident" &&
+           ["and", "or"].includes(this.peek()?.text.toLowerCase() ?? "")) {
+      const op = this.take().text.toLowerCase();
+      const right = this.comparison();
+      left = { kind: "binary", op, left, right };
+    }
+    return left;
+  }
+
+  /** `<`, `<=`, `>`, `>=`, `==`, `!=`: 1 is true, 0 is false. */
+  private comparison(): Node {
+    let left = this.additive();
+    while (this.peek()?.kind === "op" &&
+           [">", "<", ">=", "<=", "==", "!="]
+             .includes(this.peek()?.text ?? "")) {
+      const op = this.take().text;
+      const right = this.additive();
+      left = { kind: "binary", op, left, right };
+    }
+    return left;
   }
 
   private additive(): Node {
@@ -254,13 +328,62 @@ class Parser {
   }
 
   private unary(): Node {
+    if (this.peek()?.kind === "ident"
+        && this.peek()?.text.toLowerCase() === "not") {
+      this.take();
+      return { kind: "unary", op: "not", operand: this.unary() };
+    }
     if (this.peek()?.kind === "op" &&
         ((this.peek()?.text ?? "") === "-" ||
          (this.peek()?.text ?? "") === "+")) {
       const op = this.take().text;
       return { kind: "unary", op, operand: this.unary() };
     }
-    return this.primary();
+    return this.postfix(this.primary());
+  }
+
+  /** `close[1]`: the value `n` bars back, read as a shift of the series. */
+  private postfix(node: Node): Node {
+    let value = node;
+    while (this.peek()?.kind === "op" && this.peek()?.text === "[") {
+      this.take();
+      const back = this.ternary();
+      const close = this.take();
+      if (close.kind !== "op" || close.text !== "]") {
+        throw new FormulaError(`"[" needs a matching "]" (at ${close.at})`);
+      }
+      value = { kind: "call", name: "shift", args: [value, back] };
+    }
+    return value;
+  }
+
+  /**
+   * One call argument.
+   *
+   * A string is a title, and a `name=value` pair is a setting (`color`,
+   * `linewidth`) or an input the study names. Titles and settings are
+   * dropped, but a numeric input keeps its value so a Pine call written with
+   * named arguments still reads positionally.
+   */
+  private argument(args: Node[]): void {
+    if (this.peek()?.kind === "string") {
+      this.take();
+      return;
+    }
+    const first = this.peek();
+    const second = this.tokens[this.index + 1];
+    if (first?.kind === "ident" && second?.kind === "assign") {
+      const name = first.text.toLowerCase();
+      this.take();
+      this.take();
+      const value = this.ternary();
+      if (["length", "period", "source", "src", "value", "series"]
+        .includes(name)) {
+        args.push(value);
+      }
+      return;
+    }
+    args.push(this.ternary());
   }
 
   private primary(): Node {
@@ -282,10 +405,10 @@ class Parser {
         this.take();
         const args: Node[] = [];
         if (this.peek()?.kind !== "rparen") {
-          args.push(this.additive());
+          this.argument(args);
           while (this.peek()?.kind === "comma") {
             this.take();
-            args.push(this.additive());
+            this.argument(args);
           }
         }
         if (this.take().kind !== "rparen") {
@@ -300,7 +423,7 @@ class Parser {
       return { kind: "ref", name };
     }
     if (token.kind === "lparen") {
-      const node = this.additive();
+      const node = this.ternary();
       if (this.take().kind !== "rparen") {
         throw new FormulaError("missing a closing \")\"");
       }
@@ -433,31 +556,85 @@ function replaceInputs(text: string): string {
  * which is the honest answer: a script quietly drawing something else would
  * be worse than a refusal.
  */
+/** A declaration, a shape or an alert: a line that draws, never a value. */
+const DROPPED_CALL = new RegExp(
+  "^\\s*(indicator|study|strategy|plotshape|plotchar|plotarrow|" +
+  "plotcandle|plotbar|bgcolor|barcolor|alertcondition|alert|fill|" +
+  "fill_between|table|log)\\s*\\(",
+);
+
+/** A drawing object or a collection: `box.delete(bx)`, `array.push(xs, i)`. */
+const DROPPED_NAMESPACE = new RegExp(
+  "^\\s*(?:[A-Za-z_]\\w*\\s*(?::?=)\\s*)?(box|line|label|table|array|" +
+  "strategy|request|ticker|polyline|map|matrix)\\.",
+);
+
+/** Pine's statement blocks are always drawings or guards; neither can plot. */
+const DROPPED_BLOCK = /^\s*(if|else|for|while|switch)\b/;
+
 export function normaliseScript(source: string): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const kept: string[] = [];
   let skipping = 0;
+  // The indentation whose indented body is being dropped with its `if`.
+  let blockIndent = -1;
   for (const raw of lines) {
     const line = stripComment(raw);
+    const indent = /^\s*/.exec(raw)?.[0].length ?? 0;
+    if (blockIndent >= 0) {
+      if (line.trim().length === 0) {
+        continue;
+      }
+      if (indent > blockIndent) {
+        continue;
+      }
+      blockIndent = -1;
+    }
     if (skipping > 0) {
       skipping += bracketDelta(line);
       continue;
     }
     // A declaration and a drawing this language cannot express (a shape, a
-    // colour, an alert) are dropped - with every line they wrap - rather
-    // than allowed to fail the whole study.
-    if (/^\s*(indicator|study|plotshape|plotchar|bgcolor|barcolor|alertcondition|fill|fill_between)\s*\(/.test(line)) {
+    // colour, an alert, a box, an array) are dropped - with every line they
+    // wrap - rather than allowed to fail the whole study.
+    if (DROPPED_CALL.test(line) || DROPPED_NAMESPACE.test(line)) {
       const delta = bracketDelta(line);
       skipping = delta > 0 ? delta : 0;
+      continue;
+    }
+    if (DROPPED_BLOCK.test(line)) {
+      blockIndent = indent;
       continue;
     }
     kept.push(line);
   }
   let text = kept.join("\n");
   text = replaceInputs(text);
-  text = text.replace(/\bta\.(\w+)/g, "$1");
+  text = text.replace(/\b(?:ta|math)\.(\w+)/g, "$1");
+  text = text.replace(/\bvarip\s+/g, "");
   text = text.replace(/\bvar\s+/g, "");
+  // Pine's reassignment is an assignment here: the language has no "this bar
+  // replaces that one", it evaluates the script once over the whole series.
+  text = text.replace(/:=/g, "=");
   return text.trim();
+}
+
+/**
+ * The home a pasted Pine study declares for itself.
+ *
+ * `indicator("Trend EMA", overlay=true)` says the study belongs over the
+ * candles; a script that says nothing is an oscillator and keeps its own pane.
+ * Reading the declaration is the difference between a formula landing where its
+ * author meant it and it being exiled to a pane nobody asked for.
+ */
+export function placementFromScript(
+  source: string,
+): "overlay" | "pane" | null {
+  const match = /overlay\s*=\s*(true|false)/i.exec(source);
+  if (match === null) {
+    return null;
+  }
+  return match[1]?.toLowerCase() === "true" ? "overlay" : "pane";
 }
 
 export function compileFormula(source: string): (data: SeriesData) => Float64Array {
@@ -479,6 +656,24 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
         const held = env.get(node.name);
         if (held !== undefined) {
           return held;
+        }
+        switch (node.name) {
+          case "na": return Number.NaN;
+          case "true": return 1;
+          case "false": return 0;
+          case "bar_index": {
+            const bars = new Float64Array(data.length);
+            for (let index = 0; index < data.length; index += 1) {
+              bars[index] = index;
+            }
+            return bars;
+          }
+          default: break;
+        }
+        if (SETTING_PREFIXES.some((prefix) => node.name.startsWith(prefix))) {
+          // A colour or a shape is a setting, never a number: it can sit in a
+          // call without being drawn, and it must not fail the study.
+          return Number.NaN;
         }
         if (!SERIES.has(node.name)) {
           throw new FormulaError(`unknown series or variable "${node.name}"`);
@@ -503,7 +698,27 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
       }
       case "unary": {
         const operand = evaluate(node.operand, data);
-        return map(operand, data.length, (x) => node.op === "-" ? -x : x);
+        return map(operand, data.length,
+          (x) => node.op === "-" ? -x
+            : node.op === "not" ? (x === 0 ? 1 : 0) : x);
+      }
+      case "ternary": {
+        const cond = evaluate(node.cond, data);
+        const yes = evaluate(node.then, data);
+        const no = evaluate(node.otherwise, data);
+        const length = data.length;
+        if (typeof cond === "number" && typeof yes === "number"
+          && typeof no === "number") {
+          return cond > 0 ? yes : no;
+        }
+        const out = new Float64Array(length);
+        for (let index = 0; index < length; index += 1) {
+          const pick = typeof cond === "number" ? cond : (cond[index] ?? Number.NaN);
+          out[index] = pick > 0
+            ? (typeof yes === "number" ? yes : (yes[index] ?? Number.NaN))
+            : (typeof no === "number" ? no : (no[index] ?? Number.NaN));
+        }
+        return out;
       }
       case "binary": {
         const left = evaluate(node.left, data);
@@ -516,6 +731,14 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
             case "/": return b === 0 ? Number.NaN : safe(a / b);
             case "%": return b === 0 ? Number.NaN : safe(a % b);
             case "^": return safe(Math.pow(a, b));
+            case ">": return a > b ? 1 : 0;
+            case "<": return a < b ? 1 : 0;
+            case ">=": return a >= b ? 1 : 0;
+            case "<=": return a <= b ? 1 : 0;
+            case "==": return a === b ? 1 : 0;
+            case "!=": return a !== b ? 1 : 0;
+            case "and": return a !== 0 && b !== 0 ? 1 : 0;
+            case "or": return a !== 0 || b !== 0 ? 1 : 0;
             default: throw new FormulaError(`unknown operator "${node.op}"`);
           }
         });
@@ -580,6 +803,39 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
             length, Math.min);
           case "max": return binary(args[0] ?? Number.NaN, args[1] ?? Number.NaN,
             length, Math.max);
+          case "shift": {
+            // `close[1]` is the value one bar back: the series moved forward,
+            // with na before the first bar it could reach.
+            const values = seriesValue(args[0] ?? Number.NaN, "shift", length);
+            const back = Math.max(0,
+              Math.round(scalar(args[1] ?? 1, "shift offset")));
+            const out = filled(length);
+            for (let index = back; index < length; index += 1) {
+              out[index] = values[index - back] ?? Number.NaN;
+            }
+            return out;
+          }
+          case "round": {
+            const digits = args.length > 1
+              ? Math.max(0, Math.round(scalar(args[1] ?? 0, "round digits")))
+              : 0;
+            const factor = Math.pow(10, digits);
+            return map(args[0] ?? Number.NaN, length,
+              (x) => Math.round(x * factor) / factor);
+          }
+          case "floor": return map(args[0] ?? Number.NaN, length, Math.floor);
+          case "ceil": return map(args[0] ?? Number.NaN, length, Math.ceil);
+          case "sign": return map(args[0] ?? Number.NaN, length, Math.sign);
+          case "pow": return binary(args[0] ?? Number.NaN, args[1] ?? Number.NaN,
+            length, Math.pow);
+          case "stdev":
+            return standardDeviation(
+              seriesValue(args[0] ?? Number.NaN, "stdev", length),
+              scalar(args[1] ?? 20, "stdev period"));
+          case "na":
+            // `na(x)` is the test, `na` alone is the value: both are Pine.
+            return map(args[0] ?? Number.NaN, length,
+              (x) => Number.isNaN(x) ? 1 : 0);
           case "nz": {
             const fallback = args.length > 1
               ? scalar(args[1] ?? 0, "nz fallback")

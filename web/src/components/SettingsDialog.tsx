@@ -246,11 +246,15 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
         )}
         {definition?.formula ? (
           <p className="settings-dialog__note">
-            One statement per line: series (open, high, low, close, volume,
-            hl2, ohlc4), functions (sma, ema, rsi, atr, stddev, highest,
-            lowest, roc, change, obv, abs, sqrt, log, exp, min, max, nz,
-            plot), arithmetic, and `name = expression` lines. A script may be
-            up to 8,000 characters; its last line is what the chart draws.
+            A formula or a pasted Pine study, up to 8,000 characters; its
+            last line is what the chart draws. Series (open, high, low,
+            close, volume, hl2, ohlc4, bar_index, na, true/false), functions
+            (sma, ema, rsi, atr, stddev, highest, lowest, roc, change, obv,
+            round, floor, ceil, pow, sign, shift, abs, sqrt, log, exp, min,
+            max, nz, plot), `name = expression`, comparisons, `a ? b : c`,
+            `close[1]` history, `//` comments, `ta.`/`math.` namespaces and
+            `input.*` defaults. Drawing lines (indicator, plotshape, box.*,
+            array.*, if blocks) are read and dropped, never drawn.
           </p>
         ) : null}
         {formulaError !== null

@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { placementFromScript } from "../indicators/expression";
 import {
   createIndicator,
   defaultParams,
@@ -128,10 +129,26 @@ export function useIndicators(): IndicatorController {
 
   const setParam = useCallback(
     (id: string, key: string, value: number | string) => {
-      setSpecs((current) => current.map((item) =>
-        item.id === id
-          ? { ...item, params: { ...item.params, [key]: value } }
-          : item));
+      setSpecs((current) => current.map((item) => {
+        if (item.id !== id) {
+          return item;
+        }
+        const next: IndicatorSpec = {
+          ...item,
+          params: { ...item.params, [key]: value },
+        };
+        // A pasted Pine study declares its own home. Re-reading that on every
+        // edit keeps the formula where its author said it belongs instead of
+        // exiling a moving average to a pane of its own.
+        if (item.type === "formula" && key === "expr"
+            && typeof value === "string") {
+          const declared = placementFromScript(value);
+          if (declared !== null) {
+            return { ...next, placement: declared };
+          }
+        }
+        return next;
+      }));
     },
     [],
   );

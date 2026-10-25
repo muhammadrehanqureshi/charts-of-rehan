@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { compileFormula, FormulaError, validateFormula } from "./expression";
+import {
+  compileFormula,
+  FormulaError,
+  placementFromScript,
+  validateFormula,
+} from "./expression";
 import type { SeriesData } from "./types";
 
 function dataFor(closes: readonly number[]): SeriesData {
@@ -63,8 +68,15 @@ describe("multi-statement scripts", () => {
       .toThrow(/unknown series or variable/);
   });
 
-  it("refuses a comparison it does not have", () => {
-    expect(() => compileFormula("close == 5")).toThrow(/not supported/);
+  it("answers a comparison with 1 or 0, the way a Pine condition does", () => {
+    const out = compileFormula("close >= 12")(dataFor([10, 12, 14]));
+    expect([...out]).toEqual([0, 1, 1]);
+  });
+
+  it("reads Pine's and/or/not as logic", () => {
+    const out = compileFormula("not (close > 11 and close < 13)")
+      (dataFor([10, 12, 14]));
+    expect([...out]).toEqual([1, 0, 1]);
   });
 
   it("holds a script far longer than the old 400-character ceiling", () => {
@@ -96,6 +108,57 @@ describe("multi-statement scripts", () => {
   it("drops a drawing call it cannot express instead of failing the study", () => {
     const script = 'plot(close)\nplotshape(close > open, style=shape.triangleup)';
     expect(() => validateFormula(script)).not.toThrow();
+  });
+
+  it("reads a Pine study with drawings, a ternary and named plot settings", () => {
+    const script = [
+      "//@version=5",
+      'indicator("Trend EMA (Yellow)", overlay=true)',
+      "// the leg the reader cares about",
+      'len = input.int(3, "EMA Length")',
+      "emaTrend = ta.ema(close, len)",
+      "showTrendEMA = close > emaTrend",
+      "bx = box.new(bar_index, high, bar_index + 1, low)",
+      "box.delete(bx)",
+      "array.remove(demandBoxes, i)",
+      "plot(showTrendEMA ? emaTrend : na, \"Trend EMA (Yellow)\", " +
+        "color=color.yellow, linewidth=4)",
+    ].join("\n");
+    const run = compileFormula(script);
+    const out = run(dataFor([10, 12, 14, 16, 18]));
+    // Rising bars: the condition holds, so the EMA is drawn as itself.
+    expect(out[4]).toBeCloseTo(16);
+    // Flat bars: nothing holds, so the plot is na rather than a shifted line.
+    const flat = compileFormula(script)(dataFor([5, 5, 5, 5, 5]));
+    expect(Number.isNaN(flat[4])).toBe(true);
+  });
+
+  it("reads Pine history, comparisons and math namespace", () => {
+    const run = compileFormula(
+      "up = close > close[1]\nmath.round(close[1], 0) * up");
+    const out = run(dataFor([10, 12, 14]));
+    expect(out[2]).toBeCloseTo(12);
+  });
+
+  it("drops an if block with the drawings inside it", () => {
+    const script = [
+      "len = input.int(2, \"Length\")",
+      "avg = ta.sma(close, len)",
+      "if close > avg",
+      "    box.new(bar_index, high, bar_index + 1, low)",
+      "    array.push(demandBoxes, bar_index)",
+      "plot(avg)",
+    ].join("\n");
+    const out = compileFormula(script)(dataFor([2, 4, 6]));
+    expect(out[2]).toBeCloseTo(5);
+  });
+
+  it("keeps a study where its own declaration puts it", () => {
+    expect(placementFromScript('indicator("Trend EMA", overlay=true)'))
+      .toBe("overlay");
+    expect(placementFromScript('indicator("RSI", overlay=false)'))
+      .toBe("pane");
+    expect(placementFromScript("ema(close, 20)")).toBeNull();
   });
 
   it("still refuses a script that never ends", () => {
