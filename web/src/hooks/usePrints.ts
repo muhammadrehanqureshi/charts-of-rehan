@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ChartClient } from "../api/client.js";
 import type { PrintReport } from "../api/types.js";
+import { useVisibility } from "./useVisibility.js";
 
 export interface PrintsState {
   /** The latest ledger, or null before the first answer. */
@@ -38,6 +39,8 @@ export function usePrints(
   const [error, setError] = useState<string | null>(null);
   // The latest started poll wins: a slow answer never overwrites a newer one.
   const runRef = useRef(0);
+  // A hidden tab has nobody reading the tape, so it stops asking for it.
+  const visible = useVisibility();
 
   useEffect(() => {
     if (!enabled || symbol.length === 0) {
@@ -65,7 +68,9 @@ export function usePrints(
         }
         setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
-        if (!cancelled && runRef.current === run) {
+        // A hidden tab reads the ledger once (the chart it already drew
+        // needs its tape) and then stops asking until it is in front again.
+        if (!cancelled && runRef.current === run && visible) {
           timer = setTimeout(poll, intervalMs);
         }
       }
@@ -79,7 +84,7 @@ export function usePrints(
         clearTimeout(timer);
       }
     };
-  }, [client, symbol, day, enabled, intervalMs]);
+  }, [client, symbol, day, enabled, intervalMs, visible]);
 
   return { report, error };
 }

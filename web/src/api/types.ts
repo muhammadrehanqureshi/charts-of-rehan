@@ -699,6 +699,107 @@ export interface PrintReport {
   readonly notes: readonly string[];
 }
 
+/**
+ * One symbol's own buy/sell split for a session, from the venue's counters.
+ *
+ * The split is measured with the same quote-then-tick law the order ledger
+ * uses, so the watchlist column and the chart's own tape can never disagree
+ * about one scrip. Volume the tape could not attribute stays unclassified
+ * and is reported as itself.
+ */
+export interface SymbolFlow {
+  readonly symbol: string;
+  readonly buy_volume: number | null;
+  readonly sell_volume: number | null;
+  readonly unclassified_volume: number | null;
+  readonly classified_volume: number | null;
+  readonly volume: number | null;
+  readonly orders: number | null;
+  readonly prints: number;
+  /** Buy minus sell, the session's own delta. */
+  readonly delta: number | null;
+  readonly coverage: number | null;
+}
+
+export interface OrderFlowReport {
+  readonly day: string;
+  readonly timezone: string;
+  readonly symbols: readonly SymbolFlow[];
+  readonly notes: readonly string[];
+}
+
+/** The order-flow answer: one row per symbol the session's tape printed. */
+export function parseOrderFlow(raw: unknown): OrderFlowReport {
+  const value = record(raw, "orderflow");
+  return {
+    day: optionalStr(value["day"]) ?? "",
+    timezone: optionalStr(value["timezone"]) ?? "Asia/Karachi",
+    notes: array(value["notes"] ?? [], "orderflow.notes").map(
+      (line, at) => str(line, `orderflow.notes[${at}]`),
+    ),
+    symbols: array(value["symbols"] ?? [], "orderflow.symbols").map(
+      (item, index) => {
+        const path = `orderflow.symbols[${index}]`;
+        const row = record(item, path);
+        return {
+          symbol: str(row["symbol"], `${path}.symbol`),
+          buy_volume: optionalNum(row["buy_volume"]),
+          sell_volume: optionalNum(row["sell_volume"]),
+          unclassified_volume: optionalNum(row["unclassified_volume"]),
+          classified_volume: optionalNum(row["classified_volume"]),
+          volume: optionalNum(row["volume"]),
+          orders: optionalNum(row["orders"]),
+          prints: optionalNum(row["prints"]) ?? 0,
+          delta: optionalNum(row["delta"]),
+          coverage: optionalNum(row["coverage"]),
+        };
+      },
+    ),
+  };
+}
+
+/**
+ * One minute's buy/sell split, as the venue's own counter measured it.
+ *
+ * The buy and sell counts come from classified volume windows, so a pane
+ * drawn from them is an observation. Shares the tape could not attribute are
+ * carried separately and never split between the two sides.
+ */
+export interface DeltaMinute {
+  readonly t: string;
+  readonly buy: number;
+  readonly sell: number;
+  readonly unclassified: number;
+}
+
+export interface DeltaReport {
+  readonly symbol: string;
+  readonly day: string;
+  readonly minutes: readonly DeltaMinute[];
+  readonly note: string;
+}
+
+export function parseDelta(raw: unknown): DeltaReport {
+  const value = record(raw, "delta");
+  return {
+    symbol: str(value["symbol"], "delta.symbol"),
+    day: optionalStr(value["day"]) ?? "",
+    note: optionalStr(value["note"]) ?? "",
+    minutes: array(value["minutes"] ?? [], "delta.minutes").map(
+      (item, index) => {
+        const path = `delta.minutes[${index}]`;
+        const row = record(item, path);
+        return {
+          t: str(row["t"], `${path}.t`),
+          buy: num(row["buy"], `${path}.buy`),
+          sell: num(row["sell"], `${path}.sell`),
+          unclassified: optionalNum(row["unclassified"]) ?? 0,
+        };
+      },
+    ),
+  };
+}
+
 /** The sessions answer: what this service can draw right now, and where. */
 export function parseSessions(raw: unknown): SessionsReport {
   const value = record(raw, "sessions");
