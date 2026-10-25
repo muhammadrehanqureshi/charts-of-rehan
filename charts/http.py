@@ -159,6 +159,12 @@ class ChartHandler(BaseHTTPRequestHandler):
         if path == "/api/prints":
             self._prints(query)
             return
+        if path == "/api/orderflow":
+            self._orderflow(query)
+            return
+        if path == "/api/delta":
+            self._delta(query)
+            return
         if path == "/api/stream":
             self._stream(query)
             return
@@ -261,6 +267,79 @@ class ChartHandler(BaseHTTPRequestHandler):
             return
         report = prints_for(symbol, day or None, limit=limit)
         self._send_json({"ok": True, **report})
+
+    def _orderflow(self, query: dict) -> None:
+        """Every symbol's own buy/sell split for one session.
+
+        ``?day=YYYY-MM-DD`` (or the session the service's clock calls current)
+        answers one row per symbol the tape printed, measured from the
+        venue's own running counters with the same classification the order
+        ledger uses. This is what a watchlist needs to show buy and sell for
+        every scrip without a request per row.
+        """
+        day = self._day_or_error(query)
+        if day is None:
+            return
+        flow_for = getattr(self.state.source, "flow_for", None)
+        if not callable(flow_for):
+            self._send_json({
+                "ok": True,
+                "day": day or None,
+                "timezone": str(sessions.law.KARACHI),
+                "symbols": [],
+                "notes": [f"this source ({self.state.source.name}) serves "
+                          f"bars without a print tape, so it has no "
+                          f"buy/sell split to report"],
+            })
+            return
+        rows = flow_for(day or None)
+        # An unnamed question follows the same session the catalogue's own
+        # facts do, so the answer names the day it describes rather than
+        # leaving a Sunday's empty tape to be read as the chart's session.
+        session_for = getattr(self.state.source, "flow_day", None)
+        session_day = (session_for(day or None).isoformat()
+                       if callable(session_for) else day or None)
+        notes: list[str] = []
+        if not rows:
+            notes.append(
+                "no order prints are banked for this session, so no "
+                "buy/sell split exists to report")
+        self._send_json({
+            "ok": True,
+            "day": session_day,
+            "timezone": str(sessions.law.KARACHI),
+            "symbols": rows,
+            "notes": notes,
+        })
+
+    def _delta(self, query: dict) -> None:
+        """One symbol's per-minute buy/sell volume for a session.
+
+        ``?symbol=SYMBOL&day=YYYY-MM-DD``. Every minute carries the share
+        count the venue's own counter assigned to the buyer and to the seller,
+        so a volume-delta pane is measured, not inferred from candle colour.
+        """
+        symbol = self._symbol_or_error(query)
+        if symbol is None:
+            return
+        day = self._day_or_error(query)
+        if day is None:
+            return
+        delta_for = getattr(self.state.source, "delta_for", None)
+        if not callable(delta_for):
+            self._send_json({
+                "ok": True, "symbol": symbol, "day": day or None,
+                "timezone": str(sessions.law.KARACHI),
+                "minutes": [],
+                "note": f"this source ({self.state.source.name}) serves "
+                        f"bars without a print tape, so it has no buy/sell "
+                        f"split to report",
+            })
+            return
+        report = delta_for(symbol, day or None)
+        self._send_json({"ok": True,
+                         "timezone": str(sessions.law.KARACHI),
+                         **report})
 
     def _sessions(self) -> None:
         """Every session this service can draw, newest first.

@@ -13,6 +13,8 @@ All routes are served by `charts/http.py`. Every answer is JSON with
 | `GET /api/bars?symbol=..&resolution=..&limit=..&day=..&days=N` | one chart payload; `day` names one stored session, `days` bigger than one merges that many newest sessions into a single intraday chart with gaps kept honest |
 | `GET /api/sessions` | every session this service can draw, newest first, with today and the timezone stated |
 | `GET /api/prints?symbol=..&day=..&limit=..` | one symbol's order-print report for a day, see below |
+| `GET /api/orderflow?day=..` | every symbol's buy/sell split for one session, in one answer, see below |
+| `GET /api/delta?symbol=..&day=..` | one symbol's per-minute buy and sell volume, see below |
 | `GET /api/stream?symbol=..&resolution=..` | Server-Sent Events, see below |
 | `GET /api/stream/health` | the same health object, streamed once, for a dashboard that does not want to poll |
 | everything else | the built web app from `--static`, with single page app fallback |
@@ -107,6 +109,47 @@ everything traded before the tape first saw the symbol is reported as
 A source that serves bars without a tape answers a documented empty report
 (`totals: null`, no events) rather than an error, because "no print ledger"
 is a fact about the source, not a failure.
+
+## The session's order flow
+
+`GET /api/orderflow?day=..` reads the capture once and answers one row per
+symbol it printed:
+
+```json
+{
+  "ok": true, "day": "2026-10-23", "timezone": "Asia/Karachi",
+  "symbols": [
+    { "symbol": "OGDC", "buy_volume": 402100, "sell_volume": 371900,
+      "unclassified_volume": 1200, "classified_volume": 774000,
+      "volume": 775200, "orders": 812, "prints": 640,
+      "delta": 30200, "coverage": 0.998 }
+  ],
+  "notes": []
+}
+```
+
+The split uses the same window classification as `/api/prints` (differenced
+counter, quote-then-tick evidence, gap bound, backward counters refused), so
+a watchlist column and the order tape can never disagree about one scrip.
+Volume the tape could not attribute stays in `unclassified_volume` and is
+never split between the two sides.
+
+`GET /api/delta?symbol=..&day=..` answers the same split per minute, which is
+what a volume-delta pane folds onto its own bars:
+
+```json
+{
+  "ok": true, "symbol": "OGDC", "day": "2026-10-23",
+  "timezone": "Asia/Karachi",
+  "minutes": [ { "t": "2026-10-23T10:31:00+05:00",
+                 "buy": 1200, "sell": 800, "unclassified": 0 } ],
+  "note": ""
+}
+```
+
+A session with no capture answers `symbols: []` / `minutes: []` with a note
+saying so, never an error: "this session kept no print tape" is a fact about
+the session, not a failure.
 
 ## The event stream
 

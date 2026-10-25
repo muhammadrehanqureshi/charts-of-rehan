@@ -393,6 +393,127 @@ def prints(path: Path, symbol: str, day: date, as_of: datetime,
     }
 
 
+def flow_by_symbol(path: Path, day: date, as_of: datetime) -> dict[str, dict]:
+    """Every symbol's buy/sell split for one session, in one pass.
+
+    Reading the deck once and classifying each symbol's volume windows with
+    the same rules ``prints`` uses (differenced counter, quote-then-tick
+    evidence, gap bound, backward counters refused) is what lets a watchlist
+    show a buy/sell column for every scrip without one request per symbol.
+    Unclassified volume is never attributed to a side; it is reported as
+    itself so the split cannot pretend to cover the whole tape.
+    """
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=KARACHI)
+    priors: dict[str, Mapping] = {}
+    reports: dict[str, dict] = {}
+    for row in tick_volume.iter_ticks(path):
+        symbol = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+        if not symbol:
+            continue
+        report = reports.get(symbol)
+        if report is None:
+            report = {"symbol": symbol, "buy_volume": 0, "sell_volume": 0,
+                      "unclassified_volume": 0, "volume": 0.0, "orders": 0,
+                      "prints": 0}
+            reports[symbol] = report
+        trades = _number(row.get("trades"))
+        total = _number(row.get("volume"))
+        if trades is not None and trades >= 0:
+            report["orders"] = max(report["orders"], int(trades))
+        if total is not None and total >= 0:
+            report["volume"] = max(report["volume"], float(total))
+        moment = _moment(row, day)
+        if moment is None or moment.date() != day or moment >= as_of:
+            continue
+
+        prior = priors.get(symbol)
+        previous_volume = _number(prior.get("volume")) if prior else None
+        if prior is None:
+            if total is not None and total > 0:
+                report["unclassified_volume"] += int(total)
+        elif (total is not None and total > 0
+              and previous_volume is not None and total >= previous_volume):
+            delta = int(total) - int(previous_volume)
+            if delta > 0:
+                gap = tick_volume._window_gap(row, prior)
+                if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
+                    report["unclassified_volume"] += delta
+                else:
+                    side, _how = tick_volume._trade_side(row, prior)
+                    if side == "B":
+                        report["buy_volume"] += delta
+                    elif side == "S":
+                        report["sell_volume"] += delta
+                    else:
+                        report["unclassified_volume"] += delta
+        if _is_new_print(row, prior):
+            report["prints"] += 1
+        priors[symbol] = row
+
+    for report in reports.values():
+        classified = report["buy_volume"] + report["sell_volume"]
+        volume = float(report["volume"])
+        report["classified_volume"] = classified
+        report["delta"] = report["buy_volume"] - report["sell_volume"]
+        report["coverage"] = (round(classified / volume, 4)
+                              if volume > 0 else 0.0)
+        report["volume"] = volume if volume > 0 or report["prints"] else None
+        report["orders"] = report["orders"] if report["orders"] > 0 \
+            or report["prints"] else None
+    return reports
+
+
+def delta_minutes(path: Path, symbol: str, day: date,
+                  as_of: datetime) -> list[dict]:
+    """One symbol's buy/sell volume per minute, from the venue's counters.
+
+    Every tick row's volume window is classified with the same quote-then-tick
+    law the order ledger uses, and the classified share is credited to the
+    minute the row belongs to. That is what makes a volume-delta pane an
+    observation rather than a guess: the buyer/seller split is the venue's
+    own counter, not a candle's colour. Windows the tape could not attribute
+    stay in ``unclassified`` and are never dressed as a trade.
+    """
+    wanted = symbol.strip().upper()
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=KARACHI)
+    buckets: dict[datetime, dict] = {}
+    prior: Mapping | None = None
+    for row in tick_volume.iter_ticks(path):
+        observed = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+        if observed != wanted:
+            continue
+        moment = _moment(row, day)
+        if moment is None or moment.date() != day or moment >= as_of:
+            continue
+        minute = moment.replace(second=0, microsecond=0)
+        bucket = buckets.get(minute)
+        if bucket is None:
+            bucket = {"t": minute.isoformat(timespec="seconds"), "buy": 0,
+                      "sell": 0, "unclassified": 0}
+            buckets[minute] = bucket
+        total = _number(row.get("volume"))
+        previous = _number(prior.get("volume")) if prior else None
+        if prior is not None and total is not None and total > 0 \
+                and previous is not None and total >= previous:
+            delta = int(total) - int(previous)
+            if delta > 0:
+                gap = tick_volume._window_gap(row, prior)
+                if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
+                    bucket["unclassified"] += delta
+                else:
+                    side, _how = tick_volume._trade_side(row, prior)
+                    if side == "B":
+                        bucket["buy"] += delta
+                    elif side == "S":
+                        bucket["sell"] += delta
+                    else:
+                        bucket["unclassified"] += delta
+        prior = row
+    return [buckets[key] for key in sorted(buckets)]
+
+
 def build(path: Path, symbols: Iterable[str], as_of: datetime,
           day: date | None = None) -> TapeBars:
     """Build one session of bars from one tape capture file.

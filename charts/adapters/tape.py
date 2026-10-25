@@ -269,6 +269,11 @@ class TapeSource:
         #: Order-print reports, cached per (day, symbol) file identity, the
         #: same identity rule the bar and index caches use.
         self._prints_cache: dict[tuple[str, str], tuple[tuple, dict]] = {}
+        #: The whole session's buy/sell split per symbol, cached per day on
+        #: the capture's identity so a growing live file is re-read.
+        self._flow_cache: dict[str, tuple[tuple, list[dict]]] = {}
+        #: Per-minute buy/sell volume for one symbol, cached like the prints.
+        self._delta_cache: dict[tuple[str, str], tuple[tuple, list[dict]]] = {}
 
     # ------------------------------------------------------- configuration
     @property
@@ -470,7 +475,11 @@ class TapeSource:
         re-read when its identity changes, exactly like the bar cache.
         """
         wanted = symbol.strip().upper()
-        session = _as_date(day) or self.session_day()
+        # The same fallback the catalogue and the order flow use: an unnamed
+        # print question is about the session the chart is drawing, so on a
+        # Sunday it reads Friday's tape instead of failing on today's empty
+        # one.
+        session = self.flow_day(day)
         path = self.capture_for(session)
         if path is None:
             raise UpstreamError(
@@ -493,6 +502,86 @@ class TapeSource:
                                   as_of=self._clock(), limit=limit)
         self._prints_cache[key] = (identity, report)
         return report
+
+    # ------------------------------------------------------- session order flow
+    def flow_day(self, day: date | str | None = None) -> date:
+        """Which session an unnamed flow question is about.
+
+        The same fallback the catalogue's facts use: today's capture when it
+        exists, otherwise the newest session that actually kept a tape. A
+        watchlist opened on a Sunday must describe the session the chart is
+        drawing, not an empty Sunday.
+        """
+        named = _as_date(day)
+        if named is not None:
+            return named
+        today = self.session_day()
+        if self.capture_for(today) is not None:
+            return today
+        for row in self.sessions(hashes=False):
+            candidate = _as_date(row.get("day"))
+            if candidate is not None and self.capture_for(candidate) is not None:
+                return candidate
+        return today
+
+    def flow_for(self, day: date | str | None = None) -> list[dict]:
+        """Every symbol's own buy/sell split for one session.
+
+        One pass over the capture, cached on its identity: the watchlist and
+        the screener read the same numbers for the same symbol, and neither
+        needs one request per row. A day with no capture answers an empty
+        list rather than an error, because "this session kept no print
+        tape" is a fact about the session, not a failure.
+        """
+        session = self.flow_day(day)
+        path = self.capture_for(session)
+        if path is None:
+            return []
+        try:
+            stat = path.stat()
+        except OSError:
+            return []
+        identity = (str(path), stat.st_size, stat.st_mtime_ns)
+        cached = self._flow_cache.get(session.isoformat())
+        if cached is not None and cached[0] == identity:
+            return cached[1]
+        report = tape_bars.flow_by_symbol(path, session, self._clock())
+        rows = sorted(report.values(), key=lambda item: item["symbol"])
+        self._flow_cache[session.isoformat()] = (identity, rows)
+        return rows
+
+    def delta_for(self, symbol: str, day: date | str | None = None) -> dict:
+        """One symbol's per-minute buy/sell volume for a session.
+
+        The split comes from the venue's own running counter, classified by
+        the same law the order ledger uses, so a volume-delta pane and the
+        order tape can never disagree about a minute. A capture that is not
+        banked answers an empty series with the reason, not an error.
+        """
+        wanted = symbol.strip().upper()
+        session = self.flow_day(day)
+        path = self.capture_for(session)
+        if path is None:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "minutes": [],
+                    "note": f"no broker tape is banked for "
+                            f"{session.isoformat()}, so there is no "
+                            f"per-minute buy/sell split to read"}
+        try:
+            stat = path.stat()
+        except OSError:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "minutes": [], "note": "the capture could not be read"}
+        identity = (str(path), stat.st_size, stat.st_mtime_ns)
+        key = (session.isoformat(), wanted)
+        cached = self._delta_cache.get(key)
+        if cached is not None and cached[0] == identity:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "minutes": cached[1], "note": ""}
+        minutes = tape_bars.delta_minutes(path, wanted, session, self._clock())
+        self._delta_cache[key] = (identity, minutes)
+        return {"symbol": wanted, "day": session.isoformat(),
+                "minutes": minutes, "note": ""}
 
     # ------------------------------------------------------------- reading
     def _day(self, day: date) -> "tape_bars.TapeBars":
