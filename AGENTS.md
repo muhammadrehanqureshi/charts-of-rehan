@@ -23,3 +23,10 @@ the rules are checked by the machine, not by memory.
    owns the service was genuinely closed.
 5. Verify before claiming. Tests, typecheck, health endpoints and HTTP answers
    before any "done" is spoken; a green exit code alone is not verification.
+6. Never hammer the owner's PC. Charts of Rehan runs on the same machine the
+   owner is working on, so every repeating job has a cadence and a stop
+   condition, nothing polls while its tab is hidden, one service owns a port
+   and a second click reuses it, and no local suite is run for a landing that
+   CI is about to run anyway. Heavy reads are cached per capture identity, not
+   repeated per request, and no short-interval re-check loop stands in for a
+   blocking wait.
