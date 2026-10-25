@@ -37,6 +37,7 @@ import type {
   SourceInfo,
 } from "../api/types";
 import { ColumnSeries } from "../chart/series";
+import { useVisibility } from "./useVisibility";
 
 export interface FeedMeta {
   readonly symbol: string;
@@ -89,6 +90,9 @@ export function useChartFeed(
   const [error, setError] = useState<FeedState["error"]>(null);
   const [version, setVersion] = useState(0);
   const [manual, setManual] = useState(0);
+  // A stream kept open for a tab nobody is looking at is work for its own
+  // sake: closing it on hide and reopening on return costs one snapshot.
+  const visible = useVisibility();
 
   const bump = useCallback(() => setVersion((value) => value + 1), []);
 
@@ -161,9 +165,9 @@ export function useChartFeed(
         }
       });
 
-    if (day.length > 0) {
-      // A finished session does not move. No stream, and nothing to clean up
-      // beyond the aborted fetch.
+    if (day.length > 0 || !visible) {
+      // A finished session does not move, and a hidden tab is not watching
+      // anything: no stream, and nothing to clean up beyond the fetch.
       return () => {
         cancelled = true;
         controller.abort();
@@ -203,7 +207,8 @@ export function useChartFeed(
       handle.close();
       series.clear();
     };
-  }, [client, symbol, resolution, limit, day, days, series, bump, manual]);
+  }, [client, symbol, resolution, limit, day, days, series, bump, manual,
+    visible]);
 
   const refresh = useCallback(() => setManual((value) => value + 1), []);
 

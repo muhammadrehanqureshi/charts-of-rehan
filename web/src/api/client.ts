@@ -23,14 +23,18 @@
 import {
   type BarEvent,
   type ChartPayload,
+  type DeltaReport,
   type ErrorCategory,
+  type OrderFlowReport,
   type PrintReport,
   type Resolution,
   type SessionsReport,
   type SymbolRow,
   ContractViolation,
   parseBarEvent,
+  parseDelta,
   parseErrorBody,
+  parseOrderFlow,
   parsePayload,
   parsePrints,
   parseSessions,
@@ -200,6 +204,64 @@ export class ChartClient {
       `${this.baseUrl}/api/prints?${query.toString()}`, signal);
     try {
       return parsePrints(raw);
+    } catch (error) {
+      if (error instanceof ContractViolation) {
+        throw new ApiError("CONTRACT", error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Every symbol's buy/sell split for one session, in one call.
+   *
+   * The watchlist needs a buy and a sell number for every row, and asking
+   * `/api/prints` once per symbol would turn one panel into a hundred
+   * requests. A source with no print tape answers an empty list with a note.
+   */
+  async orderFlow(
+    day = "",
+    signal?: AbortSignal,
+  ): Promise<OrderFlowReport> {
+    const query = new URLSearchParams();
+    if (day.length > 0) {
+      query.set("day", day);
+    }
+    const suffix = query.toString();
+    const raw = await this.request(
+      `${this.baseUrl}/api/orderflow${suffix.length > 0 ? `?${suffix}` : ""}`,
+      signal,
+    );
+    try {
+      return parseOrderFlow(raw);
+    } catch (error) {
+      if (error instanceof ContractViolation) {
+        throw new ApiError("CONTRACT", error.message);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * One symbol's per-minute buy/sell split, for a volume-delta pane.
+   *
+   * The split is measured from the venue's own running counter, so the pane
+   * and the order tape read the same numbers. A source with no tape answers
+   * an empty series with a note.
+   */
+  async delta(
+    symbol: string,
+    day = "",
+    signal?: AbortSignal,
+  ): Promise<DeltaReport> {
+    const query = new URLSearchParams({ symbol });
+    if (day.length > 0) {
+      query.set("day", day);
+    }
+    const raw = await this.request(
+      `${this.baseUrl}/api/delta?${query.toString()}`, signal);
+    try {
+      return parseDelta(raw);
     } catch (error) {
       if (error instanceof ContractViolation) {
         throw new ApiError("CONTRACT", error.message);
