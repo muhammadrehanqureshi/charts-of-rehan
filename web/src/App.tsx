@@ -17,7 +17,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, ChartClient } from "./api/client";
 import {
   type DeltaMinute,
-  type PrintEvent,
   type Resolution,
   type SessionRow,
   type SymbolFlow,
@@ -41,7 +40,7 @@ import { useChartFeed } from "./hooks/useChartFeed";
 import { useAppearance } from "./hooks/useAppearance";
 import { useIndicators } from "./hooks/useIndicators";
 import { useDelta } from "./hooks/useDelta";
-import { usePrints } from "./hooks/usePrints";
+
 import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
@@ -83,8 +82,6 @@ const WATCHLIST_KEY = "charts-watchlist";
  */
 const LAST_SYMBOL_KEY = "charts-symbol";
 
-/** One shared empty list, so a poll without a ledger never re-renders. */
-const EMPTY_PRINTS: readonly PrintEvent[] = [];
 /** The same, for a tape with no per-minute split. */
 const EMPTY_DELTA: readonly DeltaMinute[] = [];
 
@@ -323,12 +320,6 @@ export function App() {
     days: day.length === 0 ? SPAN_SESSIONS : undefined,
   });
 
-  // The order ledger, polled on the tape's own minute grain. It follows the
-  // day the reader is on: the live tape while the selector says “recent,"
-  // that day's stored capture when a specific session is chosen.
-  const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
-    symbol.length > 0);
-
   // The tape's own per-minute buy/sell split, for the volume-delta plate.
   const delta = useDelta(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0);
@@ -433,8 +424,6 @@ export function App() {
             sessionLabel={sessionLabel}
             emptyNote={emptyNote}
             indicators={indicators.specs}
-            prints={prints.report?.events ?? EMPTY_PRINTS}
-            printTotals={prints.report?.totals ?? null}
             delta={delta.report?.minutes ?? EMPTY_DELTA}
             heading={symbol.length > 0
               ? `${symbol} · ${timeframeShort(resolution)} · PSX`
@@ -465,7 +454,7 @@ export function App() {
             asOf={feed.meta.payload?.as_of ?? ""}
             volumeAvailable={session?.volume_available ?? false}
             staleAfterMinutes={STALE_AFTER_MINUTES}
-            ordersTotal={prints.report?.totals?.orders ?? null}
+            ordersTotal={flow.get(symbol)?.orders ?? null}
             error={feed.error ?? (bootError === null ? null
               : { category: "INTERNAL", detail: bootError })}
             details={detailsOpen}
