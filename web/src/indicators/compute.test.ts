@@ -96,6 +96,33 @@ describe("indicator engine", () => {
     expect(first?.id).not.toBe(second?.id);
   });
 
+  it("computes volume delta from the tape's split and accumulates it", () => {
+    const series = seriesFor([10, 11, 10]);
+    const data = seriesData(series);
+    const bought = new Float64Array([100, 40, 10]);
+    const sold = new Float64Array([60, 90, 30]);
+    const spec = createIndicator("volumedelta");
+    const output = computeIndicators(spec === null ? [] : [spec], {
+      ...data, buy: bought, sell: sold,
+    })[0];
+    const histogram = output?.histogram?.values ?? new Float64Array();
+    expect(histogram[0]).toBe(40);
+    expect(histogram[1]).toBe(-50);
+    expect(histogram[2]).toBe(-20);
+    const cumulative = output?.lines[0]?.values ?? new Float64Array();
+    expect(cumulative[0]).toBe(40);
+    expect(cumulative[1]).toBe(-10);
+    expect(cumulative[2]).toBe(-30);
+  });
+
+  it("falls back to the bar's signed volume when the tape has no split", () => {
+    const output = outputsFor("volumedelta", [10, 9])[0];
+    const histogram = output?.histogram?.values ?? new Float64Array();
+    // seriesFor closes at the open, so every bar is an up bar: +volume.
+    expect(histogram[0]).toBe(10);
+    expect(histogram[1]).toBe(11);
+  });
+
   it("reports an unknown indicator instead of throwing", () => {
     const data = seriesData(seriesFor([1, 2, 3]));
     const outputs = computeIndicators([{
