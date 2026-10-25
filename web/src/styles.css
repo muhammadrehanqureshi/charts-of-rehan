@@ -114,7 +114,9 @@ button:disabled {
 }
 
 .app--with-watchlist .app__body {
-  grid-template-columns: 42px minmax(0, 1fr) 300px;
+  /* Five columns (symbol, last, chg%, buy, sell) need this much: at 300 the
+     table scrolled sideways and the sell column fell off the edge. */
+  grid-template-columns: 42px minmax(0, 1fr) 336px;
 }
 
 .app__main {
@@ -476,7 +478,7 @@ button:disabled {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 5px 8px;
+  padding: 5px 5px;
   background: var(--bg);
   color: var(--muted);
   font-size: 10.5px;
@@ -510,7 +512,7 @@ button:disabled {
 
 .wrow__cell {
   height: 26px;
-  padding: 0 8px;
+  padding: 0 5px;
   color: var(--text);
   font-size: 12px;
   font-weight: 400;
@@ -1589,89 +1591,6 @@ button:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
-}
-
-/* The live order tape: the last prints, newest first, docked top-right of
-   the chart. It is a read-only surface on purpose (pointer-events none) so
-   it never blocks the hover readout or the wheel zoom underneath. */
-.chart__tape {
-  position: absolute;
-  top: 26px;
-  right: 12px;
-  z-index: 7;
-  min-width: 150px;
-  max-width: 200px;
-  padding: 4px 7px 5px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--panel);
-  font-size: 11px;
-  line-height: 1.55;
-  pointer-events: none;
-}
-
-.chart__tape__head {
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-bottom: 2px;
-}
-
-.chart__tape__totals {
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 3px;
-  margin-bottom: 2px;
-}
-
-.chart__tape__buy {
-  color: var(--up);
-}
-
-.chart__tape__sell {
-  color: var(--down);
-}
-
-.chart__tape__vol,
-.chart__tape__orders {
-  color: var(--muted);
-}
-
-.chart__tape__row {
-  display: grid;
-  grid-template-columns: 36px 1fr auto 30px;
-  gap: 6px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-
-.chart__tape__time,
-.chart__tape__size {
-  color: var(--muted);
-}
-
-.chart__tape__size {
-  text-align: right;
-}
-
-.chart__tape__side {
-  text-align: right;
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.chart__tape__row--buy .chart__tape__price,
-.chart__tape__row--buy .chart__tape__side {
-  color: var(--up);
-}
-
-.chart__tape__row--sell .chart__tape__price,
-.chart__tape__row--sell .chart__tape__side {
-  color: var(--down);
 }
 
 /* --------------------------------------------------------------- screener */

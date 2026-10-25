@@ -69,7 +69,7 @@ import {
 } from "../chart/overlay";
 import { sessionBreaks } from "../chart/sessions";
 import { flowColumns } from "../chart/flow";
-import { formatClock, formatPrice, formatVolume } from "../chart/format";
+import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
 import type { ChartAppearance } from "../hooks/useAppearance";
 import type {
@@ -81,7 +81,6 @@ import { computeIndicators, seriesData } from "../indicators/compute";
 
 const MIN_WIDTH = 320;
 const MIN_HEIGHT = 220;
-const TAPE_ROWS = 9;
 const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
@@ -237,8 +236,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
     sessionLabel,
     emptyNote,
     indicators,
-    prints,
-    printTotals,
     delta,
     heading,
     live,
@@ -872,7 +869,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
           ? "drawing surface: click or drag to place the selected tool"
           : "drawings"}
       />
-      {printTape(prints, printTotals)}
     </div>
   );
 }
@@ -1110,91 +1106,3 @@ function histData(
   return points;
 }
 
-// ---------------------------------------------------------------------------
-// The order tape, TV-styled
-// ---------------------------------------------------------------------------
-
-/**
- * The order tape: the venue's own counters and the newest prints, floating
- * over the chart. It draws when the tape has either prints or counters to
- * show, and nothing when it has neither - no empty box.
- */
-function printTape(
-  prints: readonly PrintEvent[] | undefined,
-  printTotals: PrintTotals | null | undefined,
-): React.ReactNode {
-  const hasPrints = prints !== undefined && prints.length > 0;
-  const hasCounters = printTotals != null
-    && [printTotals.buy_volume, printTotals.sell_volume,
-        printTotals.volume, printTotals.orders]
-      .some((value) =>
-        value !== null && Number.isFinite(value) && value > 0);
-  if (!hasPrints && !hasCounters) {
-    return null;
-  }
-  return (
-    <div className="chart__tape" aria-label="order tape, newest first">
-      <div className="chart__tape__head">order tape</div>
-      {printTotals != null ? (
-        <div className="chart__tape__totals">
-          {printTotals.buy_volume !== null
-            && Number.isFinite(printTotals.buy_volume)
-            && printTotals.buy_volume > 0
-            ? (
-              <span className="chart__tape__buy">
-                buy {formatVolume(printTotals.buy_volume)}
-              </span>
-            )
-            : null}
-          {printTotals.sell_volume !== null
-            && Number.isFinite(printTotals.sell_volume)
-            && printTotals.sell_volume > 0
-            ? (
-              <span className="chart__tape__sell">
-                sell {formatVolume(printTotals.sell_volume)}
-              </span>
-            )
-            : null}
-          {printTotals.volume !== null && Number.isFinite(printTotals.volume)
-            ? (
-              <span className="chart__tape__vol">
-                vol {formatVolume(printTotals.volume)}
-              </span>
-            )
-            : null}
-          {printTotals.orders !== null && Number.isFinite(printTotals.orders)
-            ? (
-              <span className="chart__tape__orders">
-                {formatVolume(printTotals.orders)} orders
-              </span>
-            )
-            : null}
-        </div>
-      ) : null}
-      {(prints ?? []).slice(-TAPE_ROWS).reverse().map((row, index) => {
-        const sideClass = row.side === "B"
-          ? " chart__tape__row--buy"
-          : row.side === "S"
-            ? " chart__tape__row--sell"
-            : "";
-        return (
-          <div
-            key={`${row.t}:${index}`}
-            className={`chart__tape__row${sideClass}`}
-          >
-            <span className="chart__tape__time">{formatClock(row.t)}</span>
-            <span className="chart__tape__price">{formatPrice(row.price)}</span>
-            <span className="chart__tape__size">
-              {row.size !== null && Number.isFinite(row.size)
-                ? formatVolume(row.size)
-                : ""}
-            </span>
-            <span className="chart__tape__side">
-              {row.side === "B" ? "buy" : row.side === "S" ? "sell" : ""}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
