@@ -140,6 +140,15 @@ export const DEFINITIONS: readonly IndicatorDefinition[] = [
     lines: [{ key: "obv", label: "OBV" }],
   },
   {
+    type: "volumedelta",
+    label: "Volume Delta",
+    description: "Buy volume minus sell volume per bar, from the tape's own " +
+      "counters, with the session's cumulative delta as a line.",
+    placement: "pane",
+    params: [],
+    lines: [{ key: "cumulative", label: "Cumulative Δ" }],
+  },
+  {
     type: "formula",
     label: "Custom formula",
     description: "Write an indicator with sma/ema/rsi/atr and arithmetic.",

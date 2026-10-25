@@ -68,6 +68,8 @@ function labelOf(spec: IndicatorSpec): string {
         `${Math.round(numericParam(spec, "signal", 9))}`;
     case "stochastic":
       return `${base} ${Math.round(numericParam(spec, "period", 14))}`;
+    case "volumedelta":
+      return "Volume Delta";
     case "formula":
       return "Formula";
     default:
@@ -236,6 +238,45 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
         return {
           id: spec.id, type: spec.type, label, placement,
           lines: [line("obv", label, colour, values)],
+        };
+      }
+      case "volumedelta": {
+        // The tape's own split when it exists, the candle's signed volume
+        // otherwise. A bar the tape never classified says so (NaN) rather
+        // than borrowing the neighbour's number.
+        const net = filled(data.length);
+        const cumulative = filled(data.length);
+        let running = 0;
+        for (let index = 0; index < data.length; index += 1) {
+          const bought = data.buy?.[index];
+          const sold = data.sell?.[index];
+          let value = Number.NaN;
+          if (bought !== undefined && sold !== undefined
+              && Number.isFinite(bought) && Number.isFinite(sold)) {
+            value = bought - sold;
+          } else {
+            const volume = data.volume[index];
+            const open = data.open[index];
+            const close = data.close[index];
+            if (volume !== undefined && Number.isFinite(volume)
+                && open !== undefined && close !== undefined) {
+              value = close >= open ? volume : -volume;
+            }
+          }
+          net[index] = value;
+          if (Number.isFinite(value)) {
+            running += value;
+            cumulative[index] = running;
+          }
+        }
+        return {
+          id: spec.id, type: spec.type, label, placement,
+          lines: [line("cumulative", "Cumulative Δ", colour, cumulative)],
+          histogram: {
+            values: net,
+            positive: "#089981",
+            negative: "#f23645",
+          },
         };
       }
       case "formula": {
