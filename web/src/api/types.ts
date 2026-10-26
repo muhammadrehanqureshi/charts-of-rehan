@@ -728,6 +728,42 @@ export interface OrderFlowReport {
   readonly notes: readonly string[];
 }
 
+/**
+ * One symbol's top of the venue's own book, as the tape last observed it.
+ *
+ * The best bid and best ask with their resting sizes are fields 2-5 of the
+ * same tick row that priced the chart's bars, so the plate and the candles
+ * come from one observation. `at` is when the tape last saw this book state;
+ * a note explains why an answer holds no numbers (an index, a thin scrip, a
+ * stored session) instead of drawing zeros.
+ */
+export interface BookReport {
+  readonly symbol: string;
+  readonly day: string;
+  readonly bid: number | null;
+  readonly bid_size: number | null;
+  readonly ask: number | null;
+  readonly ask_size: number | null;
+  readonly last: number | null;
+  readonly at: string | null;
+  readonly note: string;
+}
+
+export function parseBook(raw: unknown): BookReport {
+  const value = record(raw, "book");
+  return {
+    symbol: str(value["symbol"], "book.symbol"),
+    day: optionalStr(value["day"]) ?? "",
+    bid: optionalNum(value["bid"]),
+    bid_size: optionalNum(value["bid_size"]),
+    ask: optionalNum(value["ask"]),
+    ask_size: optionalNum(value["ask_size"]),
+    last: optionalNum(value["last"]),
+    at: optionalStr(value["at"]),
+    note: optionalStr(value["note"]) ?? "",
+  };
+}
+
 /** The order-flow answer: one row per symbol the session's tape printed. */
 export function parseOrderFlow(raw: unknown): OrderFlowReport {
   const value = record(raw, "orderflow");
