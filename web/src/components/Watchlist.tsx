@@ -21,7 +21,7 @@
 
 import { useMemo } from "react";
 
-import type { SymbolFlow, SymbolRow } from "../api/types";
+import type { BookReport, SymbolFlow, SymbolRow } from "../api/types";
 import { formatClock, formatPrice, formatVolume } from "../chart/format";
 import { SymbolSearch } from "./SymbolSearch";
 
@@ -42,6 +42,8 @@ export interface WatchlistProps {
   readonly onSearchClose: () => void;
   /** Every symbol's buy/sell split for this session, when the tape has one. */
   readonly flow?: ReadonlyMap<string, SymbolFlow>;
+  /** The active symbol's top of the venue's own book, as the tape saw it. */
+  readonly book?: BookReport | null;
 }
 
 /** The change of the session so far, measured against its first print. */
@@ -77,7 +79,7 @@ function side(
 export function Watchlist(props: WatchlistProps) {
   const {
     rows, watch, symbol, day, loading, onSymbol, onAdd, onWatchChange,
-    searchOpen, onSearchOpen, onSearchClose, flow,
+    searchOpen, onSearchOpen, onSearchClose, flow, book,
   } = props;
   const bySymbol = useMemo(() => {
     const map = new Map<string, SymbolRow>();
@@ -321,6 +323,42 @@ export function Watchlist(props: WatchlistProps) {
                 <dd>{detail.last === null ? "-" : formatClock(detail.last)}</dd>
               </div>
             </dl>
+            {book !== undefined && book !== null
+              ? (
+                <dl className="detail__book" aria-label="order book">
+                  <div>
+                    <dt>bid</dt>
+                    <dd className="detail__buy">
+                      {book.bid === null
+                        ? "-"
+                        : `${formatPrice(book.bid)}`}
+                      <span className="detail__booksize">
+                        {book.bid_size == null ? "" : formatVolume(book.bid_size)}
+                      </span>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>ask</dt>
+                    <dd className="detail__sell">
+                      {book.ask === null
+                        ? "-"
+                        : `${formatPrice(book.ask)}`}
+                      <span className="detail__booksize">
+                        {book.ask_size == null ? "" : formatVolume(book.ask_size)}
+                      </span>
+                    </dd>
+                  </div>
+                </dl>
+              )
+              : null}
+            {book !== undefined && book !== null
+              && (book.note.length > 0 || book.at === null)
+              ? <p className="watchlist__note">{book.note}</p>
+              : book !== undefined && book !== null && book.at !== null
+                ? <p className="watchlist__note">
+                    the broker's own book, as observed {formatClock(book.at)}
+                  </p>
+                : null}
           </>
         )}
       </section>

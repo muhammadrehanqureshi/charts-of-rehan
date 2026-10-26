@@ -203,6 +203,12 @@ class TapeBars:
     #: session open. A capture that starts after the open cannot contain the
     #: day's open for anybody, which is worth saying once, plainly.
     first_observation: datetime | None = None
+    #: One symbol's last observed top of the venue's own book: the best bid
+    #: and best ask with their resting sizes, as fields 2-5 of the same tick
+    #: row that priced the bars carried them. The last row observed wins, so
+    #: this is the book's newest state, not a call's own snapshot. An order
+    #: book is inherently a live read, so only the current session builds it.
+    book: dict[str, dict] = field(default_factory=dict)
     #: Self-check against the venue's own day extremes (fields 13 and 14 of
     #: the tick row): a bar may not exceed the high or undercut the low the
     #: venue itself reports for the day. A count above zero means the parse or
@@ -589,6 +595,15 @@ def build(path: Path, symbols: Iterable[str], as_of: datetime,
 
         price = _number(row.get("last"))
         previous[symbol] = row
+        bid = _number(row.get("bid"))
+        ask = _number(row.get("ask"))
+        if (bid is not None and bid > 0) or (ask is not None and ask > 0):
+            tape.book[symbol] = {
+                "bid": bid, "bid_size": _number(row.get("bid_size")),
+                "ask": ask, "ask_size": _number(row.get("ask_size")),
+                "last": price,
+                "at": moment.isoformat(timespec="seconds"),
+            }
         if price is None or price <= 0:
             tape.priceless_rows += 1
             continue
