@@ -165,6 +165,9 @@ class ChartHandler(BaseHTTPRequestHandler):
         if path == "/api/delta":
             self._delta(query)
             return
+        if path == "/api/book":
+            self._book(query)
+            return
         if path == "/api/stream":
             self._stream(query)
             return
@@ -340,6 +343,32 @@ class ChartHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": True,
                          "timezone": str(sessions.law.KARACHI),
                          **report})
+
+    def _book(self, query: dict) -> None:
+        """One symbol's top of the venue's own book.
+
+        The read rides the day build the bars already cache, so a book call
+        costs one dictionary lookup; it is a cadence read, not a scan.
+        """
+        symbol = self._symbol_or_error(query)
+        if symbol is None:
+            return
+        day = self._day_or_error(query)
+        if day is None:
+            return
+        book_for = getattr(self.state.source, "book_for", None)
+        if not callable(book_for):
+            self._send_json({
+                "ok": True, "symbol": symbol, "day": day or None,
+                "bid": None, "bid_size": None, "ask": None,
+                "ask_size": None, "last": None, "at": None,
+                "note": f"this source ({self.state.source.name}) serves bars "
+                        f"without the venue's book fields, so there is no "
+                        f"order book to show",
+            })
+            return
+        report = book_for(symbol, day or None)
+        self._send_json({"ok": True, **report})
 
     def _sessions(self) -> None:
         """Every session this service can draw, newest first.

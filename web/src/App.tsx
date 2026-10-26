@@ -36,6 +36,7 @@ import { StatusBar } from "./components/StatusBar";
 import { SymbolSearch } from "./components/SymbolSearch";
 import { Toolbar } from "./components/Toolbar";
 import { Watchlist } from "./components/Watchlist";
+import { useBook } from "./hooks/useBook";
 import { useChartFeed } from "./hooks/useChartFeed";
 import { useAppearance } from "./hooks/useAppearance";
 import { useIndicators } from "./hooks/useIndicators";
@@ -324,6 +325,11 @@ export function App() {
   const delta = useDelta(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0);
 
+  // The venue's own book, for the plate under the volume split: a cadence
+  // read that stops with the stored session and with the hidden tab.
+  const book = useBook(client, symbol, feed.meta.session?.day ?? day,
+    day.length === 0);
+
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
     setSearchOpen(false);
@@ -496,6 +502,7 @@ export function App() {
             onAdd={addToWatch}
             onWatchChange={setWatch}
             flow={flow}
+            book={book}
             searchOpen={searchOpen}
             onSearchOpen={() => setSearchOpen(true)}
             onSearchClose={() => setSearchOpen(false)}

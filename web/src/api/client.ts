@@ -22,6 +22,7 @@
 
 import {
   type BarEvent,
+  type BookReport,
   type ChartPayload,
   type DeltaReport,
   type ErrorCategory,
@@ -32,6 +33,7 @@ import {
   type SymbolRow,
   ContractViolation,
   parseBarEvent,
+  parseBook,
   parseDelta,
   parseErrorBody,
   parseOrderFlow,
@@ -41,6 +43,8 @@ import {
   parseSymbolRows,
   parseSymbols,
 } from "./types";
+
+export type { BookReport } from "./types";
 
 export class ApiError extends Error {
   readonly category: ErrorCategory;
@@ -262,6 +266,28 @@ export class ChartClient {
       `${this.baseUrl}/api/delta?${query.toString()}`, signal);
     try {
       return parseDelta(raw);
+    } catch (error) {
+      if (error instanceof ContractViolation) {
+        throw new ApiError("CONTRACT", error.message);
+      }
+      throw error;
+    }
+  }
+
+  /** One symbol's top of the venue's own book, as the tape last saw it. */
+  async book(
+    symbol: string,
+    day = "",
+    signal?: AbortSignal,
+  ): Promise<BookReport> {
+    const query = new URLSearchParams({ symbol });
+    if (day.length > 0) {
+      query.set("day", day);
+    }
+    const raw = await this.request(
+      `${this.baseUrl}/api/book?${query.toString()}`, signal);
+    try {
+      return parseBook(raw);
     } catch (error) {
       if (error instanceof ContractViolation) {
         throw new ApiError("CONTRACT", error.message);

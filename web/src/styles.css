@@ -884,6 +884,47 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* The order book plate: the level-one quote (bid / ask with the resting
+ * shares on each side), inside the instrument's own detail card, reusing the
+ * flows grid conventions with two wide columns. */
+.detail__book {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+  margin: 8px 0 0;
+}
+
+.detail__book div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.detail__book dt {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail__book dd {
+  margin: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail__book dd.detail__buy,
+.detail__book dd.detail__sell {
+  font-variant-numeric: tabular-nums;
+}
+
+.detail__booksize {
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: 4px;
+}
+
 .detail__who {
   display: flex;
   align-items: center;
