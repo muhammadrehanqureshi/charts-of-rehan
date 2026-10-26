@@ -146,13 +146,22 @@ function hash(): { symbol: string; day: string } {
   return { symbol: symbol.trim().toUpperCase(), day: day.trim() };
 }
 
+/**
+ * Opening a fresh app always means opening the live session: a day named in
+ * the URL is the day a review left behind, and reopening it days later is
+ * how a chart showed Friday's last bar while Monday was printing - the
+ * answer read as "the data is not updating". History stays one picker
+ * click away; the boot itself never chooses a stored day.
+ */
+const JUST_LIVE = "";
+
 export function App() {
   const client = useMemo(() => new ChartClient(), []);
   const initial = useMemo(hash, []);
   const [symbol, setSymbol] = useState(
     () => initial.symbol.length > 0 ? initial.symbol : readLastSymbol(),
   );
-  const [day, setDay] = useState(initial.day);
+  const [day, setDay] = useState(JUST_LIVE);
   const [resolution, setResolution] = useState<Resolution>("1m");
   const [resolutions, setResolutions] =
     useState<readonly Resolution[]>(FALLBACK_RESOLUTIONS);
@@ -182,7 +191,7 @@ export function App() {
   const [drawingsHidden, setDrawingsHidden] = useState(false);
   const viewKey = `${symbol}|${day}|${resolution}`;
   const [drawings, setDrawings] = useState<readonly Drawing[]>(
-    () => loadDrawings(`${initial.symbol}|${initial.day}|1m`),
+    () => loadDrawings(`${initial.symbol}|${JUST_LIVE}|1m`),
   );
   useEffect(() => {
     setDrawings(loadDrawings(viewKey));
@@ -202,6 +211,19 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watch));
   }, [watch]);
+
+  // The URL keeps the symbol and drops the day a previous review wrote:
+  // the boot above opens live regardless, and a hash naming Friday should
+  // not outlive its session in the address bar.
+  useEffect(() => {
+    if (initial.day.length > 0) {
+      window.location.hash = initial.symbol.length > 0
+        ? initial.symbol
+        : "";
+    }
+    // Run once at boot, when the stale hash is known.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The chart you were reading is the chart you get back.
   useEffect(() => {

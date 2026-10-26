@@ -60,7 +60,7 @@ const FUNCTIONS = new Set([
   "sma", "ema", "rsi", "atr", "stddev", "highest", "lowest", "roc",
   "change", "abs", "sqrt", "log", "exp", "min", "max", "nz", "obv",
   "plot", "hline", "round", "floor", "ceil", "pow", "sign", "shift",
-  "stdev", "na",
+  "stdev", "na", "bool", "int", "float",
 ]);
 
 //: `color.yellow` and friends are settings, never values: a plot may name
@@ -485,24 +485,6 @@ function safe(value: number): number {
   return Number.isFinite(value) ? value : Number.NaN;
 }
 
-/** How many brackets a line opens minus how many it closes. */
-function bracketDelta(line: string): number {
-  let delta = 0;
-  for (const character of line) {
-    if (character === "(") {
-      delta += 1;
-    } else if (character === ")") {
-      delta -= 1;
-    }
-  }
-  return delta;
-}
-
-/** `//` to the end of the line, the way the editor's own scripts comment. */
-function stripComment(line: string): string {
-  const at = line.indexOf("//");
-  return at === -1 ? line : line.slice(0, at);
-}
 
 /**
  * Replace `input.int(5, "len")` and friends with their first number.
@@ -574,11 +556,148 @@ const DROPPED_BLOCK = /^\s*(if|else|for|while|switch)\b/;
 
 /** A statement that names a Pine type before the value, e.g. `float x = ...`. */
 const TYPE_PREFIX = /^\s*(?:(?:simple|series)\s+)*(bool|int|float|string|color)\s+(?=[A-Za-z_][A-Za-z0-9_]*\s*[:=])/;
+/**
+ * A plot's series is the only argument this language can honor: the title, the
+ * colour and the style are drawing options it does not have, and letting the
+ * parser read `color=color.new(color.yellow, 0)` invents refusals the reader
+ * never meant (`unknown function "color.new"`). Cut the call at its first
+ * top-level comma and close the parenthesis the cut leaves open.
+ */
+function keepPlotSeries(line: string): string {
+  if (!/^\s*plot\s*\(/.test(line)) {
+    return line;
+  }
+  let quote: string | null = null;
+  let depth = 0;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index] ?? "";
+    if (quote !== null) {
+      if (character === "\\") {
+        index += 1;
+        continue;
+      }
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(" || character === "[") {
+      depth += 1;
+    } else if (character === ")" || character === "]") {
+      depth -= 1;
+      if (depth <= 0) {
+        // The call closed on its own - a one-argument plot, already whole.
+        return line;
+      }
+    } else if (character === "," && depth === 1) {
+      return `${line.slice(0, index)})`;
+    }
+  }
+  return line;
+}
 
+/** Marks that ride along a copy - a zero-width space, a smart quote: not part
+ * of any script, and the reason a refusal once read `unexpected character ""`. */
+const INVISIBLE = /[\u180e\u200b-\u200f\u2060-\u2064\u2065\ufeff]/g;
+
+/**
+ * One logical line: comments cut outside strings, brackets counted outside
+ * strings, an operator ending a line joined with the indented tail below it.
+ * A paste from a real editor does all three several times over.
+ */
+function tidyLine(raw: string): { text: string; delta: number; tail: boolean } {
+  let text = "";
+  let quote: string | null = null;
+  let delta = 0;
+  let index = 0;
+  while (index < raw.length) {
+    const character = raw[index] ?? "";
+    if (quote !== null) {
+      text += character;
+      if (character === "\\") {
+        text += raw[index + 1] ?? "";
+        index += 2;
+        continue;
+      }
+      if (character === quote) {
+        quote = null;
+      }
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      text += character;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && (raw[index + 1] ?? "") === "/") {
+      break; // a comment, outside a string: gone, with the rest of the line
+    }
+    if (character === "(") {
+      delta += 1;
+    } else if (character === ")") {
+      delta -= 1;
+    }
+    text += character;
+    index += 1;
+  }
+  return { text, delta, tail: CONT_TAIL.test(text) };
+}
+
+/** An operator that cannot end a statement: the statement continues below. */
+const CONT_TAIL =
+  /(?:\b(?:and|or|not)\b|[+\-*/%^?:,=<>]|=>)\s*$/;
+
+/** Fold an operator-tail line with the indented line(s) that follow it. */
+function joinContinuations(
+  lines: readonly string[],
+): { text: string; indent: number; delta: number }[] {
+  const out: { text: string; indent: number; delta: number }[] = [];
+  for (const raw of lines) {
+    const tidy = tidyLine(raw);
+    const open = /^\s*/.exec(raw)?.[0].length ?? 0;
+    if (tidy.text.trim().length === 0) {
+      // A blank line does not close a statement still going.
+      continue;
+    }
+    const previous = out[out.length - 1];
+    if (previous !== undefined && CONT_TAIL.test(previous.text)) {
+      out[out.length - 1] = {
+        text: `${previous.text.trimEnd()} ${tidy.text.trimStart()}`,
+        indent: previous.indent,
+        delta: previous.delta + tidy.delta,
+      };
+      continue;
+    }
+    out.push({ text: tidy.text, indent: open, delta: tidy.delta });
+  }
+  return out;
+}
+
+/**
+ * Read a pasted Pine study as the formula it describes.
+ *
+ * This is a translator for the shapes a study actually uses - the version
+ * banner, `//` comments, the `indicator(...)`/`study(...)` declaration, the
+ * `ta.` namespace, `var` and `input.*` defaults - not a Pine interpreter.
+ * Anything outside the formula language is still refused with a named error,
+ * which is the honest answer: a script quietly drawing something else would
+ * be worse than a refusal.
+ */
 export function normaliseScript(source: string): string {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const rawLines = source
+    .replace(/\r\n?/g, "\n")
+    .replace(INVISIBLE, "")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .split("\n");
+  const lines = joinContinuations(rawLines);
   const kept: string[] = [];
-  let skipping = 0;
   // The indentation whose indented body is being dropped with its `if`.
   let blockIndent = -1;
   // A kept statement that opened a bracket and is still waiting for its own
@@ -586,9 +705,10 @@ export function normaliseScript(source: string): string {
   // statement, not a second one.
   let pending: string[] | null = null;
   let pendingDelta = 0;
-  for (const raw of lines) {
-    const line = stripComment(raw);
-    const indent = /^\s*/.exec(raw)?.[0].length ?? 0;
+  let skipping = 0;
+  for (const entry of lines) {
+    const line = entry.text;
+    const indent = entry.indent;
     if (blockIndent >= 0) {
       if (line.trim().length === 0) {
         continue;
@@ -599,27 +719,27 @@ export function normaliseScript(source: string): string {
       blockIndent = -1;
     }
     if (skipping > 0) {
-      skipping += bracketDelta(line);
+      skipping += entry.delta;
       continue;
     }
     if (pending !== null) {
       // Consumed inside the wrap that nothing may interrupt except the
       // statement's own closing bracket.
       pending.push(line);
-      pendingDelta += bracketDelta(line);
+      pendingDelta += entry.delta;
       if (pendingDelta > 0) {
         continue;
       }
       const wrapped = pending.join(" ").trim().replace(TYPE_PREFIX, "");
       pending = null;
-      kept.push(wrapped);
+      kept.push(keepPlotSeries(wrapped));
       continue;
     }
     // A declaration and a drawing this language cannot express (a shape, a
     // colour, an alert, a box, an array) are dropped - with every line they
     // wrap - rather than allowed to fail the whole study.
     if (DROPPED_CALL.test(line) || DROPPED_NAMESPACE.test(line)) {
-      const delta = bracketDelta(line);
+      const delta = entry.delta;
       skipping = delta > 0 ? delta : 0;
       continue;
     }
@@ -630,7 +750,7 @@ export function normaliseScript(source: string): string {
     if (line.trim().length === 0) {
       continue;
     }
-    const opened = bracketDelta(line);
+    const opened = entry.delta;
     if (opened > 0) {
       pending = [line];
       pendingDelta = opened;
@@ -640,7 +760,9 @@ export function normaliseScript(source: string): string {
     // word and the type word are Pine's, and this language stores what the
     // statement stores.
     kept.push(
-      line.replace(/^\s*var(?:ip)?\s+/, "").replace(TYPE_PREFIX, ""));
+      keepPlotSeries(
+        line.replace(/^\s*var(?:ip)?\s+/, "").replace(TYPE_PREFIX, ""))
+    );
   }
   let text = kept.join("\n");
   text = replaceInputs(text);
@@ -934,6 +1056,14 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
           case "plot":
           case "hline":
             return args[0] ?? Number.NaN;
+          case "bool":
+            // Pine's cast: a comparison or a nonzero number is true.
+            return map(args[0] ?? Number.NaN, length,
+              (x) => Number.isFinite(x) && x !== 0 ? 1 : 0);
+          case "int":
+            return map(args[0] ?? Number.NaN, length, Math.trunc);
+          case "float":
+            return map(args[0] ?? Number.NaN, length, (x) => x);
           default:
             throw new FormulaError(`unknown function "${node.name}"`);
         }
