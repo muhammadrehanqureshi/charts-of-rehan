@@ -572,12 +572,20 @@ const DROPPED_NAMESPACE = new RegExp(
 /** Pine's statement blocks are always drawings or guards; neither can plot. */
 const DROPPED_BLOCK = /^\s*(if|else|for|while|switch)\b/;
 
+/** A statement that names a Pine type before the value, e.g. `float x = ...`. */
+const TYPE_PREFIX = /^\s*(?:(?:simple|series)\s+)*(bool|int|float|string|color)\s+(?=[A-Za-z_][A-Za-z0-9_]*\s*[:=])/;
+
 export function normaliseScript(source: string): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const kept: string[] = [];
   let skipping = 0;
   // The indentation whose indented body is being dropped with its `if`.
   let blockIndent = -1;
+  // A kept statement that opened a bracket and is still waiting for its own
+  // closing one: Pine wraps a long call across lines, and the wrap is one
+  // statement, not a second one.
+  let pending: string[] | null = null;
+  let pendingDelta = 0;
   for (const raw of lines) {
     const line = stripComment(raw);
     const indent = /^\s*/.exec(raw)?.[0].length ?? 0;
@@ -594,6 +602,19 @@ export function normaliseScript(source: string): string {
       skipping += bracketDelta(line);
       continue;
     }
+    if (pending !== null) {
+      // Consumed inside the wrap that nothing may interrupt except the
+      // statement's own closing bracket.
+      pending.push(line);
+      pendingDelta += bracketDelta(line);
+      if (pendingDelta > 0) {
+        continue;
+      }
+      const wrapped = pending.join(" ").trim().replace(TYPE_PREFIX, "");
+      pending = null;
+      kept.push(wrapped);
+      continue;
+    }
     // A declaration and a drawing this language cannot express (a shape, a
     // colour, an alert, a box, an array) are dropped - with every line they
     // wrap - rather than allowed to fail the whole study.
@@ -606,7 +627,20 @@ export function normaliseScript(source: string): string {
       blockIndent = indent;
       continue;
     }
-    kept.push(line);
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const opened = bracketDelta(line);
+    if (opened > 0) {
+      pending = [line];
+      pendingDelta = opened;
+      continue;
+    }
+    // `var float G_TREND = na` is a statement about one value: the storage
+    // word and the type word are Pine's, and this language stores what the
+    // statement stores.
+    kept.push(
+      line.replace(/^\s*var(?:ip)?\s+/, "").replace(TYPE_PREFIX, ""));
   }
   let text = kept.join("\n");
   text = replaceInputs(text);
@@ -637,6 +671,38 @@ export function placementFromScript(
   return match[1]?.toLowerCase() === "true" ? "overlay" : "pane";
 }
 
+/**
+ * Name the line a formula error happened on.
+ *
+ * "unexpected \"G_TREND\" at 7" is only as useful as the line it points at,
+ * so a parse error in a statement stream is re-raised with the statement's
+ * own text attached: the reader can see which line spoke wrong, not just
+ * where in a joined stream of them.
+ */
+function withLine(error: FormulaError, clean: string): FormulaError {
+  const match = / at (\d+)(?:$|\s|\))/.exec(error.message);
+  const at = match === null ? -1 : Number.parseInt(match[1] ?? "-1", 10);
+  if (!Number.isFinite(at) || at < 0) {
+    return error;
+  }
+  let start = 0;
+  let number = 1;
+  for (const line of clean.split("\n")) {
+    const end = start + line.length;
+    if (at <= end) {
+      const text = line.trim();
+      if (text.length > 0) {
+        return new FormulaError(
+          `${error.message} — statement ${number}: "${text}"`);
+      }
+      return error;
+    }
+    start = end + 1;
+    number += 1;
+  }
+  return error;
+}
+
 export function compileFormula(source: string): (data: SeriesData) => Float64Array {
   const clean = normaliseScript(source).trim();
   if (clean.length === 0) {
@@ -645,7 +711,14 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
   if (clean.length > MAX_SOURCE) {
     throw new FormulaError(`the formula is longer than ${MAX_SOURCE} characters`);
   }
-  const program = new Parser(tokenize(clean)).parseProgram();
+  let program: Statement[];
+  try {
+    program = new Parser(tokenize(clean)).parseProgram();
+  } catch (error) {
+    throw error instanceof FormulaError
+      ? withLine(error, clean)
+      : error;
+  }
   const env = new Map<string, Value>();
 
   const evaluate = (node: Node, data: SeriesData): Value => {

@@ -105,6 +105,34 @@ describe("multi-statement scripts", () => {
     expect(() => validateFormula(script)).not.toThrow();
   });
 
+  it("stores a type-prefixed declaration, the way Pine writes it", () => {
+    const run = compileFormula([
+      "var float G_TREND = na",
+      "G_TREND := sma(close, 2)",
+      "G_TREND",
+    ].join("\n"));
+    const out = run(dataFor([2, 4, 6]));
+    expect(out[2]).toBeCloseTo(5);
+  });
+
+  it("reads a qualified type prefix on the very first line as well", () => {
+    const run = compileFormula("simple int width = 2\nsma(close, width)");
+    const out = run(dataFor([1, 2, 3, 4]));
+    expect(out[3]).toBeCloseTo(3.5);
+  });
+
+  it("shows the offending statement when a line cannot be read", () => {
+    try {
+      validateFormula("heavy = sma(close, 2)\nheavy extra");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(FormulaError);
+      const message = (error as Error).message;
+      expect(message).toContain("unexpected \"extra\"");
+      expect(message).toContain('statement 2: "heavy extra"');
+    }
+  });
+
   it("drops a drawing call it cannot express instead of failing the study", () => {
     const script = 'plot(close)\nplotshape(close > open, style=shape.triangleup)';
     expect(() => validateFormula(script)).not.toThrow();
