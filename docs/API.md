@@ -11,6 +11,7 @@ All routes are served by `charts/http.py`. Every answer is JSON with
 | `GET /api/symbols` | the symbols this deployment can serve, with each one's coverage note |
 | `GET /api/bars?symbol=..&resolution=..&limit=..` | one chart payload |
 | `GET /api/bars?symbol=..&resolution=..&limit=..&day=..&days=N` | one chart payload; `day` names one stored session, `days` bigger than one merges that many newest sessions into a single intraday chart with gaps kept honest |
+| `GET /api/book?symbol=` | One symbol's top of the venue's own book, as the tape last observed it: bid and ask with their resting sizes and `at` (when it was seen). An index, a thin scrip or a stored session answers a `note` instead of zeros. |
 | `GET /api/sessions` | every session this service can draw, newest first, with today and the timezone stated |
 | `GET /api/prints?symbol=..&day=..&limit=..` | one symbol's order-print report for a day, see below |
 | `GET /api/orderflow?day=..` | every symbol's buy/sell split for one session, in one answer, see below |

@@ -583,6 +583,60 @@ class TapeSource:
         return {"symbol": wanted, "day": session.isoformat(),
                 "minutes": minutes, "note": ""}
 
+    def book_for(self, symbol: str, day: date | str | None = None) -> dict:
+        """One symbol's top of the venue's own book, as the tape last saw it.
+
+        The best bid and best ask with their resting sizes come from the same
+        tick row that priced the bars (fields 2-5 of the wire), so the book
+        and the chart can never disagree about a moment. It rides the day
+        build the bars already use - one dict read, not another pass over the
+        capture - and it answers a note rather than an error when the tape
+        has not yet observed a book for the symbol, which is a fact about a
+        thin scrip, not a failure.
+        """
+        wanted = symbol.strip().upper()
+        if wanted in INDEX_SYMBOLS:
+            return {"symbol": wanted,
+                    "note": f"{wanted} is an index: the venue prices it "
+                            f"from its members' prints and does not publish "
+                            f"a bid and ask, so there is no order book"}
+        session = self.flow_day(day)
+        path = self.capture_for(session)
+        if path is None:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "bid": None, "bid_size": None, "ask": None,
+                    "ask_size": None, "last": None, "at": None,
+                    "note": f"no broker tape is banked for "
+                            f"{session.isoformat()}, so the book has no "
+                            f"observation to show"}
+        try:
+            built = self._day(session)
+        except UpstreamError as exc:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "bid": None, "bid_size": None, "ask": None,
+                    "ask_size": None, "last": None, "at": None,
+                    "note": exc.detail}
+        observed = built.book.get(wanted)
+        if observed is None:
+            return {"symbol": wanted, "day": session.isoformat(),
+                    "bid": None, "bid_size": None, "ask": None,
+                    "ask_size": None, "last": None, "at": None,
+                    "note": f"{wanted}'s book has not been observed in this "
+                            f"session's tape yet; a thin scrip may sit "
+                            f"without a resting quote"}
+        sized = {"bid": observed["bid"], "bid_size": observed["bid_size"],
+                 "ask": observed["ask"], "ask_size": observed["ask_size"],
+                 "last": observed["last"], "at": observed["at"],
+                 "symbol": wanted, "day": session.isoformat(),
+                 "note": ("" if session == now_karachi().date()
+                          else "a stored session's book is its final "
+                               "observation; it does not move")}
+        if isinstance(sized["bid_size"], float):
+            sized["bid_size"] = int(sized["bid_size"])
+        if isinstance(sized["ask_size"], float):
+            sized["ask_size"] = int(sized["ask_size"])
+        return sized
+
     # ------------------------------------------------------------- reading
     def _day(self, day: date) -> "tape_bars.TapeBars":
         """The built tape for `day`, cached on the capture file's identity."""
