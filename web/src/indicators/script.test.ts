@@ -105,6 +105,58 @@ describe("multi-statement scripts", () => {
     expect(() => validateFormula(script)).not.toThrow();
   });
 
+  // A real paste: the reader's own trend study that came back as
+  // `unexpected "G_TREND" at 7` - the title string "Bull (Yellow" counted
+  // as an open bracket, so the next statement was swallowed into the
+  // plot line and one statement-per-line broke.
+  it("survives an unbalanced parenthesis inside a plot's title string", () => {
+    const script = [
+      "//@version=5",
+      'indicator("Trend EMA", overlay=true)',
+      "var float G_TREND = na",
+      "G_TREND := ema(close, 21)",
+      "buy = close > G_TREND",
+      "sell = close < G_TREND",
+      'plot(G_TREND, "Bull (Yellow", color=color.new(color.yellow, 0))',
+      "plotshape(buy, style=shape.triangleup, color=color.green)",
+    ].join("\n");
+    const run = compileFormula(script);
+    const closes = [...Array(30).keys()].map((x) => 90 + x * 0.1);
+    const out = run(dataFor(closes));
+    // ema(21) needs its window before the first readable value; the plot
+    // coming out of a swallowed statement used to be NaN for every bar.
+    expect(Number.isFinite(out[out.length - 1])).toBe(true);
+    expect(() => validateFormula(script)).not.toThrow();
+  });
+
+  it("drops invisible characters a TradingView copy rides along", () => {
+    // A zero-width space before the plot line used to surface as
+    // `unexpected character ""` with nothing to point at.
+    const script = "close1 = sma(close, 2)\n\u200bplot(close1)";
+    expect(() => validateFormula(script)).not.toThrow();
+  });
+
+  it("joins a line that ends on an operator with its tail", () => {
+    const script = "fast = ema(close, 3) and\n  sma(close, 2) > 0";
+    const run = compileFormula(script);
+    expect(Number.isFinite(run(dataFor([10, 11, 12, 13]))[3])).toBe(true);
+  });
+
+  it("keeps a plot's series and ignores the drawing options after it", () => {
+    // color=..., title=..., style=... are shaping options this language
+    // does not have; they must not be parsed as pine functions.
+    expect(() =>
+      validateFormula(
+        'plot(ema(close, 3), title="E", color=color.new(color.red, 0))'))
+      .not.toThrow();
+  });
+
+  it("reads Pine's cast calls bool(), int() and float()", () => {
+    expect(() =>
+      validateFormula("close_first = bool(close > 10)\nplot(close_first)"))
+    .not.toThrow();
+  });
+
   it("stores a type-prefixed declaration, the way Pine writes it", () => {
     const run = compileFormula([
       "var float G_TREND = na",
