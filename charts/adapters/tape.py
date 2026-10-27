@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -260,8 +260,17 @@ class TapeSource:
         #: Immutable archive rows, cached per (day, symbol). A finished
         #: session never changes, so this is safe for the process lifetime.
         self._bars_cache: dict[tuple[str, str], list[Bar]] = {}
-        #: Sub-minute bars, built once per capture identity and resolution.
-        self._ticks: dict[str, tuple[tuple, dict[str, list[Bar]]]] = {}
+        #: Sub-minute bars, built incrementally per capture identity and
+        #: resolution. The value is a state dict, not a plain pair: a live
+        #: capture grows every minute, and re-reading only the appended bytes
+        #: (plus the per-symbol volume counters carried across parses) is
+        #: what keeps a one-second chart cheap on the machine running this.
+        self._ticks: dict[str, dict] = {}
+        #: The filled one-second/ten-second ladder per (day, resolution,
+        #: symbol), keyed by the tape's own last observed moment: a second the
+        #: tape lived but the symbol never printed shows the last price flat
+        #: with no volume, exactly the way a second-based chart reads.
+        self._filled: dict[tuple[str, str, str], tuple[datetime | None, list[Bar]]] = {}
         #: The exchange's own index minutes, cached per capture identity.
         #: Keyed like the tape cache: a growing live file has a new
         #: (day, path, size, mtime), so today's newest frames arrive.
@@ -860,8 +869,8 @@ class TapeSource:
             bars = self._calendar_history(symbol, canonical, session, day)
             return self._cal_tail(bars, limit)
         if spec.subminute:
-            rows = self._tick_day(session, canonical).get(symbol, [])
-            return self._cal_tail(rows, limit)
+            return self._cal_tail(
+                self.filled_symbol_bars(session, canonical, symbol), limit)
         bars = self._minute_history(symbol, session)
         folded = ladder.aggregate(bars, canonical)
         return self._cal_tail(folded, limit)
@@ -971,66 +980,184 @@ class TapeSource:
         return ladder.aggregate(rows, resolution)
 
     # ------------------------------------------------------------ sub-minute
-    def _tick_day(self, session: date, resolution: str) -> dict[str, list[Bar]]:
-        """Second or ten-second bars for every symbol the tick file printed.
+    def _tick_state(self, session: date, resolution: str) -> dict | None:
+        """The rebuild state for one session's tick read, or None without a
+        capture.
 
-        Built once per capture identity and cached: the file is read in one
-        pass, volume comes from the venue's own running counter differenced
-        across buckets, and a row outside the session bands is dropped. A
-        row with no price contributes nothing rather than a guessed one.
+        The capture is an append-only file, so the honest cache is the byte
+        offset the last parse stopped at: a burst arrives, the appended rows
+        merge into the buckets already built, and a full file re-read happens
+        only when the file is replaced rather than grown. The per-symbol
+        running-volume counters carry across parses, because a split volume
+        needs the counter value the row before it ended at, which the first
+        parse banked.
         """
         path = self.capture_for(session)
         if path is None:
-            return {}
+            return None
         try:
             stat = path.stat()
         except OSError:
+            return None
+        key = f"{session.isoformat()}|{resolution}"
+        state = self._ticks.get(key)
+        if state is None or state["path"] != path:
+            state = {
+                "path": path, "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size, "offset": 0,
+                "buckets": {}, "previous_total": {}, "last_moment": None,
+            }
+        # The file grew: parse only what has not been read yet. A full re-read
+        # happens when the parsed offset is somehow ahead of the file (a
+        # replaced file that kept its name) - the honest answer then is a
+        # fresh build from zero.
+        if stat.st_size < state["offset"]:
+            state.update({"offset": 0, "buckets": {}, "previous_total": {},
+                          "last_moment": None, "built": None})
+        if stat.st_size > state["offset"]:
+            self._merge_new_ticks(state, session, resolution)
+            # New bytes change the bucket map and the tape clock: the memo
+            # of the folded bars beneath may be stale.
+            state["built"] = None
+        state["size"] = stat.st_size
+        state["mtime_ns"] = stat.st_mtime_ns
+        self._ticks[key] = state
+        return state
+
+    def _merge_new_ticks(self, state: dict, session: date,
+                         resolution: str) -> None:
+        """Read the capture's unbanked tail and merge it into the buckets."""
+        with state["path"].open("rb") as handle:
+            handle.seek(state["offset"])
+            blob = handle.read()
+        lines = blob.split(b"\n")
+        # The trailing fragment may be half a line: the next parse starts
+        # there, once the recorder has written its remainder.
+        tail = lines.pop()
+        state["offset"] += len(blob) - len(tail)
+        buckets = state["buckets"]
+        previous_total = state["previous_total"]
+        for line in lines:
+            if not line:
+                continue
+            for row in tick_volume.parse_tick_line(
+                    line.decode("utf-8", "replace")):
+                symbol = (
+                    str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+                )
+                if not symbol:
+                    continue
+                moment = tape_bars._moment(row, session)
+                if moment is None:
+                    continue
+                if moment.tzinfo is None:
+                    moment = moment.replace(tzinfo=ladder.law.KARACHI)
+                held = state["last_moment"]
+                if held is None or moment > held:
+                    state["last_moment"] = moment
+                if not ladder.in_session(moment):
+                    continue
+                price = tape_bars._number(row.get("last"))
+                if price is None or price <= 0:
+                    continue
+                start = ladder.bucket_start(moment, resolution)
+                if start is None:
+                    continue
+                total = tape_bars._number(row.get("volume"))
+                delta = 0.0
+                if total is not None and total > 0:
+                    prior = previous_total.get(symbol)
+                    if prior is not None and total >= prior:
+                        delta = float(int(total) - int(prior))
+                    previous_total[symbol] = total
+                bucket = buckets.setdefault(symbol, {}).get(start)
+                if bucket is None:
+                    buckets[symbol][start] = {
+                        "o": price, "h": price, "l": price, "c": price,
+                        "v": delta,
+                    }
+                else:
+                    bucket["h"] = max(bucket["h"], price)
+                    bucket["l"] = min(bucket["l"], price)
+                    bucket["c"] = price
+                    bucket["v"] += delta
+
+    def _tick_day(self, session: date, resolution: str) -> dict[str, list[Bar]]:
+        """Second or ten-second bars for every symbol the tick file printed.
+
+        Built incrementally per capture identity: the appended tail of a
+        live file merges into buckets that already exist, volume comes from
+        the venue's own running counter differenced across buckets, and a
+        row outside the session bands is dropped. A row with no price
+        contributes nothing rather than a guessed one.
+
+        The fold of buckets into bars is memoised on the merge's own dirty
+        flag, so a read that arrives between bursts answers from the last
+        fold: polling this method once a second costs one append-only parse
+        of the minutes that grew, never a re-read of the whole day.
+        """
+        state = self._tick_state(session, resolution)
+        if state is None:
             return {}
-        key = (session.isoformat(), resolution, str(path),
-               stat.st_size, stat.st_mtime_ns)
-        cached = self._ticks.get(session.isoformat())
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        buckets: dict[str, dict[datetime, dict]] = {}
-        previous_total: dict[str, float] = {}
-        for row in tick_volume.iter_ticks(path):
-            symbol = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
-            if not symbol:
-                continue
-            moment = tape_bars._moment(row, session)
-            if moment is None or not ladder.in_session(moment):
-                continue
-            start = ladder.bucket_start(moment, resolution)
-            price = tape_bars._number(row.get("last"))
-            if start is None or price is None or price <= 0:
-                continue
-            total = tape_bars._number(row.get("volume"))
-            delta = 0.0
-            if total is not None and total > 0:
-                prior = previous_total.get(symbol)
-                if prior is not None and total >= prior:
-                    delta = float(int(total) - int(prior))
-                previous_total[symbol] = total
-            bucket = buckets.setdefault(symbol, {}).get(start)
-            if bucket is None:
-                buckets[symbol][start] = {
-                    "o": price, "h": price, "l": price, "c": price,
-                    "v": delta,
-                }
-            else:
-                bucket["h"] = max(bucket["h"], price)
-                bucket["l"] = min(bucket["l"], price)
-                bucket["c"] = price
-                bucket["v"] += delta
-        built: dict[str, list[Bar]] = {}
-        for symbol, series in buckets.items():
-            built[symbol] = [
-                Bar.build(t=start, o=data["o"], h=data["h"],
-                          l=data["l"], c=data["c"], v=data["v"])
-                for start, data in sorted(series.items())
-            ]
-        self._ticks[session.isoformat()] = (key, built)
+        built = state.get("built")
+        if built is None:
+            built = {}
+            for symbol, series in state["buckets"].items():
+                built[symbol] = [
+                    Bar.build(t=start, o=d["o"], h=d["h"], l=d["l"],
+                              c=d["c"], v=d["v"])
+                    for start, d in sorted(series.items())
+                ]
+            state["built"] = built
         return built
+
+    def filled_symbol_bars(self, session: date, resolution: str,
+                           symbol: str) -> list[Bar]:
+        """One symbol's second/ten-second chart, dense on the tape, as it
+        trades.
+
+        The ticks themselves only exist where prints happened, and a bar
+        chart drawn straight from them shows dots surrounded by holes -
+        unreadable. A real seconds chart carries the *last quote* forward:
+        every bucket between prints is a doji at the previous close, volume
+        zero, exactly the shape standing tape questions draw. The carry
+        runs from the symbol's first print to the newest instant the tape
+        observed, which is the capture's own clock, not the wall clock - so
+        a stalled recorder stops the chart at the night it stopped, instead
+        of lying flat bars into the dark.
+        """
+        state = self._tick_state(session, resolution)
+        if state is None:
+            return []
+        spec = ladder.spec_for(resolution)
+        if spec.seconds is None:
+            return []
+        step = timedelta(seconds=spec.seconds)
+        ordered = sorted(state["buckets"].get(symbol, {}).items())
+        if not ordered:
+            return []
+        till = state["last_moment"]
+        out: list[Bar] = []
+        carry: float | None = None
+        moment = ordered[0][0]
+        for start, dictionary in ordered:
+            while moment < start and carry is not None:
+                out.append(Bar.build(t=moment, o=carry, h=carry, l=carry,
+                                     c=carry, v=0))
+                moment += step
+            out.append(Bar.build(t=start, o=dictionary["o"],
+                                 h=dictionary["h"], l=dictionary["l"],
+                                 c=dictionary["c"], v=dictionary["v"]))
+            carry = dictionary["c"]
+            moment = start + step
+        # The tape's own tail: buckets after the last print, until the
+        # capture observed its newest instant.
+        if carry is not None and till is not None:
+            while moment <= till:
+                out.append(Bar.build(t=moment, o=carry, h=carry, l=carry,
+                                     c=carry, v=0))
+                moment += step
+        return out
 
     # ------------------------------------------------------------- indexes
     def _exchange_index_minutes(self, session: date) -> dict[str, list[Bar]]:

@@ -62,8 +62,10 @@ import {
 import {
   anchorAt,
   frameFor,
+  makePositions,
   paintOverlay,
   paintSessionBreaks,
+  type OverlayPositions,
 } from "../chart/overlay";
 import { sessionBreaks } from "../chart/sessions";
 import { flowColumns } from "../chart/flow";
@@ -174,6 +176,8 @@ interface EngineState {
   /** The plate under the candles is delta (buy - sell), not raw volume. */
   deltaShown: boolean;
   data: SeriesData | null;
+  /** The candles' own epoch seconds, ascending: the drawing clip's bars. */
+  barTimes: number[];
 }
 
 /** A hex colour at an alpha, for the muted volume under the candles. */
@@ -243,6 +247,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
   void props.gaps; // the status bar owns the gap ledger; see it there
   void props.theme; // one plate, black; see TV_DARK_THEME
 
+  // A RAF paint must never read a stale closure: the pointer's own commit
+  // schedules its repaint before React has handed it the new drawing, and
+  // the commit-triggered repaint is then a no-op on the queue flag. Keep
+  // the drawing inputs in a ref that every render refreshes; the next
+  // frame paints whatever the app holds at frame time.
+  const overlayProps = useRef({ drawings, drawingsHidden });
+  overlayProps.current = { drawings, drawingsHidden };
 
   const wrapper = useRef<HTMLDivElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
@@ -253,11 +264,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
   /** True once the reader pans, zooms or drags: no fit after that. */
   const zoomed = useRef(false);
 
-  // The drawing overlay: its canvas, the capture in progress and one
-  // batched repaint, so a pointer move costs one frame, not a render.
+  /** The drawing overlay: its canvas, the capture in progress and one
+   * batched repaint, so a pointer move costs one frame, not a render. */
   const overlay = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<{
-    kind: "trend" | "flatTop" | "flatBottom" | "measure";
+    kind: "trend" | "ob" | "flatTop" | "flatBottom" | "measure";
     a: AnchoredPoint;
     b: AnchoredPoint | null;
   } | null>(null);
@@ -485,6 +496,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       volumeShown: volumeAvailable,
       deltaShown: false,
       data: null,
+      barTimes: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -597,8 +609,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
     }
     if (candlesData.length === 0) {
+      state.barTimes = [];
       return;
     }
+    // The drawing anchors and the y-picks map from these; the whole
+    // drawing path speaks milliseconds, so keep them ms here too.
+    state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
       state.volume.setData(volumeData);
@@ -695,16 +711,22 @@ export function ChartCanvas(props: ChartCanvasProps) {
     }
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     const frame = frameFor(state.chart, cssWidth, cssHeight);
+    // The drawing positions: built from the tape's own bar list, so a
+    // drawing is mapped in bar-index space and never dropped for sitting
+    // between bars.
+    const positions = makePositions(state.chart, state.candles,
+      state.barTimes);
     const drag = dragRef.current;
     const midDrag: MeasureResult | null = drag !== null
       && drag.kind === "measure" && drag.b !== null
       ? measureBetween(drag.a, drag.b)
       : null;
     paintOverlay(context, state.chart, state.candles, frame, {
-      drawings: drawings ?? [],
-      hidden: drawingsHidden ?? false,
+      drawings: overlayProps.current.drawings ?? [],
+      hidden: overlayProps.current.drawingsHidden ?? false,
       toolColor: "#2962ff",
       midDrag,
+      positions,
     });
     // The session dividers sit behind the reader's own drawings: where one
     // Karachi trading day ends and the next begins, so a merged chart cannot
@@ -715,7 +737,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         { line: "rgba(120, 123, 134, 0.32)", label: "#787b86" });
     }
     if (drag !== null) {
-      paintLive(context, state.chart, state.candles, frame, drag);
+      paintLive(context, state.chart, state.candles, frame, drag, positions);
     }
   };
 
@@ -725,6 +747,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     candles: ISeriesApi<"Candlestick", Time>,
     frame: ReturnType<typeof frameFor>,
     drag: NonNullable<typeof dragRef.current>,
+    positions: OverlayPositions,
   ) => {
     if (drag.b === null) {
       return;
@@ -742,7 +765,56 @@ export function ChartCanvas(props: ChartCanvasProps) {
       id: "live",
       kind: drag.kind,
       points,
-    });
+    }, positions);
+  };
+
+  /**
+   * The pointer back into tape coordinates, margins and all.
+   *
+   * `anchorAt` answers exactly when the point sits on the engine's own
+   * clock; the margin after the newest bar (where every fresh drawing
+   * naturally starts when the window refuses to scroll further) and the
+   * slivers between bars answered null, which is why tools used to feel
+   * dead there. The fallback rides the engine's own logical index out of
+   * the data, at the series' own bar pace, so the same instant maps back
+   * the same way the overlay paints it.
+   */
+  const anchorFromPointer = (
+    state: EngineState,
+    x: number,
+    y: number,
+  ): AnchoredPoint | null => {
+    const direct = anchorAt(state.chart, state.candles, x, y);
+    if (direct !== null) {
+      return direct;
+    }
+    const logical = state.chart.timeScale().coordinateToLogical(x);
+    const price = state.candles.coordinateToPrice(y);
+    const times = state.barTimes;
+    if (logical === null || price === null || times.length === 0) {
+      return null;
+    }
+    const index = Number(logical);
+    const last = times.length - 1;
+    const firstTime = times[0]!;
+    const secondTime = times[1] ?? firstTime;
+    const lastTime = times[last]!;
+    const beforeLast = times[last - 1] ?? firstTime;
+    if (index <= 0) {
+      const pace = secondTime - firstTime;
+      return { t: firstTime + index * pace, price };
+    }
+    if (index >= last) {
+      const pace = beforeLast - lastTime;
+      return { t: lastTime + (index - last) * pace, price };
+    }
+    const floorIndex = Math.floor(index);
+    const t0 = times[floorIndex]!;
+    const t1 = times[floorIndex + 1] ?? lastTime;
+    return {
+      t: t0 + (t1 - t0) * (index - floorIndex),
+      price,
+    };
   };
 
   const onOverlayDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -755,7 +827,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const anchor = anchorAt(state.chart, state.candles, x, y);
+    const anchor = anchorFromPointer(state, x, y);
     if (anchor === null) {
       return;
     }
@@ -769,10 +841,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
       return;
     }
     dragRef.current = {
-      kind: activeTool === "trend" ? "trend"
+      kind: activeTool === "measure" ? "measure"
+        : activeTool === "trend" ? "trend"
+        : activeTool === "ob" ? "ob"
         : activeTool === "flatTop" ? "flatTop"
-        : activeTool === "flatBottom" ? "flatBottom"
-        : "measure",
+        : "flatBottom",
       a: anchor,
       b: null,
     };
@@ -791,9 +864,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
-    const anchor = anchorAt(
-      state.chart,
-      state.candles,
+    const anchor = anchorFromPointer(
+      state,
       event.clientX - rect.left,
       event.clientY - rect.top,
     );
@@ -951,6 +1023,7 @@ function paintOne(
   candles: ISeriesApi<"Candlestick", Time>,
   frame: ReturnType<typeof frameFor>,
   shape: Drawing,
+  positions: OverlayPositions,
 ): void {
   // The live shape draws through the same painter as the kept ones.
   paintOverlay(context, chart, candles, frame, {
@@ -958,6 +1031,7 @@ function paintOne(
     hidden: false,
     toolColor: "#2962ff",
     midDrag: null,
+    positions,
   });
 }
 

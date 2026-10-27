@@ -12,6 +12,7 @@
 export type DrawTool =
   | "cursor"
   | "trend"
+  | "ob"
   | "flatTop"
   | "flatBottom"
   | "hline"
@@ -21,6 +22,7 @@ export type DrawTool =
 /** The shapes a drawing can carry once committed. */
 export type DrawingKind =
   | "trend"
+  | "ob"
   | "flatTop"
   | "flatBottom"
   | "hline"
@@ -142,7 +144,7 @@ function parseOne(value: unknown): Drawing | null {
 }
 
 function isKind(value: unknown): value is DrawingKind {
-  return value === "trend" || value === "flatTop"
+  return value === "trend" || value === "ob" || value === "flatTop"
     || value === "flatBottom" || value === "hline" || value === "hray";
 }
 

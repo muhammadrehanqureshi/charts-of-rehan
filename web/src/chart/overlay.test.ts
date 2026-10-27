@@ -1,10 +1,12 @@
 /**
  * The overlay's own math, detached from the canvas: the frame the price
- * pane gets from the engine's sizes, and the labels a measure carries.
+ * pane gets from the engine's sizes, the labels a measure carries, and the
+ * bar-index mapping a drawing rides - the one that must never drop a line
+ * just because it ends between bars or in the margin.
  */
 
 import { describe, expect, it } from "vitest";
-import { frameFor, anchorAt, pixelAt } from "./overlay";
+import { anchorAt, frameFor, makePositions } from "./overlay";
 
 type Chartish = Parameters<typeof frameFor>[0];
 
@@ -54,6 +56,8 @@ describe("anchor mapping", () => {
     timeScale: () => ({
       coordinateToTime: (x: number) =>
         x >= 0 && x <= 100 ? Math.floor(x * 1000) : null,
+      coordinateToLogical: (x: number) =>
+        x >= 0 && x <= 100 ? Math.floor(x / 100) : null,
       // The engine's own second-scale: only seconds 0..100 are on screen.
       timeToCoordinate: (t: number) =>
         (t >= 0 && t <= 100 ? t : null),
@@ -66,6 +70,9 @@ describe("anchor mapping", () => {
       : null),
   } as unknown as Parameters<typeof anchorAt>[1];
 
+  /** The engine's screen holds exactly two bars: seconds 0 and 100. */
+  const positions = makePositions(chart, candles, [0, 100_000]);
+
   it("a click anchors onto the tape's own instant and price", () => {
     expect(anchorAt(chart, candles, 40, 120))
       .toEqual({ t: 40_000_000, price: 940 });
@@ -76,10 +83,32 @@ describe("anchor mapping", () => {
     expect(anchorAt(chart, candles, 40, 900)).toBe(null);
   });
 
-  it("an anchor off the viewport maps to no pixel", () => {
-    expect(pixelAt(chart, candles, { t: 200_000, price: 950 })).toBe(null);
-    expect(pixelAt(chart, candles, { t: 20_000, price: 850 })).toBe(null);
-    expect(pixelAt(chart, candles, { t: 20_000, price: 950 }))
-      .toEqual({ x: 20, y: 100 });
+  it("an instant between two bars still maps to its pixel", () => {
+    // Second 40 is 40% of the way from bar 0 (x 0) to bar 1 (x 100).
+    expect(positions.xAt(40_000)).toBeCloseTo(40, 6);
+  });
+
+  it("an instant past the newest bar extends at the bars' own pace", () => {
+    // The margin: one bar's worth past the end lands at x 200, where the
+    // click happened, not snapped back onto the newest candle.
+    expect(positions.xAt(200_000)).toBeCloseTo(200, 6);
+  });
+
+  it("an instant before the first bar extends the other way", () => {
+    expect(positions.xAt(-100_000)).toBeCloseTo(-100, 6);
+  });
+
+  it("a price maps through the candle pane's own scale", () => {
+    expect(positions.yAt(950)).toBe(100);
+  });
+
+  it("a series with no bars maps nothing", () => {
+    const blank = makePositions(chart, candles, []);
+    expect(blank.xAt(40_000)).toBe(null);
+  });
+
+  it("a series of one bar pins every instant to that bar's pixel", () => {
+    const single = makePositions(chart, candles, [0]);
+    expect(single.xAt(40_000)).toBe(0);
   });
 });
