@@ -2,10 +2,16 @@
  * The drawing overlay: shapes a reader places over the price pane.
  *
  * The overlay is an ordinary canvas filling the chart surface; the shapes
- * inside it are placed with the engine's own mappings (time → x, price →
- * y), so a drawing glued to a bar stays glued when the reader pans, zooms
- * or the next bars arrive. A drawing the viewport left is simply not
- * drawn this frame - the engine's timeToCoordinate answers null there.
+ * inside it are placed with the engine's own mappings, so a drawing glued
+ * to a bar stays glued when the reader pans, zooms or the next bars arrive.
+ *
+ * One concrete fault has a name here: `timeToCoordinate` answers only for
+ * instants that are exactly a bar of the series, and returns null for any
+ * point between bars or in the margin after the last one. A trend line
+ * whose end was a sliver off a bar would silently refuse to be drawn. The
+ * overlay therefore maps time → x in *bar-index space* (the tape's own
+ * clip, interpolated linearly between real bars), which never drops a line
+ * and reads exactly like the terminal's own crosshair placement.
  */
 
 import type {
@@ -76,19 +82,145 @@ export function anchorAt(
   return { t: Number(time) * 1000, price };
 }
 
-/** Pixel coordinates of an anchor, or null when it is off the viewport. */
-export function pixelAt(
+/**
+ * A tape instant → x mapping that never drops a line.
+ *
+ * The engine's own `timeToCoordinate` answers only for instants that are
+ * exactly a bar time. A sliver off a bar returned null, and a trend line
+ * whose end sat between bars refused to be drawn at all. Chart draws in
+ * bar-index space instead - each real bar occupies one linear unit - and
+ * interpolates inside it, so a pixel exists for every instant, including
+ * the empty margin after the newest bar and the sliver between two bars.
+ */
+export interface OverlayPositions {
+  /** Pixel x for a tape instant (ms), or null with no bars at all. */
+  xAt(tMs: number): number | null;
+  /** Pixel y of a price on the candle pane. */
+  yAt(price: number): number;
+}
+
+export function makePositions(
   chart: IChartApi,
   candles: ISeriesApi<"Candlestick">,
-  point: AnchoredPoint,
-): { x: number; y: number } | null {
+  barTimesMs: readonly number[],
+): OverlayPositions {
   const timeScale = chart.timeScale();
-  const x = timeScale.timeToCoordinate((point.t / 1000) as never);
-  const y = candles.priceToCoordinate(point.price);
-  if (x === null || y === null) {
-    return null;
-  }
-  return { x, y };
+  // The drawing path speaks milliseconds (`anchorAt` multiplies the
+  // engine's seconds by 1000), so the positions take milliseconds and
+  // drop back to seconds only for the engine's own calls.
+  const barTimes = barTimesMs.map((t) => Math.floor(t / 1000));
+  const cache = new Map<number, number | null>();
+  const pxAt = (i: number): number | null => {
+    const known = cache.get(i);
+    if (known !== undefined) {
+      return known;
+    }
+    const t = barTimes[i];
+    const x = t === undefined ? null
+      : timeScale.timeToCoordinate(t as never);
+    cache.set(i, x);
+    return x;
+  };
+  const count = barTimes.length;
+  return {
+    xAt(tMs: number): number | null {
+      if (count === 0) {
+        return null;
+      }
+      if (count === 1) {
+        return pxAt(0);
+      }
+      // The bar-index coordinate of this instant, in seconds: inside the
+      // series it is the bracketing pair interpolated; outside either
+      // edge it is the edge extended at the series' own bar pace.
+      const tSec = Math.floor(tMs / 1000);
+      // Copied so the subscripts are their own number, not number | null◌.
+      const first = barTimes[0]!;
+      const second = barTimes[1] ?? first;
+      const last = barTimes[count - 1]!;
+      const beforeLast = barTimes[count - 2] ?? first;
+      let indexFloat: number;
+      if (tSec <= first) {
+        indexFloat = second === first
+          ? 0
+          : (tSec - first) / (second - first);
+      } else if (tSec >= last) {
+        const pace = last - beforeLast;
+        indexFloat = (count - 1) + (pace === 0 ? 0 : (tSec - last) / pace);
+      } else {
+        let lo = 0;
+        let hi = count - 1;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (barTimes[mid]! <= tSec) {
+            lo = mid;
+          } else {
+            hi = mid;
+          }
+        }
+        const span = barTimes[hi]! - barTimes[lo]!;
+        indexFloat = lo + (span === 0 ? 0 : (tSec - barTimes[lo]!) / span);
+      }
+      // Before the first bar: extend at the first two bars' pixel pace.
+      if (indexFloat < 0) {
+        const edge = pxAt(0);
+        const next = pxAt(1);
+        if (edge === null) {
+          return null;
+        }
+        return next === null ? edge : edge + (edge - next) * -indexFloat;
+      }
+      // After the last bar: extend at the last two bars' pixel pace. This is
+      // the margin a trend line is drawn into when the window will not
+      // scroll further - the anchor must land where the click landed, not
+      // snap back onto the newest candle.
+      if (indexFloat > count - 1) {
+        const edge = pxAt(count - 1);
+        if (edge === null) {
+          return null;
+        }
+        const prior = pxAt(count - 2);
+        const over = indexFloat - (count - 1);
+        return prior === null ? edge : edge + (edge - prior) * over;
+      }
+      // Two real bars to lean on: the nearest visible pixel at or under
+      // this index and the nearest at or above it. Bars the viewport left
+      // have no pixels; the lean goes to the visible bracket, so a segment
+      // that clips the screen edge still draws like the engine's own line.
+      const start = Math.max(0, Math.min(count - 1, Math.floor(indexFloat)));
+      let leftIdx: number | null = null;
+      let rightIdx: number | null = null;
+      for (let k = start; k >= 0 && leftIdx === null; k -= 1) {
+        if (pxAt(k) !== null) {
+          leftIdx = k;
+        }
+      }
+      for (let k = start + 1; k < count && rightIdx === null; k += 1) {
+        if (pxAt(k) !== null) {
+          rightIdx = k;
+        }
+      }
+      if (leftIdx === null && rightIdx === null) {
+        return null;
+      }
+      const a = leftIdx ?? rightIdx!;
+      const bIdx = rightIdx ?? a;
+      if (a === bIdx) {
+        const only = pxAt(a);
+        return only === null ? null : only;
+      }
+      const l = pxAt(a);
+      const r = pxAt(bIdx);
+      if (l === null || r === null) {
+        return null;
+      }
+      const frac = (indexFloat - a) / (bIdx - a);
+      return l + (r - l) * frac;
+    },
+    yAt(price: number): number {
+      return candles.priceToCoordinate(price) ?? 0;
+    },
+  };
 }
 
 /**
@@ -135,6 +267,7 @@ export interface OverlayShapeInput {
   readonly hidden: boolean;
   readonly toolColor: string;
   readonly midDrag: MeasureResult | null;
+  readonly positions: OverlayPositions;
 }
 
 /**
@@ -148,6 +281,8 @@ export function paintOverlay(
   frame: OverlayFrame,
   input: OverlayShapeInput,
 ): void {
+  void chart; // positions carry their own mapping
+  void candles;
   context.clearRect(0, 0, context.canvas.width, context.canvas.height);
   if (input.hidden && input.midDrag === null) {
     return;
@@ -157,22 +292,22 @@ export function paintOverlay(
     if (input.hidden) {
       continue;
     }
-    paintDrawing(context, chart, candles, frame, drawing,
-      input.toolColor, lineWidth);
+    paintDrawing(context, frame, drawing,
+      input.toolColor, lineWidth, input.positions);
   }
   if (input.midDrag !== null) {
-    paintMeasure(context, chart, candles, input.midDrag, input.toolColor);
+    paintMeasure(context, input.midDrag, input.toolColor,
+      input.positions);
   }
 }
 
 function paintDrawing(
   context: CanvasRenderingContext2D,
-  chart: IChartApi,
-  candles: ISeriesApi<"Candlestick">,
   frame: OverlayFrame,
   drawing: Drawing,
   color: string,
   lineWidth: number,
+  positions: OverlayPositions,
 ): void {
   const a = drawing.points[0];
   const b = drawing.points[1];
@@ -181,35 +316,40 @@ function paintDrawing(
   }
   context.beginPath();
   if (drawing.kind === "hline") {
-    context.moveTo(0, mapY(candles, a.price));
-    context.lineTo(frame.plotWidth, mapY(candles, a.price));
+    const y = positions.yAt(a.price);
+    context.moveTo(0, y);
+    context.lineTo(frame.plotWidth, y);
   } else if (drawing.kind === "hray") {
-    const start = mapX(chart, a.t);
+    const start = positions.xAt(a.t);
+    const y = positions.yAt(a.price);
     if (start === null) {
-      context.strokeStyle = color;
-      context.lineWidth = lineWidth;
-      context.stroke();
       return;
     }
-    context.moveTo(start, mapY(candles, a.price));
-    context.lineTo(frame.plotWidth, mapY(candles, a.price));
+    context.moveTo(start, y);
+    context.lineTo(frame.plotWidth, y);
+  } else if (drawing.kind === "ob") {
+    if (b === null) {
+      return;
+    }
+    paintOrderBlock(context, positions, a, b);
+    return;
   } else {
     if (b === null) {
       return;
     }
     if (drawing.kind === "trend") {
-      const p1 = pixelAt(chart, candles, a);
-      const p2 = pixelAt(chart, candles, b);
-      if (p1 === null || p2 === null) {
+      const x1 = positions.xAt(a.t);
+      const x2 = positions.xAt(b.t);
+      if (x1 === null || x2 === null) {
         return;
       }
-      context.moveTo(p1.x, p1.y);
-      context.lineTo(p2.x, p2.y);
+      context.moveTo(x1, positions.yAt(a.price));
+      context.lineTo(x2, positions.yAt(b.price));
     } else {
       // flatTop / flatBottom: a level held between two instants.
-      const y = mapY(candles, a.price);
-      const x1 = mapX(chart, a.t);
-      const x2 = mapX(chart, b.t);
+      const y = positions.yAt(a.price);
+      const x1 = positions.xAt(a.t);
+      const x2 = positions.xAt(b.t);
       if (x1 === null || x2 === null) {
         return;
       }
@@ -224,6 +364,47 @@ function paintDrawing(
   context.stroke();
 }
 
+/**
+ * The order block: a box from one anchor to another, filled with the side
+ * it faces (a box lifted up is bullish, driven down bearish) at TV's own
+ * translucency, with the OB tag inside the corner. An order block survives
+ * being read later: the fill is quiet, the edge is enough.
+ */
+function paintOrderBlock(
+  context: CanvasRenderingContext2D,
+  positions: OverlayPositions,
+  a: AnchoredPoint,
+  b: AnchoredPoint,
+): void {
+  const x1 = positions.xAt(a.t);
+  const x2 = positions.xAt(b.t);
+  if (x1 === null || x2 === null) {
+    return;
+  }
+  const y1 = positions.yAt(a.price);
+  const y2 = positions.yAt(b.price);
+  const left = Math.min(x1, x2);
+  const right = Math.max(x1, x2);
+  const top = Math.min(y1, y2);
+  const bottom = Math.max(y1, y2);
+  const bullish = b.price >= a.price;
+  const fill = bullish ? "rgba(8, 153, 129, 0.13)"
+    : "rgba(242, 54, 69, 0.13)";
+  const edge = bullish ? "rgba(8, 153, 129, 0.65)"
+    : "rgba(242, 54, 69, 0.65)";
+  context.fillStyle = fill;
+  context.fillRect(left, top, Math.max(2, right - left),
+    Math.max(2, bottom - top));
+  context.strokeStyle = edge;
+  context.lineWidth = 1;
+  context.strokeRect(left, top, Math.max(2, right - left),
+    Math.max(2, bottom - top));
+  context.fillStyle = edge;
+  context.font = "10px 'Trebuchet MS', sans-serif";
+  context.textBaseline = "top";
+  context.fillText("OB", left + 4, top + 3);
+}
+
 function paintEndCert(
   context: CanvasRenderingContext2D,
   x: number,
@@ -235,25 +416,22 @@ function paintEndCert(
   context.fill();
 }
 
-function mapX(chart: IChartApi, tMs: number): number | null {
-  return chart.timeScale().timeToCoordinate((tMs / 1000) as never);
-}
-
-function mapY(candles: ISeriesApi<"Candlestick">, price: number): number {
-  return candles.priceToCoordinate(price) ?? 0;
-}
-
 /** The measure readout, TV's dashed rectangle with the counting label. */
 function paintMeasure(
   context: CanvasRenderingContext2D,
-  chart: IChartApi,
-  candles: ISeriesApi<"Candlestick">,
   midDrag: MeasureResult,
   color: string,
+  positions: OverlayPositions,
 ): void {
-  const p1 = pixelAt(chart, candles, midDrag.from);
-  const p2 = pixelAt(chart, candles, midDrag.to);
-  if (p1 === null || p2 === null) {
+  const p1 = {
+    x: positions.xAt(midDrag.from.t) ?? NaN,
+    y: positions.yAt(midDrag.from.price),
+  };
+  const p2 = {
+    x: positions.xAt(midDrag.to.t) ?? NaN,
+    y: positions.yAt(midDrag.to.price),
+  };
+  if (Number.isNaN(p1.x) || Number.isNaN(p2.x)) {
     return;
   }
   const left = Math.min(p1.x, p2.x);

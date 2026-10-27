@@ -213,59 +213,71 @@ def _num(value) -> float | None:
         return None
 
 
+def parse_tick_line(line: str) -> list[dict]:
+    """The genuine MKT-FEED tick rows one capture line holds.
+
+    A capture banks every frame it receives, including index and market-stats
+    frames that reuse the same key names with different meanings. Filtering on
+    the frame kind here is what keeps the split honest.
+    """
+    from src.data.feed_capture import parse_message  # local: no cycle at import
+
+    line = line.strip()
+    if not line:
+        return []
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return []
+    kind = str(record.get("kind", ""))
+    if not any(kind.startswith(k) for k in TICK_KINDS):
+        return []
+    ticks = record.get("ticks", []) or []
+    # A capture written before the row separator was fixed banked one row per
+    # frame and left the rest of the payload in the raw line. The raw line is
+    # the same genuine exchange data, so reading it back here recovers those
+    # rows instead of silently measuring a tenth of the tape. If the re-parse
+    # yields nothing, the stored rows are used as they were banked.
+    raw = str(record.get("raw", ""))
+    if raw:
+        try:
+            reparsed = parse_message(raw) or {}
+        except Exception:  # noqa: BLE001 - the banked row still counts
+            reparsed = {}
+        recovered = [t for t in reparsed.get("ticks", []) or []
+                     if isinstance(t, Mapping)]
+        if recovered:
+            ticks = recovered
+    # When the snapshot arrived. It is the honest clock for a window: tick_time
+    # is the time of the last print, which on a quiet symbol can be hours old
+    # while the snapshot itself is fresh.
+    arrived = str(record.get("ts", ""))
+    out: list[dict] = []
+    for tick in ticks:
+        if isinstance(tick, Mapping):
+            if arrived and "capture_ts" not in tick:
+                try:
+                    tick["capture_ts"] = arrived
+                except TypeError:
+                    continue
+            out.append(tick)
+    return out
+
+
 def iter_ticks(path: Path) -> Iterator[dict]:
     """Yield only genuine MKT-FEED tape rows from a capture file.
 
-    The capture banks every frame it receives, including index and
-    market-stats frames that reuse the same key names with different
-    meanings. Filtering on the frame kind here is what keeps the split
-    honest.
+    The filtering and row recovery live in ``parse_tick_line``, which is also
+    what an incremental reader calls: a live file grows every minute, and
+    re-reading only the appended bytes keeps the sub-minute paths cheap on
+    the machine this service runs on.
     """
     if not path.is_file():
         return
-    from src.data.feed_capture import parse_message  # local: no cycle at import
-
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            kind = str(record.get("kind", ""))
-            if not any(kind.startswith(k) for k in TICK_KINDS):
-                continue
-            ticks = record.get("ticks", []) or []
-            # A capture written before the row separator was fixed banked one
-            # row per frame and left the rest of the payload in the raw line.
-            # The raw line is the same genuine exchange data, so reading it
-            # back here recovers those rows instead of silently measuring a
-            # tenth of the tape. If the re-parse yields nothing, the stored
-            # rows are used as they were banked.
-            raw = str(record.get("raw", ""))
-            if raw:
-                try:
-                    reparsed = parse_message(raw) or {}
-                except Exception:  # noqa: BLE001 - the banked row still counts
-                    reparsed = {}
-                recovered = [t for t in reparsed.get("ticks", []) or []
-                             if isinstance(t, Mapping)]
-                if recovered:
-                    ticks = recovered
-            # When the snapshot arrived. It is the honest clock for a window:
-            # tick_time is the time of the last print, which on a quiet
-            # symbol can be hours old while the snapshot itself is fresh.
-            arrived = str(record.get("ts", ""))
-            for tick in ticks:
-                if isinstance(tick, Mapping):
-                    if arrived and "capture_ts" not in tick:
-                        try:
-                            tick["capture_ts"] = arrived
-                        except TypeError:
-                            continue
-                    yield tick
+            out = parse_tick_line(line)
+            yield from out
 
 
 def _clock(text) -> datetime | None:
