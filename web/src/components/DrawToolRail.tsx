@@ -83,6 +83,13 @@ function Icon({ name }: { readonly name: string }) {
           <path d="M16 12l-2.2 1" strokeDasharray="1.6 1.6" />
         </svg>
       );
+    case "ob":
+      return (
+        <svg {...common}>
+          <rect x="5" y="5.5" width="10" height="8.5" rx="0.6" />
+          <path d="M3 10h1.6M15.4 10H17" strokeDasharray="1.6 1.6" />
+        </svg>
+      );
     case "measure":
       return (
         <svg {...common}>
@@ -127,6 +134,7 @@ const TOOLS: readonly {
 }[] = [
   { tool: "cursor", label: "Cross (the chart's own pointer)" },
   { tool: "trend", label: "Trend line (drag between two bars)" },
+  { tool: "ob", label: "Order block (drag a box over the zone)" },
   { tool: "flatTop", label: "Flat top (drag along a ceiling)" },
   { tool: "flatBottom", label: "Flat bottom (drag along a floor)" },
   { tool: "hline", label: "Horizontal line (click a level)" },
