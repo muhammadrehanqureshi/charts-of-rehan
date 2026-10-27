@@ -476,14 +476,43 @@ class ChartHandler(BaseHTTPRequestHandler):
         try:
             self._write_event("snapshot", initial)
             idle = 0.0
+            subminute = ladder.spec_for(resolution).subminute
+            cadence = 1.0 if subminute else 5.0
+            last_bars = initial["bars"]
             while True:
                 try:
-                    event = subscription.inbox.get(timeout=5.0)
+                    event = subscription.inbox.get(timeout=cadence)
                 except queue.Empty:
                     event = None
                 if event is None:
-                    idle += 5.0
-                    # A comment every five seconds keeps the connection warm
+                    if subminute:
+                        # A seconds chart is priced frame by frame: the tick's
+                        # own clock, not the ingestor's minute grain, is the
+                        # cadence the reader is watching for. The build is
+                        # incremental (append-only parse of what grew), so a
+                        # silent second costs one stat call - the computer is
+                        # not being polled to death, and the browser a hidden
+                        # tab owns closes its stream entirely.
+                        try:
+                            fresh = self._payload(symbol, resolution, 1500)
+                        except Exception:
+                            fresh = None
+                        if fresh is not None and fresh["bars"] != last_bars:
+                            last_bars = fresh["bars"]
+                            self._write_event("bars", {
+                                "event": "bars",
+                                "symbol": symbol,
+                                "resolution": resolution,
+                                "as_of": fresh["as_of"],
+                                "bars": fresh["bars"],
+                                "bar_count": fresh["bar_count"],
+                                "gaps": fresh["gaps"],
+                                "session": fresh["session"],
+                            })
+                            idle = 0.0
+                            continue
+                    idle += cadence
+                    # A comment every few seconds keeps the connection warm
                     # through proxies and proves to the reader that the
                     # stream is alive even when the market is quiet.
                     self._write_raw(": keep-alive\n\n")
@@ -494,13 +523,15 @@ class ChartHandler(BaseHTTPRequestHandler):
                 idle = 0.0
                 # The ingestor polls the tape's own grain (one minute). A
                 # coarser rung must be rebuilt from it rather than forwarding
-                # minute bars under a five-minute label: a client that folded
+                # minute bars under a coarser label: a client that folded
                 # them itself would double-fold, and one that did not would
                 # draw the wrong candle width.
                 if resolution == self.state.default_resolution:
                     self._write_event("bars", event)
+                    last_bars = [dict(bar) for bar in event["bars"]]
                 else:
                     fresh = self._payload(symbol, resolution, 1500)
+                    last_bars = fresh["bars"]
                     self._write_event("bars", {
                         "event": "bars",
                         "symbol": symbol,
