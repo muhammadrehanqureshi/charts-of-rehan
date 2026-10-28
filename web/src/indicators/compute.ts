@@ -240,6 +240,33 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
           lines: [line("obv", label, colour, values)],
         };
       }
+      case "volume": {
+        // The raw counter, pane'd: mirrored around zero so a down bar's
+        // shares draw in the tape's own red, exactly like the overlay
+        // volume under the candles. A bar without a counter says nothing.
+        const values = filled(data.length);
+        for (let index = 0; index < data.length; index += 1) {
+          const volume = data.volume[index];
+          if (volume === undefined || !Number.isFinite(volume)) {
+            continue;
+          }
+          const open = data.open[index];
+          const close = data.close[index];
+          values[index] = open !== undefined && close !== undefined
+            && Number.isFinite(open) && Number.isFinite(close) && close < open
+            ? -volume
+            : volume;
+        }
+        return {
+          id: spec.id, type: spec.type, label, placement,
+          lines: [],
+          histogram: {
+            values,
+            positive: "#089981",
+            negative: "#f23645",
+          },
+        };
+      }
       case "volumedelta": {
         // The tape's own split when it exists, the candle's signed volume
         // otherwise. A bar the tape never classified says so (NaN) rather

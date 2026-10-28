@@ -114,8 +114,9 @@ button:disabled {
 }
 
 .app--with-watchlist .app__body {
-  /* Five columns (symbol, last, chg%, buy, sell) need this much: at 300 the
-     table scrolled sideways and the sell column fell off the edge. */
+  /* Six columns (symbol, last, chg%, buy, sell, total) need this much: at
+     300 the table scrolled sideways and the sell column fell off the edge;
+     at 335 the added Total column hung past the edge and read as cut. */
   grid-template-columns: 42px minmax(0, 1fr) 336px;
 }
 
@@ -461,6 +462,24 @@ button:disabled {
 .watchlist__body {
   min-height: 0;
   overflow: auto;
+  /* The six columns (symbol, last, chg%, buy, sell, total) fill the plate
+     exactly: a fat native rail under them reads as a cut Total column. */
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a transparent;
+}
+
+.watchlist__body::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.watchlist__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.watchlist__body::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 3px;
 }
 
 .watchlist__table {
@@ -473,7 +492,7 @@ button:disabled {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 5px 5px;
+  padding: 5px 4px;
   background: var(--bg);
   color: var(--muted);
   font-size: 10.5px;
@@ -483,7 +502,7 @@ button:disabled {
 }
 
 .watchlist__th--symb {
-  padding-left: 10px;
+  padding-left: 8px;
   text-align: left;
 }
 
@@ -507,7 +526,7 @@ button:disabled {
 
 .wrow__cell {
   height: 26px;
-  padding: 0 5px;
+  padding: 0 4px;
   color: var(--text);
   font-size: 12px;
   font-weight: 400;
@@ -517,7 +536,7 @@ button:disabled {
 
 .wrow__cell--symb {
   position: relative;
-  padding-left: 10px;
+  padding-left: 8px;
   text-align: left;
 }
 
@@ -554,7 +573,7 @@ button:disabled {
 
 .wrow__cell:last-child,
 .watchlist__th:last-child {
-  padding-right: 10px;
+  padding-right: 8px;
 }
 
 .wrow__open {
@@ -969,6 +988,23 @@ button:disabled {
   list-style: none;
   max-height: 168px;
   overflow-y: auto;
+  /* A slim, quiet rail: the native corner erases the smallest prints, and
+     the reader should read to the digit, not past it. */
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a transparent;
+}
+
+.tape__list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tape__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tape__list::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 3px;
 }
 
 .tape__row {
