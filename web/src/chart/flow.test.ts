@@ -43,6 +43,19 @@ describe("flowColumns", () => {
     expect(Number.isNaN(buy[0] ?? Number.NaN)).toBe(true);
   });
 
+  it("uses minute flow on hourly bars even when the symbol skipped minutes", () => {
+    const hour = new Float64Array([start, start + 60 * 60_000]);
+    const { buy, sell } = flowColumns([
+      { t: new Date(start + 1_000).toISOString(), buy: 12, sell: 4 },
+      { t: new Date(start + 7 * 60_000).toISOString(), buy: 3, sell: 8 },
+      { t: new Date(start + 60 * 60_000).toISOString(), buy: 20, sell: 2 },
+    ], hour, 60 * 60_000);
+    expect(buy[0]).toBe(15);
+    expect(sell[0]).toBe(12);
+    expect(buy[1]).toBe(20);
+    expect(sell[1]).toBe(2);
+  });
+
   it("does not credit a minute that falls in a hole past its bar", () => {
     const times = new Float64Array([start]);
     // The chart's step is a minute but this minute printed 40 minutes after

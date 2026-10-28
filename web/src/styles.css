@@ -168,17 +168,12 @@ button:disabled {
   border-radius: 5px;
 }
 
+/* The owner's own mark: the gold-ringed candles logo, not a letters tile. */
 .toolbar__brand-mark {
-  display: grid;
-  place-items: center;
   width: 22px;
   height: 22px;
   border-radius: 4px;
-  background: var(--focus);
-  color: #ffffff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  background: #000000;
 }
 
 .toolbar__brand-name {
@@ -542,6 +537,19 @@ button:disabled {
 .wrow__cell--sell {
   color: var(--tv-down);
   font-size: 11.5px;
+}
+
+/* The day's own total (named buy plus named sell), a neutral column so the
+ * eye reads size first and direction from the two beside it. */
+.wrow__cell--total {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.detail__total {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .wrow__cell:last-child,
@@ -919,10 +927,91 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.detail__booksize {
+/* ------------------------------------------------------- live tape plate */
+
+/* The tape's own print ledger, read to the one-second tick: the day's own
+ * totals above, then the newest prints first, one thin list, no grid. */
+.tape {
+  margin: 8px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.tape__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tape__title {
+  margin: 0;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tape__count {
   color: var(--muted);
   font-size: 10px;
-  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tape__totals {
+  margin-top: 4px;
+}
+
+.tape__list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.tape__row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  height: 20px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tape__time {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.tape__side {
+  flex: 0 0 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.tape__side--buy {
+  color: var(--tv-up);
+  font-weight: 600;
+}
+
+.tape__side--sell {
+  color: var(--tv-down);
+  font-weight: 600;
+}
+
+.tape__price {
+  flex: 1 1 auto;
+  text-align: right;
+  color: var(--text);
+}
+
+.tape__size {
+  flex: 0 0 auto;
+  min-width: 34px;
+  text-align: right;
+  color: var(--muted);
 }
 
 .detail__who {

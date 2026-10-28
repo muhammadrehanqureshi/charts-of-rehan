@@ -86,6 +86,12 @@ function readStored(): IndicatorSpec[] {
       ...(placement === undefined ? {} : { placement }),
     });
   }
+  // Existing browsers that only have the older EMA/RSI defaults should also
+  // open on tape-derived delta; preserve every reader-configured study.
+  if (!specs.some((item) => item.type === "volumedelta")) {
+    const defaults = initialIndicators();
+    specs.unshift(...defaults);
+  }
   return specs;
 }
 

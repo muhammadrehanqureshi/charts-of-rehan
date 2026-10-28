@@ -1,10 +1,11 @@
 /**
  * The per-minute buy/sell split, polled.
  *
- * The tape's counters grow during the session, so the split is re-read on a
- * slow cadence instead of being pushed: one request per quarter minute is
- * enough to keep a delta pane current, and nothing here runs while the page
- * is hidden or the chart is showing a stored session that cannot move.
+ * The tape's counters grow during the session, so the split is re-read on
+ * a one-second cadence: the server serves the ask from a streaming fold,
+ * one tail stat plus a small parse, never a re-walk of the day. Nothing
+ * here runs while the page is hidden or the chart is showing a stored
+ * session that cannot move.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -23,7 +24,7 @@ export function useDelta(
   symbol: string,
   day: string,
   enabled: boolean,
-  intervalMs = 15_000,
+  intervalMs = 1_000,
 ): DeltaState {
   const [report, setReport] = useState<DeltaReport | null>(null);
   const [error, setError] = useState<string | null>(null);

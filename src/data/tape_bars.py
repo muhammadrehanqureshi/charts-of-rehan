@@ -285,118 +285,162 @@ def prints(path: Path, symbol: str, day: date, as_of: datetime,
     running counter with real evidence, bounded by tick_volume's
     MAX_WINDOW_SECONDS because an outage is not a side; everything else
     stays unclassified and is reported as one, never dressed as a trade.
+
+    The batch form of :class:`PrintsFold`: one walk of the whole capture,
+    for a caller that reads a stored session once. The live tape, which
+    grows by the second, is read through the fold instead.
     """
-    wanted = symbol.strip().upper()
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=KARACHI)
-    prior: Mapping | None = None      # the last row of this symbol the walk kept
-    events: list[dict] = []
-    orders_seen = 0
-    volume_seen = 0.0
-    buy_volume = 0
-    sell_volume = 0
-    unclassified_volume = 0
-    windows = 0
-    quote_windows = 0
-    tick_windows = 0
-    gap_windows = 0
-    backward_windows = 0
-    for row in tick_volume.iter_ticks(path):
-        observed = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
-        if observed != wanted:
-            continue
-        trades = _number(row.get("trades"))
-        total = _number(row.get("volume"))
-        if trades is not None and trades >= 0:
-            orders_seen = max(orders_seen, int(trades))
-        if total is not None and total >= 0:
-            volume_seen = max(volume_seen, total)
-        moment = _moment(row, day)
-        if moment is None or moment.date() != day or moment >= as_of:
-            continue
+    fold = PrintsFold(symbol, day)
+    fold.feed(tick_volume.iter_ticks(path), as_of)
+    return fold.report(limit)
 
-        # ---- this row's split window against the previous row kept: the
-        # identical rules tick_volume.session_flow enforces (differenced
-        # counter, quote-then-tick evidence, gap bound, backward counters
-        # refused), so the ledger and the card can never disagree.
-        previous_volume = _number(prior.get("volume")) if prior else None
-        if prior is None:
-            if total is not None and total > 0:
-                # Everything traded before the tape saw this symbol: the
-                # counter's own opening value. Reported as unclassified,
-                # never attributed to a side (mirrors session_flow).
-                unclassified_volume += int(total)
-        elif total is not None and total > 0 \
-                and total >= previous_volume:
-            delta = int(total) - int(previous_volume)
-            if delta > 0:
-                windows += 1
-                gap = tick_volume._window_gap(row, prior)
-                if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
-                    gap_windows += 1
-                    unclassified_volume += delta
-                else:
-                    side, how = tick_volume._trade_side(row, prior)
-                    if side == "B":
-                        buy_volume += delta
-                    elif side == "S":
-                        sell_volume += delta
+
+class PrintsFold:
+    """The order ledger for one symbol as a streaming fold.
+
+    ``prints`` answers by re-walking the whole capture. The service's print
+    endpoint is asked every second by a chart while the capture grows every
+    second, and a whole-file walk behind every ask is how a cheap terminal
+    becomes a hammer on the machine it runs on. The fold keeps the walk's
+    own state - the last kept row, the banked events, the running counters
+    and the window tallies - so a read that stops at the newly appended
+    lines merges into the same totals a full pass would build, at the price
+    of one ``next_appended`` tail read. Classification is not reformed: a
+    row is decided by the same differenced-counter, quote-then-tick window
+    law ``prints`` has always enforced; only the previous row is carried
+    across feeds instead of restarting at the first line.
+    """
+
+    def __init__(self, symbol: str, day: date) -> None:
+        self.wanted = symbol.strip().upper()
+        self.day = day
+        self.prior: Mapping | None = None   # the last row of this symbol kept
+        self.events: list[dict] = []
+        self.orders_seen = 0
+        self.volume_seen = 0.0
+        self.buy_volume = 0
+        self.sell_volume = 0
+        self.unclassified_volume = 0
+        self.windows = 0
+        self.quote_windows = 0
+        self.tick_windows = 0
+        self.gap_windows = 0
+        self.backward_windows = 0
+
+    # ----------------------------------------------------------------- feed
+    def feed(self, rows: Iterable[Mapping], as_of: datetime) -> None:
+        """Fold the next batch of rows in, exactly as one walk would.
+
+        Rows stamped at or after *as_of* are skipped the way a batch walk
+        skips them: the venue has not reached that moment yet, so the row
+        must not be counted now and must not rewrite the carried state -
+        when the next read goes past it, the fold still sees the same
+        previous row a full pass would have kept.
+        """
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=KARACHI)
+        day = self.day
+        prior = self.prior
+        for row in rows:
+            observed = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+            if observed != self.wanted:
+                continue
+            trades = _number(row.get("trades"))
+            total = _number(row.get("volume"))
+            if trades is not None and trades >= 0:
+                self.orders_seen = max(self.orders_seen, int(trades))
+            if total is not None and total >= 0:
+                self.volume_seen = max(self.volume_seen, total)
+            moment = _moment(row, day)
+            if moment is None or moment.date() != day or moment >= as_of:
+                continue
+
+            # ---- this row's split window against the previous row kept: the
+            # identical rules tick_volume.session_flow enforces (differenced
+            # counter, quote-then-tick evidence, gap bound, backward counters
+            # refused), so the ledger and the card can never disagree.
+            previous_volume = _number(prior.get("volume")) if prior else None
+            if prior is None:
+                if total is not None and total > 0:
+                    # Everything traded before the tape saw this symbol: the
+                    # counter's own opening value. Reported as unclassified,
+                    # never attributed to a side (mirrors session_flow).
+                    self.unclassified_volume += int(total)
+            elif total is not None and total > 0 \
+                    and total >= previous_volume:
+                delta = int(total) - int(previous_volume)
+                if delta > 0:
+                    self.windows += 1
+                    gap = tick_volume._window_gap(row, prior)
+                    if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
+                        self.gap_windows += 1
+                        self.unclassified_volume += delta
                     else:
-                        unclassified_volume += delta
-                    if how.startswith("quote"):
-                        quote_windows += 1
-                    elif how.startswith("tick"):
-                        tick_windows += 1
-        elif total is not None and previous_volume is not None \
-                and total < previous_volume:
-            backward_windows += 1
+                        side, how = tick_volume._trade_side(row, prior)
+                        if side == "B":
+                            self.buy_volume += delta
+                        elif side == "S":
+                            self.sell_volume += delta
+                        else:
+                            self.unclassified_volume += delta
+                        if how.startswith("quote"):
+                            self.quote_windows += 1
+                        elif how.startswith("tick"):
+                            self.tick_windows += 1
+            elif total is not None and previous_volume is not None \
+                    and total < previous_volume:
+                self.backward_windows += 1
 
-        price = _number(row.get("last"))
-        if not _is_new_print(row, prior) or price is None or price <= 0:
+            price = _number(row.get("last"))
+            if not _is_new_print(row, prior) or price is None or price <= 0:
+                prior = row
+                continue
+
+            price_side = tick_volume._trade_side(row, prior)[0]
+            prior_price = _number(prior.get("last")) if prior else None
+            change = ("up" if prior_price is not None and price > prior_price
+                      else "down" if prior_price is not None and price < prior_price
+                      else "flat")
             prior = row
-            continue
+            self.events.append({
+                "t": moment.isoformat(timespec="seconds"),
+                "price": price,
+                "size": _number(row.get("last_volume")),
+                "trades": int(trades) if trades is not None else None,
+                "volume": int(total) if total is not None else None,
+                "change": change,
+                "side": price_side,
+            })
+        self.prior = prior
 
-        price_side = tick_volume._trade_side(row, prior)[0]
-        prior_price = _number(prior.get("last")) if prior else None
-        change = ("up" if prior_price is not None and price > prior_price
-                  else "down" if prior_price is not None and price < prior_price
-                  else "flat")
-        prior = row
-        events.append({
-            "t": moment.isoformat(timespec="seconds"),
-            "price": price,
-            "size": _number(row.get("last_volume")),
-            "trades": int(trades) if trades is not None else None,
-            "volume": int(total) if total is not None else None,
-            "change": change,
-            "side": price_side,
-        })
-
-    classified = buy_volume + sell_volume
-    return {
-        "day": day.isoformat(),
-        "symbol": wanted,
-        "totals": {
-            "orders": orders_seen if orders_seen > 0 or len(events) > 0
-                else None,
-            "volume": volume_seen if volume_seen > 0 or len(events) > 0
-                else None,
-            "prints": len(events),
-            "buy_volume": buy_volume,
-            "sell_volume": sell_volume,
-            "classified_volume": classified,
-            "unclassified_volume": unclassified_volume,
-            "windows": windows,
-            "quote_windows": quote_windows,
-            "tick_windows": tick_windows,
-            "gap_windows": gap_windows,
-            "backward_windows": backward_windows,
-            "coverage": round(classified / volume_seen, 4)
-                if volume_seen > 0 else 0.0,
-        },
-        "events": events if limit <= 0 else events[-limit:],
-        "events_total": len(events),
-    }
+    # --------------------------------------------------------------- report
+    def report(self, limit: int = 3000) -> dict:
+        """The ledger in exactly the decorated shape ``prints`` answers."""
+        classified = self.buy_volume + self.sell_volume
+        return {
+            "day": self.day.isoformat(),
+            "symbol": self.wanted,
+            "totals": {
+                "orders": self.orders_seen if self.orders_seen > 0
+                    or len(self.events) > 0 else None,
+                "volume": self.volume_seen if self.volume_seen > 0
+                    or len(self.events) > 0 else None,
+                "prints": len(self.events),
+                "buy_volume": self.buy_volume,
+                "sell_volume": self.sell_volume,
+                "classified_volume": classified,
+                "unclassified_volume": self.unclassified_volume,
+                "windows": self.windows,
+                "quote_windows": self.quote_windows,
+                "tick_windows": self.tick_windows,
+                "gap_windows": self.gap_windows,
+                "backward_windows": self.backward_windows,
+                "coverage": round(classified / self.volume_seen, 4)
+                    if self.volume_seen > 0 else 0.0,
+            },
+            "events": self.events if limit <= 0 else self.events[-limit:],
+            "events_total": len(self.events),
+        }
 
 
 def flow_by_symbol(path: Path, day: date, as_of: datetime) -> dict[str, dict]:
@@ -408,66 +452,110 @@ def flow_by_symbol(path: Path, day: date, as_of: datetime) -> dict[str, dict]:
     show a buy/sell column for every scrip without one request per symbol.
     Unclassified volume is never attributed to a side; it is reported as
     itself so the split cannot pretend to cover the whole tape.
+
+    The batch form of :class:`FlowFold`, for a caller that reads a stored
+    session once; the live watchlist, which asks once a second, uses the
+    fold form.
     """
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=KARACHI)
-    priors: dict[str, Mapping] = {}
-    reports: dict[str, dict] = {}
-    for row in tick_volume.iter_ticks(path):
-        symbol = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
-        if not symbol:
-            continue
-        report = reports.get(symbol)
-        if report is None:
-            report = {"symbol": symbol, "buy_volume": 0, "sell_volume": 0,
-                      "unclassified_volume": 0, "volume": 0.0, "orders": 0,
-                      "prints": 0}
-            reports[symbol] = report
-        trades = _number(row.get("trades"))
-        total = _number(row.get("volume"))
-        if trades is not None and trades >= 0:
-            report["orders"] = max(report["orders"], int(trades))
-        if total is not None and total >= 0:
-            report["volume"] = max(report["volume"], float(total))
-        moment = _moment(row, day)
-        if moment is None or moment.date() != day or moment >= as_of:
-            continue
+    fold = FlowFold(day)
+    fold.feed(tick_volume.iter_ticks(path), as_of)
+    return {row["symbol"]: row for row in fold.rows()}
 
-        prior = priors.get(symbol)
-        previous_volume = _number(prior.get("volume")) if prior else None
-        if prior is None:
-            if total is not None and total > 0:
-                report["unclassified_volume"] += int(total)
-        elif (total is not None and total > 0
-              and previous_volume is not None and total >= previous_volume):
-            delta = int(total) - int(previous_volume)
-            if delta > 0:
-                gap = tick_volume._window_gap(row, prior)
-                if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
-                    report["unclassified_volume"] += delta
-                else:
-                    side, _how = tick_volume._trade_side(row, prior)
-                    if side == "B":
-                        report["buy_volume"] += delta
-                    elif side == "S":
-                        report["sell_volume"] += delta
-                    else:
+
+class FlowFold:
+    """The whole session's buy/sell split as a streaming fold.
+
+    ``flow_by_symbol`` re-walks the capture for every ask; the watchlist
+    asks once a second while the tape is still trading, and a walk that
+    restarts from the first line re-reads a day's whole file behind every
+    ask. The fold carries each symbol's last kept row and its running
+    report, so a read of only the appended tail merges into the totals
+    already built - a stat call and a small parse per second, never a
+    re-read of the day. The window law is the same one the batch form
+    enforces (differenced counter, quote-then-tick evidence, gap bound,
+    backward counters refused), so the watchlist and a batch pass can never
+    disagree about a scrip.
+    """
+
+    def __init__(self, day: date) -> None:
+        self.day = day
+        self.priors: dict[str, Mapping] = {}
+        self.reports: dict[str, dict] = {}
+
+    # ----------------------------------------------------------------- feed
+    def feed(self, rows: Iterable[Mapping], as_of: datetime) -> None:
+        """Fold the next batch of rows in, exactly as one walk would."""
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=KARACHI)
+        day = self.day
+        priors = self.priors
+        for row in rows:
+            symbol = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+            if not symbol:
+                continue
+            report = self.reports.get(symbol)
+            if report is None:
+                report = {"symbol": symbol, "buy_volume": 0, "sell_volume": 0,
+                          "unclassified_volume": 0, "volume": 0.0, "orders": 0,
+                          "prints": 0}
+                self.reports[symbol] = report
+            trades = _number(row.get("trades"))
+            total = _number(row.get("volume"))
+            if trades is not None and trades >= 0:
+                report["orders"] = max(report["orders"], int(trades))
+            if total is not None and total >= 0:
+                report["volume"] = max(report["volume"], float(total))
+            moment = _moment(row, day)
+            if moment is None or moment.date() != day or moment >= as_of:
+                continue
+
+            prior = priors.get(symbol)
+            previous_volume = _number(prior.get("volume")) if prior else None
+            if prior is None:
+                if total is not None and total > 0:
+                    report["unclassified_volume"] += int(total)
+            elif (total is not None and total > 0
+                  and previous_volume is not None and total >= previous_volume):
+                delta = int(total) - int(previous_volume)
+                if delta > 0:
+                    gap = tick_volume._window_gap(row, prior)
+                    if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
                         report["unclassified_volume"] += delta
-        if _is_new_print(row, prior):
-            report["prints"] += 1
-        priors[symbol] = row
+                    else:
+                        side, _how = tick_volume._trade_side(row, prior)
+                        if side == "B":
+                            report["buy_volume"] += delta
+                        elif side == "S":
+                            report["sell_volume"] += delta
+                        else:
+                            report["unclassified_volume"] += delta
+            if _is_new_print(row, prior):
+                report["prints"] += 1
+            priors[symbol] = row
 
-    for report in reports.values():
-        classified = report["buy_volume"] + report["sell_volume"]
-        volume = float(report["volume"])
-        report["classified_volume"] = classified
-        report["delta"] = report["buy_volume"] - report["sell_volume"]
-        report["coverage"] = (round(classified / volume, 4)
-                              if volume > 0 else 0.0)
-        report["volume"] = volume if volume > 0 or report["prints"] else None
-        report["orders"] = report["orders"] if report["orders"] > 0 \
-            or report["prints"] else None
-    return reports
+    # --------------------------------------------------------------- report
+    def rows(self) -> list[dict]:
+        """The fold decorated exactly the way the batch form decorates it.
+
+        The running reports keep raw counters only, so decorating can run on
+        every ask and still answer honestly: each row is a fresh dict built
+        from the fold's own state, and the state itself is never mutated by
+        decorating it.
+        """
+        rows: list[dict] = []
+        for report in self.reports.values():
+            classified = report["buy_volume"] + report["sell_volume"]
+            volume = float(report["volume"])
+            row = dict(report)
+            row["classified_volume"] = classified
+            row["delta"] = report["buy_volume"] - report["sell_volume"]
+            row["coverage"] = (round(classified / volume, 4)
+                               if volume > 0 else 0.0)
+            row["volume"] = volume if volume > 0 or report["prints"] else None
+            row["orders"] = report["orders"] if report["orders"] > 0 \
+                or report["prints"] else None
+            rows.append(row)
+        return rows
 
 
 def delta_minutes(path: Path, symbol: str, day: date,
@@ -480,44 +568,80 @@ def delta_minutes(path: Path, symbol: str, day: date,
     observation rather than a guess: the buyer/seller split is the venue's
     own counter, not a candle's colour. Windows the tape could not attribute
     stay in ``unclassified`` and are never dressed as a trade.
+
+    The batch form of :class:`DeltaFold`, for a caller that reads a stored
+    session once; the live delta pane, which asks as the chart ticks, uses
+    the fold form.
     """
-    wanted = symbol.strip().upper()
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=KARACHI)
-    buckets: dict[datetime, dict] = {}
-    prior: Mapping | None = None
-    for row in tick_volume.iter_ticks(path):
-        observed = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
-        if observed != wanted:
-            continue
-        moment = _moment(row, day)
-        if moment is None or moment.date() != day or moment >= as_of:
-            continue
-        minute = moment.replace(second=0, microsecond=0)
-        bucket = buckets.get(minute)
-        if bucket is None:
-            bucket = {"t": minute.isoformat(timespec="seconds"), "buy": 0,
-                      "sell": 0, "unclassified": 0}
-            buckets[minute] = bucket
-        total = _number(row.get("volume"))
-        previous = _number(prior.get("volume")) if prior else None
-        if prior is not None and total is not None and total > 0 \
-                and previous is not None and total >= previous:
-            delta = int(total) - int(previous)
-            if delta > 0:
-                gap = tick_volume._window_gap(row, prior)
-                if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
-                    bucket["unclassified"] += delta
-                else:
-                    side, _how = tick_volume._trade_side(row, prior)
-                    if side == "B":
-                        bucket["buy"] += delta
-                    elif side == "S":
-                        bucket["sell"] += delta
-                    else:
+    fold = DeltaFold(symbol, day)
+    fold.feed(tick_volume.iter_ticks(path), as_of)
+    return fold.minutes()
+
+
+class DeltaFold:
+    """One symbol's per-minute buy/sell split as a streaming fold.
+
+    The delta pane redraws whenever the chart does; on a live capture that
+    means the ask can arrive every second, and ``delta_minutes`` re-walked
+    the whole file behind each redraw. The fold keeps the previous row and
+    the minute buckets it has already built, so a read of the appended tail
+    merges into the buckets that exist - a small parse per second, never a
+    re-read of the day. Classification is the same quote-then-tick window
+    law the order ledger enforces, so the pane and the card can never
+    disagree about a minute.
+    """
+
+    def __init__(self, symbol: str, day: date) -> None:
+        self.wanted = symbol.strip().upper()
+        self.day = day
+        self.prior: Mapping | None = None
+        self.buckets: dict[datetime, dict] = {}
+
+    # ----------------------------------------------------------------- feed
+    def feed(self, rows: Iterable[Mapping], as_of: datetime) -> None:
+        """Fold the next batch of rows in, exactly as one walk would."""
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=KARACHI)
+        day = self.day
+        prior = self.prior
+        buckets = self.buckets
+        for row in rows:
+            observed = str(row.get("scrip", "")).split(":", 1)[0].strip().upper()
+            if observed != self.wanted:
+                continue
+            moment = _moment(row, day)
+            if moment is None or moment.date() != day or moment >= as_of:
+                continue
+            minute = moment.replace(second=0, microsecond=0)
+            bucket = buckets.get(minute)
+            if bucket is None:
+                bucket = {"t": minute.isoformat(timespec="seconds"), "buy": 0,
+                          "sell": 0, "unclassified": 0}
+                buckets[minute] = bucket
+            total = _number(row.get("volume"))
+            previous = _number(prior.get("volume")) if prior else None
+            if prior is not None and total is not None and total > 0 \
+                    and previous is not None and total >= previous:
+                delta = int(total) - int(previous)
+                if delta > 0:
+                    gap = tick_volume._window_gap(row, prior)
+                    if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
                         bucket["unclassified"] += delta
-        prior = row
-    return [buckets[key] for key in sorted(buckets)]
+                    else:
+                        side, _how = tick_volume._trade_side(row, prior)
+                        if side == "B":
+                            bucket["buy"] += delta
+                        elif side == "S":
+                            bucket["sell"] += delta
+                        else:
+                            bucket["unclassified"] += delta
+            prior = row
+        self.prior = prior
+
+    # --------------------------------------------------------------- report
+    def minutes(self) -> list[dict]:
+        """The buckets in exactly the shape ``delta_minutes`` answers."""
+        return [self.buckets[key] for key in sorted(self.buckets)]
 
 
 def build(path: Path, symbols: Iterable[str], as_of: datetime,

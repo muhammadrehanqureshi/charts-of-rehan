@@ -1,5 +1,8 @@
 # Charts of Rehan
 
+![Charts of Rehan](assets/charts-of-rehan.png)
+
+
 A charting service for the exchange's own session, built from this project's own
 market data. It serves candles at twelve resolutions from one second to one
 month, volume, the Karachi session clock, two computed breadth proxies

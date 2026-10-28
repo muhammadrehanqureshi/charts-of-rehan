@@ -216,15 +216,12 @@ export function createIndicator(
   };
 }
 
-/** The two indicators a fresh chart opens with, so the panel is not empty. */
+/** The volume delta study opens by default; price studies stay reader-added. */
 export function initialIndicators(): IndicatorSpec[] {
-  const ema = createIndicator("ema", {
-    id: "initial-ema-20", params: { period: 20 }, color: COLORS[0] ?? "#6ea8fe",
+  const delta = createIndicator("volumedelta", {
+    id: "initial-volume-delta", color: "#089981",
   });
-  const rsi = createIndicator("rsi", {
-    id: "initial-rsi-14", params: { period: 14 }, color: COLORS[4] ?? "#b58cff",
-  });
-  return [ema, rsi].filter((item): item is IndicatorSpec => item !== null);
+  return delta === null ? [] : [delta];
 }
 
 export function placementOf(spec: IndicatorSpec): IndicatorPlacement {

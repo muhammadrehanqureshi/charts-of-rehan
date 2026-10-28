@@ -14,8 +14,9 @@
  */
 
 import { useEffect, useState } from "react";
+import { useVisibility } from "../hooks/useVisibility";
 
-import type { MarketContext, Resolution } from "../api/types";
+import type { HealthReport, MarketContext, Resolution } from "../api/types";
 import type { FeedStatus } from "../hooks/useChartFeed";
 import { formatClock, formatMinutes, formatStamp } from "../chart/format";
 import { timeframeLabel } from "../chart/timeframes";
@@ -47,6 +48,8 @@ export interface StatusBarProps {
   readonly error: { category: string; detail: string } | null;
   /** The expanded reading: the second detail line the toggle reveals. */
   readonly details: boolean;
+  readonly tape?: HealthReport["tape"];
+  readonly recorder?: HealthReport["recorder"];
 }
 
 const STATUS_TEXT: Record<FeedStatus, string> = {
@@ -63,17 +66,18 @@ export function StatusBar(props: StatusBarProps) {
     status, resolution, market, symbol, day, sessionNote, archived,
     captureName, sha256, bars, gaps, missingMinutes, sourceLabel,
     delaySeconds, lastBarAt, asOf, volumeAvailable, staleAfterMinutes,
-    ordersTotal, error, details,
+    ordersTotal, error, details, tape, recorder,
   } = props;
 
-  // A local tick so "2 min ago" keeps counting while a quiet session sits on
-  // screen. It re-renders once a second, which is also what the bar's own
-  // clock wants: the reading of now is the service's frame, not faith.
+  // Only tick the visible status display while this chart has focus. Once
+  // per second while watched; no idle timer jobs behind other windows.
+  const visible = useVisibility();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, []);
+    if (!visible) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [visible]);
 
   // The age that matters is the age of the newest bar, not the age of the
   // answer: a service can reply in a millisecond about a price two hours old,
@@ -93,6 +97,15 @@ export function StatusBar(props: StatusBarProps) {
             ? "unknown"
             : `${market.phase}${market.trading_day ? " · trading day" : " · not a trading day"}`}
         </span>
+        {recorder !== undefined && recorder !== null ? (
+          <span className={recorder.feed_connected ? "status__item" : "status__item status__item--stale"}
+                title={recorder.last_error ?? "Broker recorder heartbeat"}>
+            <span className="status__key">broker feed</span>{" "}
+            {recorder.feed_connected
+              ? `connected · ${formatSeconds(recorder.last_frame_age_seconds)} ago`
+              : `stale · ${formatSeconds(recorder.last_frame_age_seconds)} ago`}
+          </span>
+        ) : null}
         {market?.band != null ? (
           <span className="status__item">
             <span className="status__key">band</span> {market.band.open} to{" "}
@@ -174,7 +187,16 @@ export function StatusBar(props: StatusBarProps) {
               {sha256.length > 0 ? ` · sha256 ${sha256.slice(0, 12)}…` : ""}
             </span>
           ) : null}
-          {asOf.length > 0 ? (
+          {tape?.capture !== undefined && tape.capture !== null ? (
+          <span className={tape.capture.available ? "status__item" : "status__item status__item--stale"}
+                title={tape.capture.path ?? tape.detail ?? "No live capture"}>
+            <span className="status__key">capture</span>{" "}
+            {tape.capture.available
+              ? `${formatSeconds(tape.capture.capture_age_seconds)} old · ${formatBytes(tape.capture.capture_bytes)}`
+              : "missing"}
+          </span>
+        ) : null}
+        {asOf.length > 0 ? (
             <span className="status__item">
               <span className="status__key">service answered</span>{" "}
               {formatStamp(asOf)}
@@ -193,6 +215,19 @@ export function StatusBar(props: StatusBarProps) {
 }
 
 /** Minutes between a stamp and now, or null when the stamp is unusable. */
+function formatSeconds(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "unknown";
+  if (value < 60) return `${Math.round(value)}s`;
+  return `${Math.floor(value / 60)}m ${Math.floor(value % 60)}s`;
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "unknown size";
+  return value >= 1_000_000
+    ? `${(value / 1_000_000).toFixed(1)} MB`
+    : `${Math.round(value / 1_000)} KB`;
+}
+
 function ageInMinutes(stamp: string, now: number): number | null {
   const then = new Date(stamp).getTime();
   if (!Number.isFinite(then)) {

@@ -300,6 +300,10 @@ export class ChartClient {
     return this.request(`${this.baseUrl}/api/health`);
   }
 
+  async feedHealth(): Promise<unknown> {
+    return this.request(`${this.baseUrl}/api/feed-health`);
+  }
+
   /** The symbols this service can serve, for the picker. */
   async symbols(signal?: AbortSignal): Promise<string[]> {
     const raw = await this.request(`${this.baseUrl}/api/symbols`, signal);
