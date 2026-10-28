@@ -280,6 +280,37 @@ def iter_ticks(path: Path) -> Iterator[dict]:
             yield from out
 
 
+def next_appended(path: Path, offset: int = 0) -> tuple[list[dict], int]:
+    """The tape rows appended after *offset*, and where to read from next.
+
+    A recorder appends whole lines but not atomically: its last chunk can sit
+    in a buffer without a newline yet. Reading that partial line once would
+    swallow a row forever, so this stops before the incomplete tail and
+    reports only the length of the complete lines it really parsed. Calling
+    it again on the file's next growth retries that tail safely.
+
+    The offset is the byte position of the end of the last complete line: 0
+    means "from the start" (or a rebuilt/rotated file) and a shrunk file
+    simply answers nothing, which is how the book cache treats a truncated
+    capture too. Bytes after *offset* that the caller has already seen are
+    never re-parsed, so polling once per second costs one tail read, never
+    a re-read of the whole day.
+    """
+    if not path.is_file():
+        return [], offset
+    rows: list[dict] = []
+    end = offset
+    with path.open("rb") as capture:
+        capture.seek(offset)
+        while True:
+            line = capture.readline()
+            if not line or not line.endswith(b"\n"):
+                break
+            rows.extend(parse_tick_line(line.decode("utf-8", "replace")))
+            end = capture.tell()
+    return rows, end
+
+
 def _clock(text) -> datetime | None:
     """Parse a capture timestamp, or a bare time of day, for gap checks.
 

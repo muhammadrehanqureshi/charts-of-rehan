@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +27,7 @@ from charts.http import ChartServer  # noqa: E402
 from charts.ingest import Ingestor  # noqa: E402
 from charts.store import BarStore  # noqa: E402
 from src.data import tape_bars  # noqa: E402
+from src.data import tick_volume  # noqa: E402
 
 MONDAY = datetime.fromisoformat("2026-10-12T09:33:00+05:00")
 DAY = MONDAY.date()
@@ -131,6 +132,61 @@ class FlowCase(unittest.TestCase):
         report = source.delta_for("OGDC", DAY)
         self.assertEqual(report["minutes"], [])
         self.assertIn("no broker tape", report["note"])
+
+
+class StreamingFoldEquivalence(unittest.TestCase):
+    """The once-per-second cadence must read the same tape as a whole walk.
+
+    /api/orderflow, /api/prints and /api/delta are served by streaming folds
+    that merge an appended tail per ask. A capture fed in growing pieces has
+    to land in exactly the buckets each batch form builds in one pass - a
+    watchlist ticking once per second and a stored-session read can never
+    disagree about a scrip.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="charts-fold-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.capture = self.tmp / "capture_20261012.ndjson"
+        self.as_of = MONDAY + timedelta(minutes=5)
+
+    def write_frame(self, record: dict) -> None:
+        with self.capture.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    def test_a_growing_capture_lands_in_the_same_buckets(self):
+        stream = {"flow": tape_bars.FlowFold(DAY),
+                  "prints": tape_bars.PrintsFold("OGDC", DAY),
+                  "delta": tape_bars.DeltaFold("OGDC", DAY)}
+        offset = 0
+        for record in sample_records():
+            self.write_frame(record)
+            rows, offset = tick_volume.next_appended(self.capture, offset)
+            for fold in stream.values():
+                fold.feed(rows, self.as_of)
+
+        batch = tape_bars.flow_by_symbol(self.capture, DAY, self.as_of)
+        self.assertEqual(
+            {row["symbol"]: row for row in stream["flow"].rows()}, batch)
+        self.assertEqual(
+            stream["prints"].report(0),
+            tape_bars.prints(self.capture, "OGDC", DAY, self.as_of, limit=0))
+        self.assertEqual(
+            stream["delta"].minutes(),
+            tape_bars.delta_minutes(self.capture, "OGDC", DAY, self.as_of))
+
+    def test_a_partially_written_line_is_never_parsed_early(self):
+        line = json.dumps(sample_records()[0]) + "\n"
+        split = len(line.encode("utf-8")) // 2
+        self.capture.write_bytes(line.encode("utf-8")[:split])
+        rows, offset = tick_volume.next_appended(self.capture, 0)
+        self.assertEqual(rows, [])
+        self.assertEqual(offset, 0)
+        with self.capture.open("ab") as handle:
+            handle.write(line.encode("utf-8")[split:])
+        rows, offset = tick_volume.next_appended(self.capture, 0)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(offset, len(line.encode("utf-8")))
 
 
 class FlowHttpCase(unittest.TestCase):
@@ -304,6 +360,34 @@ class BookHttpCase(unittest.TestCase):
         self.assertEqual(answer["status"], 200)
         self.assertEqual(answer["body"]["bid"], 100.9)
         self.assertEqual(answer["body"]["ask_size"], 8200)
+
+    def test_the_older_flow_route_aliases_orderflow(self):
+        answer = self.get("/api/flow?day=2026-10-12")
+        self.assertEqual(answer["status"], 200)
+        rows = {row["symbol"]: row for row in answer["body"]["symbols"]}
+        self.assertEqual(rows["OGDC"]["buy_volume"], 600)
+        self.assertEqual(answer["body"]["day"], "2026-10-12")
+
+    def test_recorder_status_is_in_lightweight_health(self):
+        status = self.tmp / "feed_capture" / "status.json"
+        status.parent.mkdir()
+        now = datetime.now(timezone(timedelta(hours=5)))
+        status.write_text(json.dumps({
+            "pid": 123, "running": True,
+            "updated_at": now.isoformat(),
+            "last_frame_at": now.isoformat(),
+            "last_error": None,
+            "counters": {"messages": 7, "ticks": 12},
+            "feed_hosts": ["feed.example"],
+        }), encoding="utf-8")
+        source = self.server.source
+        source._capture_dirs = (status.parent,)
+        answer = self.get("/api/health")
+        self.assertEqual(answer["status"], 200)
+        recorder = answer["body"]["recorder"]
+        self.assertEqual(recorder["state"], "RUNNING")
+        self.assertEqual(recorder["counters"]["ticks"], 12)
+        self.assertEqual(answer["body"]["tape"]["symbols_with_bars"], 2)
 
 
 if __name__ == "__main__":

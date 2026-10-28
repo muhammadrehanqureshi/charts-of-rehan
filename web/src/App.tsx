@@ -12,7 +12,7 @@
  * belongs to the feed hook and the pixels belong to the canvas.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, ChartClient } from "./api/client";
 import {
@@ -41,6 +41,8 @@ import { useChartFeed } from "./hooks/useChartFeed";
 import { useAppearance } from "./hooks/useAppearance";
 import { useIndicators } from "./hooks/useIndicators";
 import { useDelta } from "./hooks/useDelta";
+import { usePrints } from "./hooks/usePrints";
+import { useVisibility } from "./hooks/useVisibility";
 
 import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
@@ -146,6 +148,43 @@ function hash(): { symbol: string; day: string } {
   return { symbol: symbol.trim().toUpperCase(), day: day.trim() };
 }
 
+const CATALOGUE_REFRESH_MS = 15_000;
+const FLOW_REFRESH_MS = 1_000;
+const FEED_HEALTH_REFRESH_MS = 10_000;
+
+function useVisibleRefresh(
+  refresh: () => void | Promise<void>,
+  intervalMs: number,
+): void {
+  const latestRefresh = useRef(refresh);
+  latestRefresh.current = refresh;
+  const visible = useVisibility();
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        void (async () => {
+          try {
+            await latestRefresh.current();
+          } finally {
+            if (!cancelled && document.visibilityState === "visible") {
+              schedule();
+            }
+          }
+        })();
+      }, intervalMs);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [intervalMs, visible]);
+}
+
 /**
  * Opening a fresh app always means opening the live session: a day named in
  * the URL is the day a review left behind, and reopening it days later is
@@ -236,6 +275,8 @@ export function App() {
     }
   }, [symbol]);
 
+  const [feedHealth, setFeedHealth] = useState<ReturnType<typeof parseHealth> | null>(null);
+
   // The service's own facts, read once per mount and again after a refresh.
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +288,7 @@ export function App() {
         }
         try {
           const health = parseHealth(raw);
+          setFeedHealth(health);
           setResolutions(
             health.resolutions.length > 0 ? health.resolutions : FALLBACK_RESOLUTIONS,
           );
@@ -280,6 +322,23 @@ export function App() {
       cancelled = true;
     };
   }, [client]);
+  useVisibleRefresh(() => client.feedHealth().then((raw) => {
+    try {
+      const snapshot = raw as {
+        tape?: ReturnType<typeof parseHealth>["tape"];
+        recorder?: ReturnType<typeof parseHealth>["recorder"];
+      };
+      setFeedHealth((current) => current === null ? null : {
+        ...current,
+        ...(snapshot.tape === undefined ? {} : { tape: snapshot.tape }),
+        ...(snapshot.recorder === undefined
+          ? {} : { recorder: snapshot.recorder }),
+      });
+    } catch {
+      // Keep the latest valid diagnostic if an older service returns a shape
+      // this UI version does not understand.
+    }
+  }), FEED_HEALTH_REFRESH_MS);
 
   // The catalogue with the chosen session's own facts, for the watchlist.
   useEffect(() => {
@@ -309,6 +368,11 @@ export function App() {
       cancelled = true;
     };
   }, [client, day]);
+  useVisibleRefresh(
+    () => client.symbolRows(day).then(setRows).then(() => undefined)
+      .catch(() => undefined),
+    CATALOGUE_REFRESH_MS,
+  );
 
   // The tape's own buy/sell split for every symbol: one call per session, so
   // a watchlist row costs no extra request. A source with no print tape
@@ -337,12 +401,17 @@ export function App() {
       cancelled = true;
     };
   }, [client, day]);
+  useVisibleRefresh(() => client.orderFlow(day).then((report) => {
+    const next = new Map<string, SymbolFlow>();
+    for (const row of report.symbols) next.set(row.symbol, row);
+    setFlow(next);
+    setFlowDay(report.day);
+  }).then(() => undefined).catch(() => undefined), FLOW_REFRESH_MS);
 
   const feed = useChartFeed(client, symbol, resolution, {
     day,
     days: day.length === 0 ? SPAN_SESSIONS : undefined,
   });
-
   // The tape's own per-minute buy/sell split, for the volume-delta plate.
   const delta = useDelta(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0);
@@ -351,6 +420,12 @@ export function App() {
   // read that stops with the stored session and with the hidden tab.
   const book = useBook(client, symbol, feed.meta.session?.day ?? day,
     day.length === 0);
+
+  // The tape's own print ledger: every order as it came, polled to the
+  // one-second tick. A stored drawn-from-archive session never grows, so
+  // asking for its ledger would only read a file that is gone.
+  const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
+    symbol.length > 0 && !(feed.meta.session?.archived ?? false));
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
@@ -486,6 +561,8 @@ export function App() {
             error={feed.error ?? (bootError === null ? null
               : { category: "INTERNAL", detail: bootError })}
             details={detailsOpen}
+            tape={feedHealth?.tape}
+            recorder={feedHealth?.recorder}
           />
           <button
             type="button"
@@ -517,6 +594,7 @@ export function App() {
             watch={watch}
             symbol={symbol}
             day={day.length > 0 ? day : flowDay}
+            storedDay={day}
             loading={catalogueLoading}
             onSymbol={(next) => {
               chooseSymbol(next);
@@ -525,6 +603,7 @@ export function App() {
             onWatchChange={setWatch}
             flow={flow}
             book={book}
+            tape={prints.report}
             searchOpen={searchOpen}
             onSearchOpen={() => setSearchOpen(true)}
             onSearchClose={() => setSearchOpen(false)}

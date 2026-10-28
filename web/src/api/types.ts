@@ -508,6 +508,23 @@ export interface HealthReport {
   readonly resolutions: readonly Resolution[];
   readonly timeframes: readonly TimeframeInfo[] | undefined;
   readonly indices: readonly string[] | undefined;
+  readonly tape?: {
+    readonly available: boolean;
+    readonly day: string;
+    readonly capture?: {
+      readonly available: boolean;
+      readonly capture_age_seconds: number | null;
+      readonly capture_bytes: number;
+      readonly path: string | null;
+    };
+    readonly detail?: string;
+  } | null;
+  readonly recorder?: {
+    readonly state: string;
+    readonly feed_connected: boolean;
+    readonly last_frame_age_seconds: number | null;
+    readonly last_error?: string | null;
+  } | null;
 }
 
 /** The service's own label and build note for one rung. */
@@ -522,6 +539,8 @@ export interface TimeframeInfo {
 
 export function parseHealth(raw: unknown): HealthReport {
   const value = record(raw, "health");
+  const tape = parseFastTapeHealth(value["tape"]);
+  const recorder = parseFastRecorderHealth(value["recorder"]);
   return {
     service: str(value["service"], "health.service"),
     schema_version: num(value["schema_version"], "health.schema_version"),
@@ -537,6 +556,45 @@ export function parseHealth(raw: unknown): HealthReport {
       : array(value["indices"], "health.indices").map((item, index) =>
           str(item, `health.indices[${index}]`),
         ),
+    // An absent key means an older service: omit the field entirely rather
+    // than storing an explicit undefined (exactOptionalPropertyTypes).
+    ...(tape === undefined ? {} : { tape }),
+    ...(recorder === undefined ? {} : { recorder }),
+  };
+}
+
+function parseFastTapeHealth(raw: unknown): HealthReport["tape"] {
+  if (raw === undefined || raw === null) return raw === null ? null : undefined;
+  const value = record(raw, "health.tape");
+  const rawCapture = value["capture"];
+  let capture: NonNullable<HealthReport["tape"]>["capture"];
+  if (rawCapture !== undefined && rawCapture !== null) {
+    const item = record(rawCapture, "health.tape.capture");
+    capture = {
+      available: item["available"] === true,
+      capture_age_seconds: optionalNum(item["capture_age_seconds"]),
+      capture_bytes: num(item["capture_bytes"], "health.tape.capture.capture_bytes"),
+      path: optionalStr(item["path"]),
+    };
+  }
+  const detail = optionalStr(value["detail"]);
+  return {
+    available: value["available"] === true,
+    day: optionalStr(value["day"]) ?? "",
+    ...(capture === undefined ? {} : { capture }),
+    ...(detail === null ? {} : { detail }),
+  };
+}
+
+function parseFastRecorderHealth(raw: unknown): HealthReport["recorder"] {
+  if (raw === undefined || raw === null) return raw === null ? null : undefined;
+  const value = record(raw, "health.recorder");
+  const lastError = optionalStr(value["last_error"]);
+  return {
+    state: optionalStr(value["state"]) ?? "UNKNOWN",
+    feed_connected: value["feed_connected"] === true,
+    last_frame_age_seconds: optionalNum(value["last_frame_age_seconds"]),
+    ...(lastError === null ? {} : { last_error: lastError }),
   };
 }
 

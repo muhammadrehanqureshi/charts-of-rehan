@@ -123,6 +123,21 @@ describe("indicator engine", () => {
     expect(histogram[1]).toBe(11);
   });
 
+  it("does not invent buy/sell delta for an unclassified tape bar", () => {
+    const series = seriesFor([10, 11, 10]);
+    const data = seriesData(series);
+    const spec = createIndicator("volumedelta");
+    const output = computeIndicators(spec === null ? [] : [spec], {
+      ...data,
+      buy: new Float64Array([10, Number.NaN, 4]),
+      sell: new Float64Array([2, Number.NaN, 9]),
+    })[0];
+    const histogram = output?.histogram?.values ?? new Float64Array();
+    expect(histogram[0]).toBe(8);
+    expect(Number.isNaN(histogram[1])).toBe(true);
+    expect(histogram[2]).toBe(-5);
+  });
+
   it("reports an unknown indicator instead of throwing", () => {
     const data = seriesData(seriesFor([1, 2, 3]));
     const outputs = computeIndicators([{
