@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -256,6 +257,16 @@ class TapeSource:
         self._archive = SessionArchive(archive_dir or DEFAULT_ARCHIVE_DIR)
         self._day_override = _as_date(day)
         self._cache: dict[str, tuple[tuple, "tape_bars.TapeBars"]] = {}
+        #: Concurrent API workers can ask for the same newly appended file at
+        #: once; only one of them should pay the full parse cost.
+        self._cache_lock = threading.RLock()
+        #: Rolling book-only observations from the current snapshot cycle.
+        #: Kept separate from the full OHLCV day build: refreshing one order
+        #: book must not rebuild every symbol's minute bars from a 50 MB file.
+        self._book_cache: dict[str, tuple[tuple, dict[str, dict]]] = {}
+        #: In-progress scanners for each live capture; serializes incremental
+        #: reads without making requests for unrelated days wait on each other.
+        self._book_locks: dict[str, threading.Lock] = {}
         self._derived: dict[str, list[str]] = {}
         #: Immutable archive rows, cached per (day, symbol). A finished
         #: session never changes, so this is safe for the process lifetime.
@@ -281,9 +292,17 @@ class TapeSource:
         #: The whole session's buy/sell split per symbol, cached per day on
         #: the capture's identity so a growing live file is re-read.
         self._flow_cache: dict[str, tuple[tuple, list[dict]]] = {}
+        #: Streaming folds behind the print ledger, the whole-session flow
+        #: and the per-minute delta. Each keeps its own byte offset and the
+        #: per-symbol walk state, so a one-second cadence costs one appended
+        #: tail read - the same law the book scanner and the sub-minute bar
+        #: cache already obey. Keyed by day (and symbol); a replaced or
+        #: truncated capture rebuilds from zero.
+        self._flow_state: dict[str, dict] = {}
+        self._prints_state: dict[tuple[str, str], dict] = {}
+        self._delta_state: dict[tuple[str, str], dict] = {}
         #: Per-minute buy/sell volume for one symbol, cached like the prints.
         self._delta_cache: dict[tuple[str, str], tuple[tuple, list[dict]]] = {}
-
     # ------------------------------------------------------- configuration
     @property
     def archive(self) -> SessionArchive:
@@ -480,8 +499,14 @@ class TapeSource:
 
         The events and the totals are the venue's own facts (the same capture
         the candle bars are built from), so a chart can draw the orders as
-        they came and name how many there were. A growing live file is
-        re-read when its identity changes, exactly like the bar cache.
+        they came and name how many there were.
+
+        The ledger is streamed through :class:`tape_bars.PrintsFold`, kept
+        per (day, symbol) with its own byte offset: a one-second cadence
+        from a chart reads only the capture's appended tail and merges it
+        into the fold's running state, the same law the book scanner obeys.
+        A replaced or truncated capture resets the fold; a stored capture
+        that never grows costs one stat call per ask after its first read.
         """
         wanted = symbol.strip().upper()
         # The same fallback the catalogue and the order flow use: an unnamed
@@ -502,15 +527,19 @@ class TapeSource:
         except OSError as exc:
             raise UpstreamError(UpstreamError.CONNECTION,
                                 f"cannot stat {path.name}: {exc}") from exc
-        identity = (str(path), stat.st_size, stat.st_mtime_ns, limit)
         key = (session.isoformat(), wanted)
-        cached = self._prints_cache.get(key)
-        if cached is not None and cached[0] == identity:
-            return cached[1]
-        report = tape_bars.prints(path, wanted, session,
-                                  as_of=self._clock(), limit=limit)
-        self._prints_cache[key] = (identity, report)
-        return report
+        fold = self._prints_state.get(key)
+        if fold is not None and fold["path"] != str(path):
+            fold = None                      # a different file answered
+        if fold is None or stat.st_size < fold["offset"]:
+            fold = {"fold": tape_bars.PrintsFold(wanted, session),
+                    "path": str(path), "offset": 0}
+            self._prints_state[key] = fold
+        with self._cache_lock:
+            rows, end = tick_volume.next_appended(path, fold["offset"])
+            fold["fold"].feed(rows, self._clock())
+            fold["offset"] = max(end, fold["offset"])
+        return fold["fold"].report(limit)
 
     # ------------------------------------------------------- session order flow
     def flow_day(self, day: date | str | None = None) -> date:
@@ -536,11 +565,13 @@ class TapeSource:
     def flow_for(self, day: date | str | None = None) -> list[dict]:
         """Every symbol's own buy/sell split for one session.
 
-        One pass over the capture, cached on its identity: the watchlist and
-        the screener read the same numbers for the same symbol, and neither
-        needs one request per row. A day with no capture answers an empty
-        list rather than an error, because "this session kept no print
-        tape" is a fact about the session, not a failure.
+        One row per symbol the tape printed, measured from the venue's own
+        counters. The split is streamed through :class:`tape_bars.FlowFold`,
+        kept per day with its own byte offset: the watchlist's one-second
+        cadence reads only the capture's appended tail and merges it into
+        the fold's running state - a stat call and a small parse per ask,
+        never a re-read of the day. A replaced or truncated capture resets
+        the fold.
         """
         session = self.flow_day(day)
         path = self.capture_for(session)
@@ -550,22 +581,31 @@ class TapeSource:
             stat = path.stat()
         except OSError:
             return []
-        identity = (str(path), stat.st_size, stat.st_mtime_ns)
-        cached = self._flow_cache.get(session.isoformat())
-        if cached is not None and cached[0] == identity:
-            return cached[1]
-        report = tape_bars.flow_by_symbol(path, session, self._clock())
-        rows = sorted(report.values(), key=lambda item: item["symbol"])
-        self._flow_cache[session.isoformat()] = (identity, rows)
-        return rows
+        key = session.isoformat()
+        fold = self._flow_state.get(key)
+        if fold is not None and fold["path"] != str(path):
+            fold = None                      # a different file answered
+        if fold is None or stat.st_size < fold["offset"]:
+            fold = {"fold": tape_bars.FlowFold(session), "path": str(path),
+                    "offset": 0}
+            self._flow_state[key] = fold
+        with self._cache_lock:
+            rows, end = tick_volume.next_appended(path, fold["offset"])
+            fold["fold"].feed(rows, self._clock())
+            fold["offset"] = max(end, fold["offset"])
+        return sorted(fold["fold"].rows(), key=lambda item: item["symbol"])
 
     def delta_for(self, symbol: str, day: date | str | None = None) -> dict:
         """One symbol's per-minute buy/sell volume for a session.
 
         The split comes from the venue's own running counter, classified by
         the same law the order ledger uses, so a volume-delta pane and the
-        order tape can never disagree about a minute. A capture that is not
-        banked answers an empty series with the reason, not an error.
+        order tape can never disagree about a minute. The split is streamed
+        through :class:`tape_bars.DeltaFold`, kept per (day, symbol) with
+        its own byte offset: the pane's cadence reads only the capture's
+        appended tail and merges it into the buckets already built. A
+        capture that is not banked answers an empty series with the reason,
+        not an error.
         """
         wanted = symbol.strip().upper()
         session = self.flow_day(day)
@@ -581,27 +621,26 @@ class TapeSource:
         except OSError:
             return {"symbol": wanted, "day": session.isoformat(),
                     "minutes": [], "note": "the capture could not be read"}
-        identity = (str(path), stat.st_size, stat.st_mtime_ns)
         key = (session.isoformat(), wanted)
-        cached = self._delta_cache.get(key)
-        if cached is not None and cached[0] == identity:
-            return {"symbol": wanted, "day": session.isoformat(),
-                    "minutes": cached[1], "note": ""}
-        minutes = tape_bars.delta_minutes(path, wanted, session, self._clock())
-        self._delta_cache[key] = (identity, minutes)
+        fold = self._delta_state.get(key)
+        if fold is not None and fold["path"] != str(path):
+            fold = None                      # a different file answered
+        if fold is None or stat.st_size < fold["offset"]:
+            fold = {"fold": tape_bars.DeltaFold(wanted, session),
+                    "path": str(path), "offset": 0}
+            self._delta_state[key] = fold
+        with self._cache_lock:
+            rows, end = tick_volume.next_appended(path, fold["offset"])
+            fold["fold"].feed(rows, self._clock())
+            fold["offset"] = max(end, fold["offset"])
         return {"symbol": wanted, "day": session.isoformat(),
-                "minutes": minutes, "note": ""}
+                "minutes": fold["fold"].minutes(), "note": ""}
 
     def book_for(self, symbol: str, day: date | str | None = None) -> dict:
         """One symbol's top of the venue's own book, as the tape last saw it.
 
-        The best bid and best ask with their resting sizes come from the same
-        tick row that priced the bars (fields 2-5 of the wire), so the book
-        and the chart can never disagree about a moment. It rides the day
-        build the bars already use - one dict read, not another pass over the
-        capture - and it answers a note rather than an error when the tape
-        has not yet observed a book for the symbol, which is a fact about a
-        thin scrip, not a failure.
+        The best bid and ask, with their resting sizes, are read from the
+        capture's latest complete rows using an incremental per-file scan.
         """
         wanted = symbol.strip().upper()
         if wanted in INDEX_SYMBOLS:
@@ -619,13 +658,12 @@ class TapeSource:
                             f"{session.isoformat()}, so the book has no "
                             f"observation to show"}
         try:
-            built = self._day(session)
+            observed = self._latest_book(session).get(wanted)
         except UpstreamError as exc:
             return {"symbol": wanted, "day": session.isoformat(),
                     "bid": None, "bid_size": None, "ask": None,
                     "ask_size": None, "last": None, "at": None,
                     "note": exc.detail}
-        observed = built.book.get(wanted)
         if observed is None:
             return {"symbol": wanted, "day": session.isoformat(),
                     "bid": None, "bid_size": None, "ask": None,
@@ -647,6 +685,81 @@ class TapeSource:
         return sized
 
     # ------------------------------------------------------------- reading
+    def _latest_book(self, day: date) -> dict[str, dict]:
+        """Return current book observations without rebuilding all day bars.
+
+        Book requests arrive every few seconds while the capture can already
+        contain tens of megabytes. The chart cache is keyed by capture
+        identity, but its full build is deliberately expensive; order-book
+        freshness has its own short-cadence reader that only scans the
+        relevant snapshot fields and remembers the last valid quote per
+        symbol. The cache updates only when the append-only capture grows.
+        """
+        path = self.capture_for(day)
+        if path is None:
+            raise UpstreamError(UpstreamError.EMPTY_ACK,
+                                f"no broker tape is banked for {day.isoformat()}")
+        with self._cache_lock:
+            return self._latest_book_locked(day, path)
+
+    def _latest_book_locked(self, day: date, path: Path) -> dict[str, dict]:
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise UpstreamError(UpstreamError.CONNECTION,
+                                f"cannot stat {path.name}: {exc}") from exc
+        cached = self._book_cache.get(day.isoformat())
+        previous_identity = cached[0] if cached is not None else None
+        identity = (str(path), stat.st_size, stat.st_mtime_ns)
+        # The recorder appends with buffering. When its last chunk has no
+        # newline yet, leave the cache keyed to the last complete byte so a
+        # later partial write is retried instead of skipped forever.
+        if (cached is not None and cached[0][0] == identity[0]
+                and stat.st_size == int(cached[0][1])):
+            return cached[1]
+        books = dict(cached[1]) if cached is not None else {}
+        offset = (int(previous_identity[1])
+                  if previous_identity is not None
+                  and previous_identity[0] == identity[0]
+                  and stat.st_size >= int(previous_identity[1])
+                  else 0)
+
+        try:
+            with path.open("rb") as capture:
+                capture.seek(offset)
+                while line := capture.readline():
+                    if not line.endswith(b"\n"):
+                        break
+                    for row in tick_volume.parse_tick_line(
+                            line.decode("utf-8", "replace")):
+                        symbol = str(row.get("scrip", "")).split(":", 1)[0]
+                        moment = tape_bars._moment(row, day)
+                        if (not symbol or moment is None
+                                or moment.date() != day
+                                or not ladder.in_session(moment)):
+                            continue
+                        bid = tape_bars._number(row.get("bid"))
+                        ask = tape_bars._number(row.get("ask"))
+                        if ((bid is None or bid <= 0)
+                                and (ask is None or ask <= 0)):
+                            continue
+                        books[symbol.strip().upper()] = {
+                            "bid": bid,
+                            "bid_size": tape_bars._number(row.get("bid_size")),
+                            "ask": ask,
+                            "ask_size": tape_bars._number(row.get("ask_size")),
+                            "last": tape_bars._number(row.get("last")),
+                            "at": moment.isoformat(timespec="seconds"),
+                        }
+                end = capture.tell()
+        except (OSError, ValueError) as exc:
+            raise UpstreamError(UpstreamError.CONNECTION,
+                                f"could not read book from {path.name}: "
+                                f"{type(exc).__name__}") from exc
+        self._book_cache[day.isoformat()] = (
+            (str(path), end, stat.st_mtime_ns), books)
+        return books
+
     def _day(self, day: date) -> "tape_bars.TapeBars":
         """The built tape for `day`, cached on the capture file's identity."""
         path = self.capture_for(day)
@@ -662,46 +775,47 @@ class TapeSource:
                    "there" if archived else
                    "; start the read-only recorder to fill it, or archive a "
                    "session you already have"))
-        try:
-            stat = path.stat()
-        except OSError as exc:
-            raise UpstreamError(UpstreamError.CONNECTION,
-                                f"cannot stat {path.name}: {exc}") from exc
-        key = (day.isoformat(), str(path), stat.st_size, stat.st_mtime_ns)
-        cached = self._cache.get(day.isoformat())
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        universe, notes = self._universe_for(day, path)
-        if not universe:
-            raise UpstreamError(
-                UpstreamError.EMPTY_ACK,
-                f"the KMIALL universe is missing and {path.name} carries no "
-                f"readable symbol, so there is no symbol list to read the "
-                f"tape against and no honest way to guess one (SO-3; the "
-                f"recorder itself refuses to subscribe in this state)")
-        tape = tape_bars.build(path, universe, self._clock(), day=day)
-        if not tape.rows_seen:
-            # The catalogue named none of the symbols this tape printed, which
-            # means the file that answered is not this session's list (a
-            # different market, a different exchange's export, a catalogue
-            # whose keys changed shape). Showing an empty chart here would be
-            # a lie about a tape that holds real prints, so the tape's own
-            # symbols are used instead and the swap is written down. Measured
-            # rather than assumed: the second build only happens when the
-            # first one read no row at all.
-            derived = self._derived_symbols(path)
-            if derived:
-                tape = tape_bars.build(path, derived, self._clock(), day=day)
-                notes.append(
-                    f"the symbol list at {self._universe_path_text()} was the "
-                    f"file that answered, but none of its symbols appear in "
-                    f"{path.name}, so this session is read against the "
-                    f"{len(derived)} symbol(s) the tape itself carried")
-        for line in notes:
-            if line not in tape.notes:
-                tape.notes.append(line)
-        self._cache[day.isoformat()] = (key, tape)
-        return tape
+        with self._cache_lock:
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                raise UpstreamError(UpstreamError.CONNECTION,
+                                    f"cannot stat {path.name}: {exc}") from exc
+            key = (day.isoformat(), str(path), stat.st_size, stat.st_mtime_ns)
+            cached = self._cache.get(day.isoformat())
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            universe, notes = self._universe_for(day, path)
+            if not universe:
+                raise UpstreamError(
+                    UpstreamError.EMPTY_ACK,
+                    f"the KMIALL universe is missing and {path.name} carries no "
+                    f"readable symbol, so there is no symbol list to read the "
+                    f"tape against and no honest way to guess one (SO-3; the "
+                    f"recorder itself refuses to subscribe in this state)")
+            tape = tape_bars.build(path, universe, self._clock(), day=day)
+            if not tape.rows_seen:
+                # The catalogue named none of the symbols this tape printed, which
+                # means the file that answered is not this session's list (a
+                # different market, a different exchange's export, a catalogue
+                # whose keys changed shape). Showing an empty chart here would be
+                # a lie about a tape that holds real prints, so the tape's own
+                # symbols are used instead and the swap is written down. Measured
+                # rather than assumed: the second build only happens when the
+                # first one read no row at all.
+                derived = self._derived_symbols(path)
+                if derived:
+                    tape = tape_bars.build(path, derived, self._clock(), day=day)
+                    notes.append(
+                        f"the symbol list at {self._universe_path_text()} was the "
+                        f"file that answered, but none of its symbols appear in "
+                        f"{path.name}, so this session is read against the "
+                        f"{len(derived)} symbol(s) the tape itself carried")
+            for line in notes:
+                if line not in tape.notes:
+                    tape.notes.append(line)
+            self._cache[day.isoformat()] = (key, tape)
+            return tape
 
     def _universe_path_text(self) -> str:
         """Which file answered the universe question, for a note."""
@@ -1451,15 +1565,63 @@ class TapeSource:
         return (SOURCE_ARCHIVE if self.served_from_archive(symbol, day=day)
                 else SOURCE)
 
-    def session_effect(self) -> dict:
-        """What the tape says about the session as a whole, for /api/health."""
+    def capture_health(self) -> dict:
+        """Fresh capture-file identity without parsing its complete history."""
         session = self.session_day()
+        capture = self.capture_for(session)
+        try:
+            stat = capture.stat() if capture is not None else None
+        except OSError:
+            stat = None
+        if stat is None:
+            return {"available": False, "day": session.isoformat(),
+                    "capture": None,
+                    "detail": "no readable live capture is available"}
+        return {
+            "available": True,
+            "day": session.isoformat(),
+            "capture": {
+                "available": True,
+                "capture_age_seconds": round(max(
+                    0.0, self._clock().timestamp() - stat.st_mtime), 2),
+                "capture_bytes": stat.st_size,
+                "path": capture.name,
+            },
+        }
+
+    def session_effect(self) -> dict:
+        """What the tape says about the session as a whole, for /api/health.
+
+        Health is a frequent, lightweight probe: it reports capture and archive
+        identity without rebuilding the entire universe's OHLC bars.
+        """
+        session = self.session_day()
+        capture = self.capture_for(session)
+        try:
+            capture_stat = capture.stat() if capture is not None else None
+        except OSError:
+            capture_stat = None
+        archived = self._archive.summary(session)
+        capture_health = None
+        if capture_stat is None:
+            capture_health = {"available": False,
+                              "detail": (f"no broker tape is banked for {session.isoformat()}"
+                                         if capture is None else "the capture cannot be read"),
+                              "capture_age_seconds": None,
+                              "capture_bytes": 0,
+                              "path": capture.name if capture is not None else None}
+        else:
+            capture_health = {"available": True,
+                              "capture_age_seconds": max(
+                                  0.0, (self._clock().timestamp() - capture_stat.st_mtime).real),
+                              "capture_bytes": capture_stat.st_size,
+                              "path": capture.name}
         try:
             tape = self._day(session)
         except UpstreamError as exc:
-            archived = self._archive.summary(session)
             return {"available": False, "detail": exc.detail,
                     "day": session.isoformat(),
+                    "capture": capture_health,
                     "archive": archived.as_dict() if archived else None,
                     "archive_days": len(self._archive.days()),
                     "capture_dirs": [str(item) for item in self._capture_dirs]}
@@ -1470,6 +1632,7 @@ class TapeSource:
                 "carried_bars": tape.carried_bars,
                 "rows_seen": tape.rows_seen,
                 "volume_available": tape.volume_available,
+                "capture": capture_health,
                 "path": tape.path.name if tape.path else None,
                 "archive_days": len(self._archive.days()),
                 "capture_dirs": [str(item) for item in self._capture_dirs],

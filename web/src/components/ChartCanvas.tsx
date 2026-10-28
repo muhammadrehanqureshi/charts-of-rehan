@@ -550,10 +550,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       ? flowColumns(delta, base.time, series.stepMs())
       : null;
     const hasFlow = flow !== null && flow.buy.some(Number.isFinite);
+    const wantsDelta = indicators.some((item) =>
+      item.type === "volumedelta" && item.visible);
     const data: SeriesData = hasFlow
       ? { ...base, buy: flow.buy, sell: flow.sell }
       : base;
-    state.deltaShown = hasFlow && volumeAvailable;
+    state.deltaShown = wantsDelta && hasFlow && volumeAvailable;
     const tokens = TV_DARK_THEME;
     state.data = data;
     state.index.clear();
@@ -597,7 +599,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
               : withAlpha(tokens.down, 0.55),
           });
         }
-      } else {
+      } else if (!wantsDelta) {
         const value = data.volume[i];
         if (value !== undefined && Number.isFinite(value)) {
           volumeData.push({
@@ -618,6 +620,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
       state.volume.setData(volumeData);
+      state.volume.priceScale().applyOptions({
+        scaleMargins: state.deltaShown
+          ? { top: 0.72, bottom: 0 }
+          : { top: 0.82, bottom: 0 },
+      });
     }
 
     buildIndicators(state, indicators, data, tokens);
@@ -984,8 +991,8 @@ function writeLegend(
   const net = bought !== undefined && sold !== undefined
     ? bought - sold : Number.NaN;
 
-  // The plate under the candles is the tape's own delta when it has one,
-  // and the raw volume counter when it does not. The legend says which.
+  // The reader can turn delta on or off; when active the legend labels the
+  // measured tape split, otherwise it reports the venue's raw volume counter.
   const volumeHtml = !withVolume || !state.volumeShown
     ? ""
     : state.deltaShown && Number.isFinite(net)

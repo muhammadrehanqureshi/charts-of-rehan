@@ -2,8 +2,7 @@
  * One polling hook for the order-print ledger.
  *
  * The bars stream is push; the prints ledger is polled, because the server
- * rebuilds it from a growing capture file and a poll at the minute grain is
- * exactly what the tape itself observes anyway. The refetch never cries
+ * rebuilds it from a growing capture file and a poll of one second is * exactly what the tape itself observes anyway. The refetch never cries
  * wolf: a source without a ledger answers an empty report with a note, so a
  * missing feature stays quiet instead of turning into an error state.
  */
@@ -33,7 +32,7 @@ export function usePrints(
   symbol: string,
   day: string,
   enabled: boolean,
-  intervalMs = 5000,
+  intervalMs = 1_000,
 ): PrintsState {
   const [report, setReport] = useState<PrintReport | null>(null);
   const [error, setError] = useState<string | null>(null);

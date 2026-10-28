@@ -48,7 +48,13 @@ export function Toolbar(props: ToolbarProps) {
     <header className="toolbar">
       <div className="toolbar__cell">
         <span className="toolbar__brand" title="Charts of Rehan - the PSX chart terminal">
-          <span className="toolbar__brand-mark" aria-hidden="true">CR</span>
+          <img
+            className="toolbar__brand-mark"
+            src="/logo.png"
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+          />
           <span className="toolbar__brand-name">CHARTS OF REHAN</span>
         </span>
 

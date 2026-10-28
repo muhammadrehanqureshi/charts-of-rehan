@@ -54,7 +54,7 @@ LOGGER = logging.getLogger("charts.app")
 #: collide with a development server or another tool on this machine.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
-DEFAULT_INTERVAL = 15.0
+DEFAULT_INTERVAL = 5.0
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC = ROOT / "web" / "dist"
@@ -183,9 +183,10 @@ def _resolve_day(source: TapeSource, text: str):
 def _warm_symbols(args) -> list[str]:
     wanted = _symbols(args.symbols)
     if not wanted and args.source == "tape":
-        # The universe is only read when the tape is the source: the other
-        # sources carry their own catalogue and must not silently inherit it.
-        wanted = read_universe()
+        # Start with just the indices. A scrip is watched as its chart opens,
+        # and expires after the reader leaves: eager universe ingestion polls
+        # hundreds of names on the owner's PC even when nobody is viewing them.
+        wanted = ["KSE100", "KMIALLSHR"]
     return wanted
 
 
