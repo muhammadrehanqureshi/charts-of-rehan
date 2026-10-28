@@ -31,6 +31,7 @@ import logging
 import mimetypes
 import queue
 import sys
+import threading
 from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -85,11 +86,16 @@ class ChartHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
+        # A stream never uses this finite-body helper; every JSON response
+        # closes its socket so EventSource retries cannot accumulate idle
+        # handler threads across browser restarts.
+        self.send_header("Connection", "close")
         self._cors()
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(payload)
+        self.close_connection = True
 
     def _send_error_json(self, status: int, code: str, detail: str) -> None:
         self._send_json(error_body(code, detail), status=status)
@@ -98,6 +104,7 @@ class ChartHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802 - the base class's own naming
         self.send_response(HTTPStatus.NO_CONTENT)
         self._cors()
+        self.send_header("Connection", "close")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -161,6 +168,20 @@ class ChartHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/orderflow":
             self._orderflow(query)
+            return
+        if path == "/api/flow":
+            # Older UI bundles used /api/flow; keep this harmless alias so a
+            # stale open tab still reaches the current order-flow endpoint.
+            self._orderflow(query)
+            return
+        if path == "/api/feed-health":
+            # The fast probe never builds the whole session's OHLC bars. The
+            # ordinary health route remains a detailed diagnostic endpoint.
+            tape = (self.state.source.capture_health()
+                    if callable(getattr(self.state.source, "capture_health", None))
+                    else None)
+            self._send_json({"ok": True, "tape": tape,
+                             "recorder": self.state.recorder_health()})
             return
         if path == "/api/delta":
             self._delta(query)
@@ -594,6 +615,8 @@ class ChartHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.close_connection = True
         # Hashed asset names may be cached; the shell must not be.
         if "assets/" in wanted.as_posix() or wanted.suffix == ".js":
             self.send_header("Cache-Control", "public, max-age=31536000, "
@@ -605,10 +628,55 @@ class ChartHandler(BaseHTTPRequestHandler):
 
 
 class ChartServer(ThreadingHTTPServer):
-    """The server object carries the shared state, not globals."""
+    """The server object carries shared state and bounded request workers."""
 
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 32
+    max_handler_threads = 32
+
+    def process_request(self, request, client_address) -> None:
+        """Bound idle and streaming clients instead of spawning forever.
+
+        A stream gets one worker for its lifetime. Reconnecting tabs and
+        abandoned keep-alive sockets used to create an unbounded thread per
+        request; each one could also race into a full tape build. A fixed
+        worker budget keeps the desktop process bounded, and overload is
+        explicit to the client rather than silently consuming the machine.
+        """
+        if not self._request_slots.acquire(blocking=False):
+            body = (b'{"ok":false,"error":{"code":"BUSY",'
+                    b'"detail":"chart service is at its local connection limit"}}')
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json; charset=utf-8\r\n"
+                b"Cache-Control: no-store\r\n"
+                b"Retry-After: 2\r\n"
+                b"Connection: close\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+                + body
+            )
+            try:
+                request.sendall(response)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            # REST clients never pool sockets. Keep a finite bound anyway, as
+            # a third-party HTTP client may ignore Connection: close; an SSE
+            # stream writes heartbeats on its own shorter cadence.
+            request.settimeout(30.0)
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
     def handle_error(self, request, client_address) -> None:
         """A disconnected client is normal, not an incident.
@@ -633,6 +701,7 @@ class ChartServer(ThreadingHTTPServer):
                  default_resolution: str = RESOLUTION_MINUTE,
                  stream_idle_seconds: float = 240.0,
                  clock: Callable[[], datetime] | None = None):
+        self._request_slots = threading.BoundedSemaphore(self.max_handler_threads)
         super().__init__(address, ChartHandler)
         self.store = store
         self.ingestor = ingestor
@@ -670,6 +739,7 @@ class ChartServer(ThreadingHTTPServer):
             "timeframes": ladder.all_specs(),
             "indices": ["KSE100", "KMIALLSHR"],
             "tape": tape,
+            "recorder": self.recorder_health(),
             "ingest": self.ingestor.health(),
             "symbols": len(self.store.symbols()),
             "series": {f"{symbol}/{resolution}": len(
@@ -677,6 +747,42 @@ class ChartServer(ThreadingHTTPServer):
                 for symbol in self.ingestor.watched()
                 for resolution in self.source.capabilities().resolutions},
         }
+
+    def recorder_health(self) -> dict | None:
+        """Read the collector heartbeat without opening the large tape file."""
+        if (self.source.capabilities().source.id != "broker_tape"
+                or not hasattr(self.source, "capture_dirs")):
+            return None
+        for directory in self.source.capture_dirs:
+            status_path = Path(directory) / "status.json"
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                updated = datetime.fromisoformat(str(status.get("updated_at", "")))
+                frame_text = status.get("last_frame_at")
+                frame_at = (datetime.fromisoformat(str(frame_text))
+                            if frame_text else None)
+                now = sessions.law.now_karachi()
+                age = max(0.0, (now -
+                                sessions.law.as_karachi(updated)).total_seconds())
+                frame_age = (max(0.0, (now - sessions.law.as_karachi(frame_at)).total_seconds())
+                             if frame_at is not None else None)
+                state = "RUNNING" if status.get("running") and age <= 90 else \
+                    "STALE" if status.get("running") else "STOPPED"
+                return {"state": state,
+                        "feed_connected": bool(status.get("running") and
+                                                frame_age is not None and frame_age <= 90),
+                        "last_frame_age_seconds": (None if frame_age is None
+                                                   else round(frame_age, 1)),
+                        "heartbeat_age_seconds": round(age, 1),
+                        "last_frame_at": status.get("last_frame_at"),
+                        "last_error": status.get("last_error"),
+                        "counters": status.get("counters", {}),
+                        "feed_hosts": status.get("feed_hosts", []),
+                        "pid": status.get("pid")}
+            except (OSError, ValueError, TypeError):
+                continue
+        return {"state": "UNKNOWN", "feed_connected": False,
+                "detail": "no recorder status file was found"}
 
     def shutdown_sources(self) -> None:
         self.ingestor.stop()

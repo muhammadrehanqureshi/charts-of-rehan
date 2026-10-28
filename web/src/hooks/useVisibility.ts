@@ -5,6 +5,13 @@
  * the tape or keep parsing the same JSON every few seconds: that is a laptop
  * working for a page nobody is looking at. Everything that polls reads this
  * and stops while it is false, then catches up once on the way back.
+ *
+ * The boundary is the tab's own hidden/visible state, which
+ * ``visibilitychange`` already carries. Window focus is deliberately not
+ * part of the answer: a chart the reader can see but whose window lacks the
+ * keyboard focus (a split screen, a second monitor) is a chart somebody is
+ * reading, and freezing it because something else got clicked is the
+ * "stopped ticking" morning.
  */
 
 import { useEffect, useState } from "react";
@@ -22,12 +29,8 @@ export function useVisibility(): boolean {
   useEffect(() => {
     const change = () => setVisible(now());
     document.addEventListener("visibilitychange", change);
-    window.addEventListener("focus", change);
-    window.addEventListener("blur", change);
     return () => {
       document.removeEventListener("visibilitychange", change);
-      window.removeEventListener("focus", change);
-      window.removeEventListener("blur", change);
     };
   }, []);
 

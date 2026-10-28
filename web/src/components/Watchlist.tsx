@@ -21,8 +21,13 @@
 
 import { useMemo } from "react";
 
-import type { BookReport, SymbolFlow, SymbolRow } from "../api/types";
-import { formatClock, formatPrice, formatVolume } from "../chart/format";
+import type { BookReport, PrintReport, SymbolFlow, SymbolRow } from "../api/types";
+import {
+  formatClock,
+  formatClockSeconds,
+  formatPrice,
+  formatVolume,
+} from "../chart/format";
 import { SymbolSearch } from "./SymbolSearch";
 
 export interface WatchlistProps {
@@ -31,6 +36,9 @@ export interface WatchlistProps {
   readonly watch: readonly string[];
   readonly symbol: string;
   readonly day: string;
+  /** The session itself the reader chose, "" for the live one; the note is
+   * the only place the two must be told apart. */
+  readonly storedDay?: string;
   readonly loading: boolean;
   readonly onSymbol: (symbol: string) => void;
   /** Append one symbol to the list and open it. */
@@ -44,6 +52,8 @@ export interface WatchlistProps {
   readonly flow?: ReadonlyMap<string, SymbolFlow>;
   /** The active symbol's top of the venue's own book, as the tape saw it. */
   readonly book?: BookReport | null;
+  /** The active symbol's own print ledger: the orders as they came. */
+  readonly tape?: PrintReport | null;
 }
 
 /** The change of the session so far, measured against its first print. */
@@ -65,6 +75,25 @@ function tone(percent: number | null | undefined): string {
   return percent > 0 ? " wrow__cell--up" : " wrow__cell--down";
 }
 
+/**
+ * The day's own total: the shares the evidence named a side, buy plus sell.
+ * A split the tape could not attribute stays out of it, exactly as the venue
+ * measured nothing firm about it.
+ */
+export function dayTotal(flow: SymbolFlow | null | undefined,
+): number | null {
+  if (flow === undefined || flow === null) {
+    return null;
+  }
+  if (flow.classified_volume != null) {
+    return flow.classified_volume;
+  }
+  if (flow.buy_volume == null && flow.sell_volume == null) {
+    return null;
+  }
+  return (flow.buy_volume ?? 0) + (flow.sell_volume ?? 0);
+}
+
 function side(
   value: number | null | undefined,
   kind: "buy" | "sell",
@@ -79,7 +108,7 @@ function side(
 export function Watchlist(props: WatchlistProps) {
   const {
     rows, watch, symbol, day, loading, onSymbol, onAdd, onWatchChange,
-    searchOpen, onSearchOpen, onSearchClose, flow, book,
+    searchOpen, onSearchOpen, onSearchClose, flow, book, tape, storedDay,
   } = props;
   const bySymbol = useMemo(() => {
     const map = new Map<string, SymbolRow>();
@@ -145,12 +174,13 @@ export function Watchlist(props: WatchlistProps) {
                 <th scope="col" className="watchlist__th">Chg%</th>
                 <th scope="col" className="watchlist__th">Buy</th>
                 <th scope="col" className="watchlist__th">Sell</th>
+                <th scope="col" className="watchlist__th watchlist__th--total">Total</th>
               </tr>
             </thead>
             <tbody>
               {watch.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="watchlist__quiet">
+                  <td colSpan={6} className="watchlist__quiet">
                     {loading
                       ? "reading the catalogue…"
                       : "Your list is empty. Use + to put symbols on it."}
@@ -217,6 +247,9 @@ export function Watchlist(props: WatchlistProps) {
                     <td className="wrow__cell wrow__cell--sell">
                       {side(money?.sell_volume, "sell")}
                     </td>
+                    <td className="wrow__cell wrow__cell--total">
+                      {side(dayTotal(money), "buy")}
+                    </td>
                   </tr>
                 );
               })}
@@ -226,8 +259,8 @@ export function Watchlist(props: WatchlistProps) {
 
         <p className="watchlist__note">
           {traded} of {rows.length} traded ·{" "}
-          {day.length > 0
-            ? `stored session ${day}`
+          {(storedDay ?? day).length > 0
+            ? `stored session ${storedDay ?? day}`
             : "this live session"}{" "}
           · change against the first print
         </p>
@@ -291,6 +324,13 @@ export function Watchlist(props: WatchlistProps) {
                 <dd className="detail__sell">
                   {detailFlow?.sell_volume == null
                     ? "-" : formatVolume(detailFlow.sell_volume)}
+                </dd>
+              </div>
+              <div>
+                <dt>total</dt>
+                <dd className="detail__total">
+                  {dayTotal(detailFlow) == null
+                    ? "-" : formatVolume(dayTotal(detailFlow) as number)}
                 </dd>
               </div>
               <div>
@@ -359,6 +399,70 @@ export function Watchlist(props: WatchlistProps) {
                     the broker's own book, as observed {formatClock(book.at)}
                   </p>
                 : null}
+            {tape !== undefined && tape !== null
+              ? (
+                <section className="tape" aria-label="live tape">
+                  <div className="tape__head">
+                    <h3 className="tape__title">Live tape</h3>
+                    <span className="tape__count">
+                      {tape.totals?.prints ?? tape.events_total} prints
+                    </span>
+                  </div>
+                  <dl className="detail__stats detail__stats--flow tape__totals">
+                    <div>
+                      <dt>buy</dt>
+                      <dd className="detail__buy">
+                        {tape.totals?.buy_volume == null
+                          ? "-" : formatVolume(tape.totals.buy_volume)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>sell</dt>
+                      <dd className="detail__sell">
+                        {tape.totals?.sell_volume == null
+                          ? "-" : formatVolume(tape.totals.sell_volume)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>total</dt>
+                      <dd className="detail__total">
+                        {tape.totals?.classified_volume == null
+                          ? "-" : formatVolume(tape.totals.classified_volume)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <ul className="tape__list">
+                    {tape.events.slice(-40).reverse().map((event, at) => (
+                      <li
+                        key={`${event.t}-${at}`}
+                        className="tape__row"
+                      >
+                        <span className="tape__time">
+                          {formatClockSeconds(event.t)}
+                        </span>
+                        <span className={event.side === "B"
+                          ? "tape__side tape__side--buy"
+                          : event.side === "S"
+                            ? "tape__side tape__side--sell"
+                            : "tape__side"}>
+                          {event.side === "B" ? "B" : event.side === "S" ? "S" : "–"}
+                        </span>
+                        <span className="tape__price">
+                          {formatPrice(event.price)}
+                        </span>
+                        <span className="tape__size">
+                          {event.size == null
+                            ? "–" : formatVolume(event.size)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {tape.notes.length > 0
+                    ? <p className="watchlist__note">{tape.notes.join(" ")}</p>
+                    : null}
+                </section>
+              )
+              : null}
           </>
         )}
       </section>

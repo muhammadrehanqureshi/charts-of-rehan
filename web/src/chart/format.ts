@@ -32,6 +32,14 @@ const stampFormat = new Intl.DateTimeFormat("en-GB", {
   hour12: false,
 });
 
+const clockSecondsFormat = new Intl.DateTimeFormat("en-GB", {
+  timeZone: KARACHI,
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
 export function formatClock(iso: string): string {
   const moment = new Date(iso);
   if (Number.isNaN(moment.getTime())) {
@@ -54,6 +62,15 @@ export function formatStamp(iso: string): string {
     return iso;
   }
   return stampFormat.format(moment);
+}
+
+/** A print clock, to the second the tape itself names. */
+export function formatClockSeconds(iso: string): string {
+  const moment = new Date(iso);
+  if (Number.isNaN(moment.getTime())) {
+    return iso;
+  }
+  return clockSecondsFormat.format(moment);
 }
 
 export function formatPrice(value: number, decimals = 2): string {

@@ -254,7 +254,10 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
           if (bought !== undefined && sold !== undefined
               && Number.isFinite(bought) && Number.isFinite(sold)) {
             value = bought - sold;
-          } else {
+          } else if (data.buy === undefined || data.sell === undefined) {
+            // Preserve the old signed-volume proxy only when this payload has
+            // no tape split at all. Missing classified windows in a live tape
+            // remain NaN; candle colour is not buyer/seller evidence.
             const volume = data.volume[index];
             const open = data.open[index];
             const close = data.close[index];
