@@ -140,6 +140,15 @@ export const DEFINITIONS: readonly IndicatorDefinition[] = [
     lines: [{ key: "obv", label: "OBV" }],
   },
   {
+    type: "volume",
+    label: "Volume",
+    description: "Total traded volume per bar in its own pane, coloured " +
+      "green on an up bar and red on a down bar.",
+    placement: "pane",
+    params: [],
+    lines: [],
+  },
+  {
     type: "volumedelta",
     label: "Volume Delta",
     description: "Buy volume minus sell volume per bar, from the tape's own " +
