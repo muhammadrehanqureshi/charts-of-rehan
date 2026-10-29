@@ -270,10 +270,10 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
       case "volumedelta": {
         // The tape's own split when it exists, the candle's signed volume
         // otherwise. A bar the tape never classified says so (NaN) rather
-        // than borrowing the neighbour's number.
+        // than borrowing the neighbour's number. Per-bar bars only: a
+        // cumulative line on the same axis would rescale the pane by the
+        // week's running sum and flatten every bar into invisibility.
         const net = filled(data.length);
-        const cumulative = filled(data.length);
-        let running = 0;
         for (let index = 0; index < data.length; index += 1) {
           const bought = data.buy?.[index];
           const sold = data.sell?.[index];
@@ -294,14 +294,10 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
             }
           }
           net[index] = value;
-          if (Number.isFinite(value)) {
-            running += value;
-            cumulative[index] = running;
-          }
         }
         return {
           id: spec.id, type: spec.type, label, placement,
-          lines: [line("cumulative", "Cumulative Δ", colour, cumulative)],
+          lines: [],
           histogram: {
             values: net,
             positive: "#089981",
