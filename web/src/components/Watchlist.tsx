@@ -388,6 +388,29 @@ export function Watchlist(props: WatchlistProps) {
                       </span>
                     </dd>
                   </div>
+                  <>
+                      <div>
+                        <dt className="detail__bookhead">buy (session)</dt>
+                        <dd className="detail__buy">
+                          {detailFlow?.buy_volume == null
+                            ? "-" : formatVolume(detailFlow.buy_volume)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="detail__bookhead">sell (session)</dt>
+                        <dd className="detail__sell">
+                          {detailFlow?.sell_volume == null
+                            ? "-" : formatVolume(detailFlow.sell_volume)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="detail__bookhead">B+S total</dt>
+                        <dd className="detail__total">
+                          {dayTotal(detailFlow) == null
+                            ? "-" : formatVolume(dayTotal(detailFlow) as number)}
+                        </dd>
+                      </div>
+                  </>
                 </dl>
               )
               : null}

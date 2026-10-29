@@ -946,6 +946,14 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* The session's own buy / sell / buy+sell totals, the third pair in the
+ * same grid: the numbers answer the question the book plate opens with -
+ * what did the session actually trade across this resting quote. */
+.detail__book dt.detail__bookhead {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+
 /* ------------------------------------------------------- live tape plate */
 
 /* The tape's own print ledger, read to the one-second tick: the day's own
