@@ -13,7 +13,7 @@ All routes are served by `charts/http.py`. Every answer is JSON with
 | `GET /api/bars?symbol=..&resolution=..&limit=..&day=..&days=N` | one chart payload; `day` names one stored session, `days` bigger than one merges that many newest sessions into a single intraday chart with gaps kept honest |
 | `GET /api/book?symbol=` | One symbol's top of the venue's own book, as the tape last observed it: bid and ask with their resting sizes and `at` (when it was seen). An index, a thin scrip or a stored session answers a `note` instead of zeros. |
 | `GET /api/sessions` | every session this service can draw, newest first, with today and the timezone stated |
-| `GET /api/prints?symbol=..&day=..&limit=..` | one symbol's order-print report for a day, see below |
+| `GET /api/prints?symbol=..&day=..&limit=..&days=..` | one symbol's order-print report for a day, see below |
 | `GET /api/orderflow?day=..` | every symbol's buy/sell split for one session, in one answer, see below |
 | `GET /api/delta?symbol=..&day=..` | one symbol's per-minute buy and sell volume, see below |
 | `GET /api/stream?symbol=..&resolution=..` | Server-Sent Events, see below |
@@ -102,6 +102,11 @@ events for one session into the ledger a chart can draw beside the candles:
 
 `limit` bounds the tail (at most 8000) and `events_total` always names how
 many events the day produced, so a client that wants more knows to ask.
+With `days` above one the report also carries `days`: the newest sessions
+with a tape on disk, each with its own totals (`day`, `totals`,
+`events_total`), so a tape box can show every day's buy/sell/total the way
+the venue's own counter does. A named `day` is still honoured and its row
+stays in the table even when the newest window has moved past it.
 The totals are the tape's own running counters split by the same window
 rules the volume card uses, so the ledger and the card can never disagree;
 everything traded before the tape first saw the symbol is reported as
