@@ -55,3 +55,8 @@ desktop.ini
 # local dev-server logs (never in a commit)
 web/vite.out.log
 web/vite.err.log
+
+# agent-session dev artifacts: runtime logs, pids, debug screenshots
+.devlogs/
+rec_pid.txt
+screenshots/
