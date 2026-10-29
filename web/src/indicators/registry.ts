@@ -152,10 +152,10 @@ export const DEFINITIONS: readonly IndicatorDefinition[] = [
     type: "volumedelta",
     label: "Volume Delta",
     description: "Buy volume minus sell volume per bar, from the tape's own " +
-      "counters, with the session's cumulative delta as a line.",
+      "counters, drawn as per-bar green/red bars.",
     placement: "pane",
     params: [],
-    lines: [{ key: "cumulative", label: "Cumulative Δ" }],
+    lines: [],
   },
   {
     type: "formula",
