@@ -78,7 +78,8 @@ class IndexFeedCase(unittest.TestCase):
     def source(self, clock: datetime = MONDAY_1100) -> TapeSource:
         return TapeSource(clock=lambda: clock,
                           capture_dirs=(self.captures,),
-                          archive_dir=self.tmp / "archive")
+                          archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
 
     @staticmethod
     def stamps(minutes: int) -> list[str]:

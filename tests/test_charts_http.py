@@ -423,7 +423,8 @@ class TapeRoutesTest(ServerCase):
         source = TapeSource(clock=clock,
                             universe_path=self.universe,
                             capture_dirs=(self.captures,),
-                            archive_dir=self.archive_dir, day=day)
+                            archive_dir=self.archive_dir,
+                             eod_dir=self.tmp / "eod", day=day)
         patches = [
             mock.patch("src.data.tape_bars.capture_path",
                        side_effect=lambda probe: (

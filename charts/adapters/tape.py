@@ -62,6 +62,7 @@ from charts.adapters.base import Capabilities  # noqa: E402
 from charts.contract import (  # noqa: E402
     RESOLUTION_MINUTE, SOURCE_TAPE, Bar, SourceInfo,
 )
+from charts.eod import EodStore  # noqa: E402
 from charts.ratelimit import UpstreamError  # noqa: E402
 
 #: The KMIALL universe, in the order it is looked for: this project's own copy
@@ -249,12 +250,14 @@ class TapeSource:
 
     def __init__(self, *, clock=now_karachi, universe_path: Path | None = None,
                  capture_dirs=None, archive_dir: Path | str | None = None,
+                 eod_dir: Path | str | None = None,
                  day: date | str | None = None) -> None:
         self._clock = clock
         self._universe_path = Path(universe_path) if universe_path else None
         self._capture_dirs = tuple(Path(item) for item in
                                    (capture_dirs or DEFAULT_CAPTURE_DIRS))
         self._archive = SessionArchive(archive_dir or DEFAULT_ARCHIVE_DIR)
+        self._eod = EodStore(eod_dir or EodStore().root)
         self._day_override = _as_date(day)
         self._cache: dict[str, tuple[tuple, "tape_bars.TapeBars"]] = {}
         #: Concurrent API workers can ask for the same newly appended file at
@@ -1145,6 +1148,20 @@ class TapeSource:
     def _calendar_days(self, session: date, resolution: str,
                        explicit: bool) -> list[date]:
         available = self._available_days()
+        # The exchange's own historical day table: every day the
+        # service banked rows for can be drawn on a calendar rung even
+        # though no recording holds intraday bars for it. A daily
+        # chart is the history, so the banked days belong on the map.
+        for day_text in self._eod.days():
+            try:
+                banked = date.fromisoformat(day_text)
+            except ValueError:
+                continue
+            if banked > self.today():
+                break
+            if banked not in available:
+                available.append(banked)
+        available.sort()
         if session not in available and self._archive.manifest(session) \
                 is not None:
             available.append(session)
@@ -1174,10 +1191,24 @@ class TapeSource:
         missing: UpstreamError | None = None
         for item in days:
             try:
-                rows.extend(self._minute_history(symbol, item))
+                part = self._minute_history(symbol, item)
             except UpstreamError as exc:
+                banked = self._eod.bar(item, symbol)
+                if banked is not None:
+                    rows.append(banked)
+                    continue
                 if item == session:
                     missing = exc
+                continue
+            if part:
+                rows.extend(part)
+                continue
+            # A day the tape genuinely holds nothing for is not an
+            # excuse to drop the bar the exchange itself published for
+            # that same day: its row in the history table is real data.
+            banked = self._eod.bar(item, symbol)
+            if banked is not None:
+                rows.append(banked)
         if not rows and missing is not None:
             raise missing
         return ladder.aggregate(rows, resolution)
