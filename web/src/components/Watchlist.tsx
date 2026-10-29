@@ -408,29 +408,67 @@ export function Watchlist(props: WatchlistProps) {
                       {tape.totals?.prints ?? tape.events_total} prints
                     </span>
                   </div>
-                  <dl className="detail__stats detail__stats--flow tape__totals">
-                    <div>
-                      <dt>buy</dt>
-                      <dd className="detail__buy">
-                        {tape.totals?.buy_volume == null
-                          ? "-" : formatVolume(tape.totals.buy_volume)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>sell</dt>
-                      <dd className="detail__sell">
-                        {tape.totals?.sell_volume == null
-                          ? "-" : formatVolume(tape.totals.sell_volume)}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>total</dt>
-                      <dd className="detail__total">
-                        {tape.totals?.classified_volume == null
-                          ? "-" : formatVolume(tape.totals.classified_volume)}
-                      </dd>
-                    </div>
-                  </dl>
+                  {tape.days.length > 0 ? (
+                    <table className="tape__days" aria-label="volume totals by day">
+                      <thead>
+                        <tr>
+                          <th scope="col">day</th>
+                          <th scope="col">buy</th>
+                          <th scope="col">sell</th>
+                          <th scope="col">total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tape.days.map((row) => (
+                          <tr key={row.day}
+                            className={row.day === tape.day
+                              ? "tape__day tape__day--now" : "tape__day"}>
+                            <td>
+                              {row.day === tape.day ? "today" : row.day}
+                            </td>
+                            <td className="detail__buy">
+                              {row.totals.buy_volume == null
+                                ? "-" : formatVolume(row.totals.buy_volume)}
+                            </td>
+                            <td className="detail__sell">
+                              {row.totals.sell_volume == null
+                                ? "-" : formatVolume(row.totals.sell_volume)}
+                            </td>
+                            <td className="detail__total">
+                              {row.totals.classified_volume == null
+                                ? "-"
+                                : formatVolume(row.totals.classified_volume)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <dl className="detail__stats detail__stats--flow tape__totals">
+                      <div>
+                        <dt>buy</dt>
+                        <dd className="detail__buy">
+                          {tape.totals?.buy_volume == null
+                            ? "-" : formatVolume(tape.totals.buy_volume)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>sell</dt>
+                        <dd className="detail__sell">
+                          {tape.totals?.sell_volume == null
+                            ? "-" : formatVolume(tape.totals.sell_volume)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>total</dt>
+                        <dd className="detail__total">
+                          {tape.totals?.classified_volume == null
+                            ? "-"
+                            : formatVolume(tape.totals.classified_volume)}
+                        </dd>
+                      </div>
+                    </dl>
+                  )}
                   <ul className="tape__list">
                     {tape.events.slice(-40).reverse().map((event, at) => (
                       <li

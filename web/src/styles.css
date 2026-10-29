@@ -982,11 +982,43 @@ button:disabled {
   margin-top: 4px;
 }
 
+.tape__days {
+  margin: 4px 0 0;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tape__days th,
+.tape__days td {
+  padding: 1px 0;
+  text-align: right;
+  font-weight: 400;
+}
+
+.tape__days th {
+  color: var(--muted);
+}
+
+.tape__days th:first-child,
+.tape__days td:first-child {
+  text-align: left;
+  color: var(--muted);
+}
+
+.tape__day--now td:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .tape__list {
   margin: 6px 0 0;
   padding: 0;
   list-style: none;
-  max-height: 168px;
+  /* Eight whole rows: a fixed height that is a row multiple never clips
+     a print in half at its scroll edge. */
+  max-height: 160px;
   overflow-y: auto;
   /* A slim, quiet rail: the native corner erases the smallest prints, and
      the reader should read to the digit, not past it. */

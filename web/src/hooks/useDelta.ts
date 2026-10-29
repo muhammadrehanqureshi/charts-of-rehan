@@ -25,6 +25,8 @@ export function useDelta(
   day: string,
   enabled: boolean,
   intervalMs = 1_000,
+  /** Sessions to merge on a live multi-day chart (0 = just `day`). */
+  days = 0,
 ): DeltaState {
   const [report, setReport] = useState<DeltaReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export function useDelta(
 
     const poll = async (): Promise<void> => {
       try {
-        const next = await client.delta(symbol, day, controller.signal);
+        const next = await client.delta(symbol, day, controller.signal, days);
         if (cancelled || runRef.current !== run) {
           return;
         }
@@ -71,7 +73,7 @@ export function useDelta(
         clearTimeout(timer);
       }
     };
-  }, [client, symbol, day, enabled, intervalMs, visible]);
+  }, [client, symbol, day, enabled, intervalMs, visible, days]);
 
   return { report, error };
 }
