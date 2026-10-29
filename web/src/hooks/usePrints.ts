@@ -33,6 +33,8 @@ export function usePrints(
   day: string,
   enabled: boolean,
   intervalMs = 1_000,
+  /** Newest sessions to carry per-day totals for (0 = just `day`). */
+  days = 0,
 ): PrintsState {
   const [report, setReport] = useState<PrintReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function usePrints(
 
     const poll = async (): Promise<void> => {
       try {
-        const next = await client.prints(symbol, day, controller.signal);
+        const next = await client.prints(symbol, day, controller.signal, days);
         if (cancelled || runRef.current !== run) {
           return;
         }
@@ -83,7 +85,7 @@ export function usePrints(
         clearTimeout(timer);
       }
     };
-  }, [client, symbol, day, enabled, intervalMs, visible]);
+  }, [client, symbol, day, enabled, intervalMs, visible, days]);
 
   return { report, error };
 }
