@@ -92,7 +92,8 @@ class FlowCase(unittest.TestCase):
         clock = lambda: MONDAY + timedelta(minutes=5)  # noqa: E731
         return TapeSource(clock=clock, universe_path=self.universe,
                           capture_dirs=(self.tmp,),
-                          archive_dir=self.tmp / "archive")
+                          archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
 
     def test_every_symbol_gets_its_own_split_in_one_pass(self):
         with mock.patch("charts.adapters.tape.tape_bars.capture_path",
@@ -128,7 +129,8 @@ class FlowCase(unittest.TestCase):
         source = TapeSource(clock=lambda: MONDAY + timedelta(minutes=5),
                             universe_path=self.universe,
                             capture_dirs=(empty,),
-                            archive_dir=self.tmp / "archive")
+                            archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
         report = source.delta_for("OGDC", DAY)
         self.assertEqual(report["minutes"], [])
         self.assertIn("no broker tape", report["note"])
@@ -202,7 +204,8 @@ class FlowHttpCase(unittest.TestCase):
         self.clock = lambda: MONDAY + timedelta(minutes=5)  # noqa: E731
         source = TapeSource(clock=self.clock, universe_path=universe,
                             capture_dirs=(self.tmp,),
-                            archive_dir=self.tmp / "archive")
+                            archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
         store = BarStore()
         ingestor = Ingestor(store, source, resolution="1m",
                             interval_seconds=5.0)
@@ -292,7 +295,8 @@ class BookCase(unittest.TestCase):
         return TapeSource(clock=lambda: MONDAY + timedelta(minutes=5),
                           universe_path=self.universe,
                           capture_dirs=(self.tmp,),
-                          archive_dir=self.tmp / "archive")
+                          archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
 
     def test_the_last_observed_book_wins(self):
         with mock.patch("charts.adapters.tape.tape_bars.capture_path",
@@ -338,7 +342,8 @@ class BookHttpCase(unittest.TestCase):
         clock = lambda: MONDAY + timedelta(minutes=5)  # noqa: E731
         source = TapeSource(clock=clock, universe_path=universe,
                             capture_dirs=(self.tmp,),
-                            archive_dir=self.tmp / "archive")
+                            archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
         store = BarStore()
         ingestor = Ingestor(store, source, resolution="1m",
                             interval_seconds=5.0)
