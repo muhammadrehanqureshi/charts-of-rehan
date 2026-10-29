@@ -116,7 +116,8 @@ class ArchiveCase(unittest.TestCase):
     def source(self, clock: datetime = MONDAY_1100, **kwargs) -> TapeSource:
         fields = dict(clock=lambda: clock, universe_path=self.universe,
                       capture_dirs=(self.captures,),
-                      archive_dir=self.archive_dir)
+                      archive_dir=self.archive_dir,
+                          eod_dir=self.tmp / "eod")
         fields.update(kwargs)
         return TapeSource(**fields)
 
@@ -532,7 +533,8 @@ class ReadUniverseInTheTapeAdapterTest(ArchiveCase):
             source = TapeSource(clock=lambda: MONDAY_1100,
                                 universe_path=wrong,
                                 capture_dirs=(self.captures,),
-                                archive_dir=self.archive_dir)
+                                archive_dir=self.archive_dir,
+                          eod_dir=self.tmp / "eod")
             bars = source.history("OGDC", "1m")
             notes = source.notes("OGDC")
         self.assertEqual(len(bars), 3)

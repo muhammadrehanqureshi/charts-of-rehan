@@ -303,7 +303,8 @@ class TapeTest(unittest.TestCase):
         # intentionally asks for a missing recording or catalogue.
         return TapeSource(clock=lambda: clock, universe_path=self.universe,
                           capture_dirs=(self.tmp,),
-                          archive_dir=self.tmp / "archive")
+                          archive_dir=self.tmp / "archive",
+                          eod_dir=self.tmp / "eod")
 
     def test_minute_prints_become_one_bar_per_minute(self):
         minute = MONDAY_MARKET_OPEN + timedelta(minutes=1)
