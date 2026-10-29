@@ -109,10 +109,9 @@ describe("indicator engine", () => {
     expect(histogram[0]).toBe(40);
     expect(histogram[1]).toBe(-50);
     expect(histogram[2]).toBe(-20);
-    const cumulative = output?.lines[0]?.values ?? new Float64Array();
-    expect(cumulative[0]).toBe(40);
-    expect(cumulative[1]).toBe(-10);
-    expect(cumulative[2]).toBe(-30);
+    // Per-bar bars only: a panescale shared with the week's running sum
+    // would flatten the bars, so the pane draws no cumulative line.
+    expect(output?.lines.length ?? -1).toBe(0);
   });
 
   it("falls back to the bar's signed volume when the tape has no split", () => {
