@@ -244,6 +244,23 @@ class FlowHttpCase(unittest.TestCase):
         self.assertEqual(rows["OGDC"]["buy_volume"], 600)
         self.assertEqual(answer["body"]["timezone"], "Asia/Karachi")
 
+    def test_the_prints_route_carries_per_day_totals_for_a_named_day(self):
+        # A live chart always names the session it draws (today), so the
+        # span must be honoured even with a ``day`` in the query; otherwise
+        # the tape box's per-day table would never exist on screen.
+        answer = self.get(
+            "/api/prints?symbol=OGDC&day=2026-10-12&days=3&limit=5")
+        self.assertEqual(answer["status"], 200)
+        days = answer["body"]["days"]
+        self.assertEqual([row["day"] for row in days], ["2026-10-12"])
+        self.assertEqual(days[0]["totals"]["buy_volume"], 600)
+
+    def test_the_prints_route_carries_per_day_totals_unnamed(self):
+        answer = self.get("/api/prints?symbol=OGDC&days=3&limit=5")
+        self.assertEqual(answer["status"], 200)
+        self.assertEqual([row["day"] for row in answer["body"]["days"]],
+                         ["2026-10-12"])
+
     def test_the_delta_route_reports_the_minutes_for_one_symbol(self):
         answer = self.get("/api/delta?symbol=OGDC&day=2026-10-12")
         self.assertEqual(answer["status"], 200)

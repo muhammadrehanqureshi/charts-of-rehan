@@ -494,7 +494,7 @@ class TapeSource:
 
     # ------------------------------------------------------------ prints
     def prints_for(self, symbol: str, day: date | str | None = None,
-                   limit: int = 3000) -> dict:
+                   limit: int = 3000, *, days: int = 0) -> dict:
         """The tape's own order prints for one symbol, by day.
 
         The events and the totals are the venue's own facts (the same capture
@@ -507,6 +507,11 @@ class TapeSource:
         into the fold's running state, the same law the book scanner obeys.
         A replaced or truncated capture resets the fold; a stored capture
         that never grows costs one stat call per ask after its first read.
+
+        With ``days`` above one the report carries ``days``: the newest
+        sessions with a tape on disk, each with its own
+        totals, so the tape box can show every day's buy/sell/total the way
+        the venue's own counter does.
         """
         wanted = symbol.strip().upper()
         # The same fallback the catalogue and the order flow use: an unnamed
@@ -514,6 +519,51 @@ class TapeSource:
         # Sunday it reads Friday's tape instead of failing on today's empty
         # one.
         session = self.flow_day(day)
+        primary = self._prints_report(wanted, session, limit)
+        span = max(0, int(days))
+        if span <= 1:
+            return primary
+        # Per-day totals: read each candidate's ledger through the same
+        # folds, totals only (one kept event is enough to ask for). A day
+        # without a tape is left out, not an error: the box names the days
+        # it has. A named session stays in the table even when the newest
+        # window has moved past it, because the box highlights the session
+        # the chart is drawing.
+        per_day: list[dict] = []
+        for candidate in reversed(self._available_days()):
+            if len(per_day) >= span:
+                break
+            try:
+                one = self._prints_report(wanted, candidate, 1)
+            except UpstreamError:
+                continue
+            totals = one["totals"]
+            if totals["volume"] is None and totals["prints"] == 0:
+                continue
+            per_day.append({"day": one["day"], "totals": totals,
+                            "events_total": one["events_total"]})
+        if day:
+            if not any(str(row["day"]) == session.isoformat()
+                       for row in per_day):
+                try:
+                    one = self._prints_report(wanted, session, 1)
+                    totals = one["totals"]
+                    if not (totals["volume"] is None and totals["prints"] == 0):
+                        per_day.append({"day": one["day"], "totals": totals,
+                                        "events_total": one["events_total"]})
+                except UpstreamError:
+                    pass
+                per_day.sort(key=lambda row: row["day"])
+        primary["days"] = per_day
+        if not per_day:
+            primary["notes"] = [
+                "no broker tape is banked for the newest sessions, so there "
+                "are no per-day totals to list"]
+        return primary
+
+    def _prints_report(self, wanted: str, session: date,
+                       limit: int) -> dict:
+        """One session's ledger, streamed through the fold's own state."""
         path = self.capture_for(session)
         if path is None:
             raise UpstreamError(
@@ -595,8 +645,15 @@ class TapeSource:
             fold["offset"] = max(end, fold["offset"])
         return sorted(fold["fold"].rows(), key=lambda item: item["symbol"])
 
-    def delta_for(self, symbol: str, day: date | str | None = None) -> dict:
+    def delta_for(self, symbol: str, day: date | str | None = None,
+                  *, days: int = 0) -> dict:
         """One symbol's per-minute buy/sell volume for a session.
+
+        With ``days`` above one (and no ``day`` named) the newest sessions
+        with a capture on disk are merged, oldest first, the way the merged
+        chart itself merges them: a volume-delta pane on a multi-day chart
+        reads every session whose tape is still on the disk, and reports the
+        sessions it had to leave out.
 
         The split comes from the venue's own running counter, classified by
         the same law the order ledger uses, so a volume-delta pane and the
@@ -608,7 +665,39 @@ class TapeSource:
         not an error.
         """
         wanted = symbol.strip().upper()
-        session = self.flow_day(day)
+        span = max(0, int(days))
+        if span <= 1 or day:
+            return self._delta_one(wanted, self.flow_day(day))
+        # A merged chart's delta: the newest sessions that still have a
+        # capture on disk, oldest first - the same days the chart itself
+        # would read. Sessions only in the archive lack a capture to fold,
+        # so they are named in the answer rather than silently missing.
+        rows: list[dict] = []
+        days_served: list[str] = []
+        days_missing: list[str] = []
+        for candidate in reversed(self._available_days()):
+            if len(days_served) >= max(1, span):
+                break
+            report = self._delta_one(wanted, candidate)
+            if report["minutes"]:
+                rows = [*report["minutes"], *rows]
+                days_served.append(candidate.isoformat())
+            elif "no broker tape" not in report["note"]:
+                days_missing.append(candidate.isoformat())
+        note = ("" if days_served else "no broker tape is banked for any "
+                "of the newest sessions, so there is no per-minute buy/sell "
+                "split to read")
+        if days_missing:
+            note = (f"{note}; " if note else "") + (
+                f"sessions without a capture on disk "
+                f"({', '.join(days_missing)}) are absent")
+        return {"symbol": wanted,
+                "day": (days_served[0] if days_served
+                        else self.flow_day().isoformat()),
+                "minutes": rows, "note": note}
+
+    def _delta_one(self, wanted: str, session: date) -> dict:
+        """One session's per-minute split, folded on its capture."""
         path = self.capture_for(session)
         if path is None:
             return {"symbol": wanted, "day": session.isoformat(),

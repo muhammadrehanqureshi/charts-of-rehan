@@ -163,6 +163,8 @@ export interface ChartCanvasProps {
 interface PaneRef {
   readonly lines: readonly ISeriesApi<"Line", Time>[];
   readonly histogram?: ISeriesApi<"Histogram", Time>;
+  /** The study pane this output owns, for the off-switch's removal. */
+  readonly pane?: number;
 }
 
 interface EngineState {
@@ -312,7 +314,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     () => indicators
       .map((spec) =>
         `${spec.id}:${spec.type}:${spec.placement ?? ""}:${spec.color}:` +
-        `${JSON.stringify(spec.params)}`)
+        `${JSON.stringify(spec.params)}:${spec.visible ? "1" : "0"}`)
       .join("|"),
     [indicators],
   );
@@ -394,6 +396,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
         priceFormatter: (price: number) => formatPrice(price, decimals),
       },
     });
+    // A dev-only handle: a broken pane only shows itself live, so the
+    // console needs the engine to name what it built. Production strips it.
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__chartsEngine = chart;
+    }
 
     const candles = chart.addSeries(CandlestickSeries, {
       upColor: tokens.up,
@@ -555,7 +562,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const data: SeriesData = hasFlow
       ? { ...base, buy: flow.buy, sell: flow.sell }
       : base;
-    state.deltaShown = wantsDelta && hasFlow && volumeAvailable;
+    // The delta study owns its own pane (the registry's placement), so the
+    // price pane never draws the split twice: with the study on, the plate
+    // shows nothing and the candles keep the full height; with it off, the
+    // plain volume overlay is the plate again.
+    state.deltaShown = wantsDelta;
     const tokens = TV_DARK_THEME;
     state.data = data;
     state.index.clear();
@@ -586,20 +597,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       candlesData.push({
         time: seconds as UTCTimestamp, open, high, low, close,
       });
-      if (state.deltaShown) {
-        const bought = data.buy?.[i];
-        const sold = data.sell?.[i];
-        if (bought !== undefined && sold !== undefined
-            && Number.isFinite(bought) && Number.isFinite(sold)) {
-          const net = bought - sold;
-          volumeData.push({
-            time: seconds as UTCTimestamp,
-            value: net,
-            color: net >= 0 ? withAlpha(tokens.up, 0.55)
-              : withAlpha(tokens.down, 0.55),
-          });
-        }
-      } else if (!wantsDelta) {
+      if (!wantsDelta) {
         const value = data.volume[i];
         if (value !== undefined && Number.isFinite(value)) {
           volumeData.push({
@@ -619,11 +617,21 @@ export function ChartCanvas(props: ChartCanvasProps) {
     state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
+      // An empty plate is cleared, not left with stale bars behind the
+      // candles when the reader turns the delta study on.
       state.volume.setData(volumeData);
       state.volume.priceScale().applyOptions({
         scaleMargins: state.deltaShown
-          ? { top: 0.72, bottom: 0 }
+          ? { top: 0.12, bottom: 0.12 }
           : { top: 0.82, bottom: 0 },
+      });
+      // The candles' own scale: with the delta pane carrying the split the
+      // price pane need not reserve the plate strip; without it the strip
+      // keeps the volume bars from hiding behind price.
+      state.chart.priceScale("right").applyOptions({
+        scaleMargins: state.deltaShown
+          ? { top: 0.08, bottom: 0.12 }
+          : { top: 0.08, bottom: 0.24 },
       });
     }
 
@@ -640,8 +648,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // not touched the chart (a merged span lands after the live snapshot of
     // one session, and the chart must show the span, not the snapshot). Once
     // the reader pans or zooms, nothing here moves their window again.
-    const widened = candlesData.length > fitCount.current;
-    if (fitKey.current !== viewKey || (!zoomed.current && widened)) {
+    const fit = candlesData.length > fitCount.current
+      || candlesData.length < fitCount.current;
+    if (fitKey.current !== viewKey || (!zoomed.current && fit)) {
       fitKey.current = viewKey;
       fitCount.current = candlesData.length;
       // Open on the newest session's own width, not on five days squeezed
@@ -650,7 +659,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // continuous series is for.
       const newest = Math.min(WINDOW_BARS, candlesData.length);
       state.chart.timeScale().setVisibleLogicalRange({
-        from: candlesData.length - newest,
+        from: Math.max(0, candlesData.length - newest),
         to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
       });
     }
@@ -1063,6 +1072,30 @@ function buildIndicators(
   // Pane 0 is the price (volume rides its own overlay scale), so the first
   // study pane is pane 1.
   let nextPane = 1;
+  // A study the reader switched off draws no output at all, so the loop
+  // below never reaches it: sweep the specs first and take every series
+  // their pane still holds back off the chart, then give the pane itself
+  // back to the chart.
+  const drawn = new Set(outputs
+    .filter((output) => output.error === undefined)
+    .map((output) => output.id));
+  for (const spec of specs) {
+    if (drawn.has(spec.id) || !state.panes.has(spec.id)) {
+      continue;
+    }
+    const stale = state.panes.get(spec.id)!;
+    for (const gone of stale.lines) {
+      state.chart.removeSeries(gone);
+    }
+    if (stale.histogram !== undefined) {
+      state.chart.removeSeries(stale.histogram);
+    }
+    const stalePane = stale.pane;
+    if (stalePane !== undefined) {
+      state.chart.removePane(stalePane);
+    }
+    state.panes.delete(spec.id);
+  }
   for (const output of outputs) {
     if (output.error !== undefined) {
       continue;
@@ -1090,7 +1123,7 @@ function buildIndicators(
       state.chart.addPane().setStretchFactor(1);
       nextPane += 1;
     }
-    const    lines: ISeriesApi<"Line", Time>[] = [];
+    const lines: ISeriesApi<"Line", Time>[] = [];
     for (const line of output.lines) {
       const points = lineData(data, line.values);
       if (points.length === 0) {
@@ -1121,12 +1154,20 @@ function buildIndicators(
     const ref: PaneRef = histogram === undefined
       ? { lines }
       : { lines, histogram };
-    state.panes.set(output.id, ref);
+    state.panes.set(output.id,
+      isPane ? { ...ref, pane: paneIndex } : ref);
   }
+  // The pane stretch is what a fresh build loses: with the series attached
+  // and measured, pin the price pane at four shares and every study pane
+  // at one, so a pane never collapses back to zero height.
+  state.chart.panes().forEach((pane, index) => {
+    pane.setStretchFactor(index === 0 ? 4 : 1);
+  });
 }
 
 /** A fixed indicator range (RSI 0-100) pins its pane's scale. */
-function fixRange(    series: ISeriesApi<"Line", Time> | ISeriesApi<"Histogram", Time>,
+function fixRange(
+  series: ISeriesApi<"Line", Time> | ISeriesApi<"Histogram", Time>,
   range: readonly [number, number] | null | undefined,
 ): void {
   if (range === undefined || range === null) {

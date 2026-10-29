@@ -284,12 +284,19 @@ class ChartHandler(BaseHTTPRequestHandler):
                 "totals": None,
                 "events": [],
                 "events_total": 0,
+                "days": [],
                 "notes": [f"this source ({self.state.source.name}) serves "
                           f"bars without a print tape, so no order ledger "
                           f"exists to show"],
             })
             return
-        report = prints_for(symbol, day or None, limit=limit)
+        try:
+            span = max(0, min(30, int(query.get("days", "0"))))
+        except ValueError:
+            self._send_error_json(400, "BAD_DAYS",
+                                  "days must be a whole number")
+            return
+        report = prints_for(symbol, day or None, limit=limit, days=span)
         self._send_json({"ok": True, **report})
 
     def _orderflow(self, query: dict) -> None:
@@ -360,7 +367,13 @@ class ChartHandler(BaseHTTPRequestHandler):
                         f"split to report",
             })
             return
-        report = delta_for(symbol, day or None)
+        try:
+            days = max(0, min(60, int(query.get("days", "0"))))
+        except ValueError:
+            self._send_error_json(400, "BAD_DAYS",
+                                  "days must be a whole number")
+            return
+        report = delta_for(symbol, day or None, days=days)
         self._send_json({"ok": True,
                          "timezone": str(sessions.law.KARACHI),
                          **report})
