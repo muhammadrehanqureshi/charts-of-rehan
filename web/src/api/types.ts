@@ -691,6 +691,27 @@ export function parsePrints(raw: unknown): PrintReport {
     day: optionalStr(value["day"]) ?? "",
     totals,
     events_total: num(value["events_total"], "prints.events_total"),
+    days: array(value["days"] ?? [], "prints.days").map(
+      (item, index) => {
+        const row = record(item, `prints.days[${index}]`);
+        const dayTotals = record(row["totals"], `prints.days[${index}].totals`);
+        return {
+          day: str(row["day"], `prints.days[${index}].day`),
+          events_total:
+            num(row["events_total"], `prints.days[${index}].events_total`),
+          totals: {
+            orders: optionalNum(dayTotals["orders"]),
+            volume: optionalNum(dayTotals["volume"]),
+            prints: num(dayTotals["prints"],
+              `prints.days[${index}].totals.prints`),
+            buy_volume: optionalNum(dayTotals["buy_volume"]),
+            sell_volume: optionalNum(dayTotals["sell_volume"]),
+            classified_volume: optionalNum(dayTotals["classified_volume"]),
+            unclassified_volume: optionalNum(dayTotals["unclassified_volume"]),
+            coverage: optionalNum(dayTotals["coverage"]),
+          },
+        };
+      }),
     notes: noteList === undefined ? [] : array(noteList, "prints.notes").map(String),
     events: array(value["events"] ?? [], "prints.events").map(
       (item, index) => {
@@ -748,12 +769,23 @@ export interface PrintTotals {
   readonly coverage: number | null;
 }
 
+export interface PrintDayRow {
+  /** The session the totals belong to, `YYYY-MM-DD`. */
+  readonly day: string;
+  /** That day's own venue counters and evidence split. */
+  readonly totals: PrintTotals;
+  /** How many fresh prints that day's tape saw. */
+  readonly events_total: number;
+}
+
 export interface PrintReport {
   readonly symbol: string;
   readonly day: string;
   readonly totals: PrintTotals | null;
   readonly events: readonly PrintEvent[];
   readonly events_total: number;
+  /** The newest sessions' own totals, when the ask named a span. */
+  readonly days: readonly PrintDayRow[];
   readonly notes: readonly string[];
 }
 

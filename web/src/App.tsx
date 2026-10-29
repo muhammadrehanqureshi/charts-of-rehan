@@ -412,9 +412,14 @@ export function App() {
     day,
     days: day.length === 0 ? SPAN_SESSIONS : undefined,
   });
-  // The tape's own per-minute buy/sell split, for the volume-delta plate.
-  const delta = useDelta(client, symbol, feed.meta.session?.day ?? day,
-    symbol.length > 0);
+  // The tape's own per-minute buy/sell split, for the volume-delta pane. A
+  // live multi-day chart reads the merged span (days, unnamed), so every
+  // pane's session is drawn from its own tape; a stored session reads only
+  // its own capture.
+  const delta = useDelta(client, symbol,
+    day.length === 0 ? "" : (feed.meta.session?.day ?? day),
+    symbol.length > 0, 1_000,
+    day.length === 0 ? SPAN_SESSIONS : 0);
 
   // The venue's own book, for the plate under the volume split: a cadence
   // read that stops with the stored session and with the hidden tab.
@@ -425,7 +430,8 @@ export function App() {
   // one-second tick. A stored drawn-from-archive session never grows, so
   // asking for its ledger would only read a file that is gone.
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
-    symbol.length > 0 && !(feed.meta.session?.archived ?? false));
+    symbol.length > 0 && !(feed.meta.session?.archived ?? false),
+    1_000, SPAN_SESSIONS);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);

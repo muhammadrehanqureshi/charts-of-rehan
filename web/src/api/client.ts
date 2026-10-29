@@ -199,10 +199,14 @@ export class ChartClient {
     symbol: string,
     day = "",
     signal?: AbortSignal,
+    days = 0,
   ): Promise<PrintReport> {
     const query = new URLSearchParams({ symbol });
     if (day.length > 0) {
       query.set("day", day);
+    }
+    if (days > 1) {
+      query.set("days", String(days));
     }
     const raw = await this.request(
       `${this.baseUrl}/api/prints?${query.toString()}`, signal);
@@ -257,10 +261,14 @@ export class ChartClient {
     symbol: string,
     day = "",
     signal?: AbortSignal,
+    days = 0,
   ): Promise<DeltaReport> {
     const query = new URLSearchParams({ symbol });
     if (day.length > 0) {
       query.set("day", day);
+    }
+    if (days > 1 && day.length === 0) {
+      query.set("days", String(days));
     }
     const raw = await this.request(
       `${this.baseUrl}/api/delta?${query.toString()}`, signal);
