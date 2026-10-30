@@ -450,13 +450,20 @@ class ChartHandler(BaseHTTPRequestHandler):
                 f"{', '.join(self.state.source.capabilities().resolutions)}")
             return
         try:
-            limit = max(1, min(5000, int(query.get("limit", "1500"))))
+            # The tail is the part a live intraday chart reads, but a calendar
+            # rung is history itself: ten years of Karachi sessions are two and
+            # a half thousand daily bars, so a calendar request whose caller
+            # left the default in place is answered deeper, with the decade
+            # the store actually holds rather than its newest two years.
+            limit_raw = query.get("limit")
+            default = 4500 if resolution in ("1D", "1W", "1M") else 1500
+            limit = max(1, min(9000, int(limit_raw or default)))
         except ValueError:
             self._send_error_json(400, "BAD_LIMIT",
                                   "limit must be a whole number")
             return
         try:
-            days = max(0, min(60, int(query.get("days", "0"))))
+            days = max(0, min(400, int(query.get("days", "0"))))
         except ValueError:
             self._send_error_json(400, "BAD_DAYS",
                                   "days must be a whole number")

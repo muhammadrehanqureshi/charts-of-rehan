@@ -477,6 +477,20 @@ export function ChartCanvas(props: ChartCanvasProps) {
         width: Math.max(MIN_WIDTH, surfaceEl.clientWidth),
         height: Math.max(MIN_HEIGHT, surfaceEl.clientHeight),
       });
+      // A resize after the fit used to slide the window sideways while the
+      // engine held the old bar spacing, so the bars ended as a squeezed
+      // band far from the frame's edges (a 17-bar hour chart drew inside
+      // 200px of a 1400px pane). While the window is still the chart's own
+      // - the reader has not panned or zoomed - re-assert the same logical
+      // range at the new width, which is a pure rescale. A reader's own
+      // zoom is never touched.
+      if (!zoomed.current && fitCount.current > 0) {
+        const newest = Math.min(WINDOW_BARS, fitCount.current);
+        chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, fitCount.current - newest),
+          to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
+        });
+      }
     };
     const observer = new ResizeObserver(resize);
     observer.observe(surfaceEl);

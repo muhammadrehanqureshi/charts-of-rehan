@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import shutil
 import sys
@@ -16,8 +17,8 @@ sys.path.insert(0, str(ROOT))
 
 from charts.adapters.tape import TapeSource  # noqa: E402
 from charts.eod import (  # noqa: E402
-    EodStore, backfill, eod_bar, fetch_day, parse_history_table,
-    weekday_range,
+    EodStore, backfill, eod_bar, fetch_day, import_csv,
+    parse_history_table, weekday_range,
 )
 from charts.ratelimit import UpstreamError  # noqa: E402
 
@@ -44,6 +45,56 @@ OGDC_ROW = ["OGDC", "212.50", "213.00", "215.00", "211.00", "214.00",
             "1.50", "0.71%", "1,234,567"]
 PRL_ROW = ["PRL", "93.20", "93.00", "94.10", "92.50", "93.65",
            "0.45", "0.48%", "886,812"]
+
+
+class ImportCsvTest(unittest.TestCase):
+    """Folding a dataset of day rows into the per-day store."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.store = EodStore(self.tmp)
+
+    def test_a_dataset_week_is_stored_day_whole(self):
+        file = Path(self.tmp) / "week.csv"
+        file.write_text(
+            "date,symbol,open,high,low,close,volume\n"
+            "2026-01-05,OGDC,213.00,215.00,211.00,214.00,1234567\n"
+            "2026-01-05,PRL,93.00,94.10,92.50,93.65,886812\n"
+            "2026-01-06,OGDC,214.00,216.00,213.00,215.50,2345678\n",
+            encoding="utf-8")
+        summary = import_csv(self.store, file)
+        self.assertEqual(summary["groups"], 2)
+        self.assertEqual(summary["stored"], 2)
+        read = self.store.read(date(2026, 1, 5))
+        self.assertEqual(len(read), 2)
+        self.assertEqual(read["OGDC"], {"symbol": "OGDC", "o": 213.0,
+            "h": 215.0, "l": 211.0, "c": 214.0, "v": 1234567.0})
+
+    def test_a_day_the_exchange_already_answered_is_left_alone(self):
+        file = Path(self.tmp) / "week.csv"
+        file.write_text(
+            "date,symbol,open,high,low,close,volume\n"
+            "2026-01-07,OGDC,214.00,216.00,213.00,215.50,1\n",
+            encoding="utf-8")
+        summary = import_csv(self.store, file)
+        self.assertEqual(summary["skipped"], 0)
+        # The same file again: one day, now already stored.
+        summary = import_csv(self.store, file)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["stored"], 0)
+
+    def test_a_crowded_dataset_file_is_read_decoded(self):
+        start = date(2020, 3, 1)
+        rows = ["date,symbol,open,high,low,close,volume"]
+        for index in range(119):
+            day = (start + timedelta(days=index)).isoformat()
+            rows.append(f"{day},X,1,2,0.5,1.5,10")
+        file = Path(self.tmp) / "big.csv.gz"
+        with gzip.open(file, "wt", encoding="utf-8") as stream:
+            stream.write("\n".join(rows) + "\n")
+        summary = import_csv(self.store, file)
+        self.assertEqual(summary["stored"], 119)
 
 
 class ParseTest(unittest.TestCase):

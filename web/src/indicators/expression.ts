@@ -76,11 +76,14 @@ const SETTING_PREFIXES = [
  *
  * The editor used to hold four hundred characters, which is less than a
  * single real indicator: a reader pasting their own study hit the ceiling
- * before the parser ever saw the maths. Eight thousand characters with four
- * thousand tokens is several screens of a Pine-style script and still ends.
+ * before the parser ever saw the maths. The limit the chart promises is a
+ * line count - up to one thousand lines of a Pine-style script - and the
+ * character and token ceilings are set wide enough that a script inside
+ * that line limit is never refused for being long, only for being wrong.
  */
-const MAX_SOURCE = 8_000;
-const MAX_TOKENS = 4_096;
+const MAX_LINES = 1_000;
+const MAX_SOURCE = 100_000;
+const MAX_TOKENS = 24_576;
 const MAX_DEPTH = 48;
 
 /** Every statement of a script, so `x = ...` lines can be read back. */
@@ -832,6 +835,10 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
   }
   if (clean.length > MAX_SOURCE) {
     throw new FormulaError(`the formula is longer than ${MAX_SOURCE} characters`);
+  }
+  if (normaliseScript(source).split(/[\r\n]+/).length > MAX_LINES) {
+    throw new FormulaError(
+      `the formula is longer than ${MAX_LINES} lines`);
   }
   let program: Statement[];
   try {
