@@ -276,6 +276,29 @@ class EodStore:
         self._read_cache[text] = rows
         return rows
 
+    def prune(self, before: date) -> list[str]:
+        """Drop every day older than ``before``, oldest side of the window.
+
+        The store is a rolling ten-year window, so its first day moves forward
+        as the market's clock does: a store that begins 2016-10-30 on 30 Oct
+        2026 begins 2016-10-31 the next day. The removed day files are gone,
+        not archived, because a window that keeps one day longer every day
+        would never forget anything again; the owner's decade dataset stays
+        in its import source if this ever has to be re-read.
+        """
+        cut = before.isoformat()
+        removed: list[str] = []
+        for text in self.days():
+            if text >= cut:
+                break
+            try:
+                self.day_path(text).unlink()
+            except OSError:
+                continue
+            self._read_cache.pop(text, None)
+            removed.append(text)
+        return removed
+
     def _read_file(self, path: Path) -> dict[str, dict]:
         if not path.is_file():
             return {}

@@ -35,6 +35,9 @@ import json
 import logging
 import os
 import sys
+import threading
+import time as _time
+from datetime import timedelta
 from pathlib import Path
 
 from charts import __version__, sessions
@@ -155,6 +158,18 @@ def _source_for(args, clock=None):
                         clock=clock)
 
 
+#: The rolling decade window, in calendar days. Sunday is not excluded: the
+#: window's edge is a calendar fact about "how far back the store reaches",
+#: and the fetcher's own weekday rule decides what trades on which day.
+EOD_WINDOW_DAYS = 3_653
+#: Recent days a maintenance pass re-checks, so a shortfall the window edge
+#: caused catches up politely instead of on every startup once.
+EOD_CATCHUP_DAYS = 20
+#: Maintenance cadence. A pass with nothing to do touches nothing; the
+#: network is only opened for days that are genuinely missing.
+EOD_MAINTENANCE_SECONDS = 15 * 60.0
+
+
 class Refused(Exception):
     """A command that cannot run, carrying the sentence to print."""
 
@@ -270,6 +285,74 @@ def _require_tape(args, source) -> TapeSource:
     return source
 
 
+def _roll_eod_window(source: TapeSource, logger: logging.Logger) -> str:
+    """One maintenance pass over the decade store: what it did, in a sentence.
+
+    The store is a rolling ten-year window and the market does not pause for
+    it: each new day the window's first day advances, and each new session
+    the store is owed its day rows. The pass is bounded and cheap when
+    nothing changed - a directory listing, two dict reads - and opens the
+    network only for days that are genuinely missing and finished.
+    """
+    from charts.eod import backfill as eod_backfill, weekday_range
+
+    store = source.eod
+    now = sessions.law.now_karachi()
+    today = sessions.law.as_karachi(now).date()
+    window_start = today - timedelta(days=EOD_WINDOW_DAYS)
+    removed = store.prune(window_start)
+    # Today's own rows are banked only once its session is over: a half-day
+    # table would be stored as the day's whole truth, and the store is
+    # written once and never edited. A pre-open, post-close or fully closed
+    # clock holds no half-day table to lie about.
+    phase = sessions.law.market_phase(now)
+    session_running = phase in (sessions.law.MarketPhase.OPEN,
+                                sessions.law.MarketPhase.WARMUP,
+                                sessions.law.MarketPhase.BREAK)
+    gather_through = today if not session_running \
+        else today - timedelta(days=1)
+    start = today - timedelta(days=EOD_CATCHUP_DAYS)
+    fetch_from = max(start, window_start)
+    missing = [day for day in weekday_range(fetch_from, gather_through)
+               if not store.read(day)]
+    banked = (""
+              if not missing
+              else eod_backfill(store, first=missing[0], last=missing[-1],
+                                progress=logger.info)["stored"])
+    if removed or banked:
+        sentence = (f"eod window: pruned {len(removed)} day(s) behind "
+                    f"{window_start.isoformat()}, banked {banked} day(s)")
+        logger.info(sentence)
+        return sentence
+    return ""
+
+
+def _start_eod_maintenance(source) -> None:
+    """The background thread that keeps the decade store inside its window.
+
+    Only the tape source has an EOD store, so anything else starts nothing:
+    a replay source's decade store is the caller's own affair. A pass that
+    raises is logged at warning level and the cadence continues; the thread
+    is daemon so it cannot outlive the service it serves.
+    """
+    if not isinstance(source, TapeSource):
+        return
+
+    def loop():
+        while True:
+            try:
+                sentence = _roll_eod_window(source, LOGGER)
+            except Exception as exc:  # noqa: BLE001 - logged, never fatal
+                LOGGER.warning("eod maintenance: %s: %s",
+                               type(exc).__name__, exc)
+            _time.sleep(EOD_MAINTENANCE_SECONDS)
+
+    thread = threading.Thread(target=loop, daemon=True, name="eod-window")
+    thread.start()
+    LOGGER.info("eod rolling window: maintained at a %0.0f-minute cadence",
+                EOD_MAINTENANCE_SECONDS / 60.0)
+
+
 def _maintenance(args) -> int:
     """``--sessions`` and ``--build-archive``: two commands, no server.
 
@@ -319,6 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         server.server_close()
         return 0
     ingestor.start()
+    _start_eod_maintenance(server.source)
     host, port = server.server_address[:2]
     LOGGER.info("serving on http://%s:%s (API at /api, UI at /)", host, port)
     LOGGER.info("this process is the whole runtime; stop it with Ctrl+C")

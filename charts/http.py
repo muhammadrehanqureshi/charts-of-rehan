@@ -44,6 +44,7 @@ from charts import sessions
 from charts.contract import RESOLUTION_MINUTE, SCHEMA_VERSION, ContractError
 from charts.ingest import Ingestor
 from charts.ratelimit import UpstreamError
+from charts import service
 from charts.service import build_payload
 from charts.store import BarStore
 
@@ -210,18 +211,21 @@ class ChartHandler(BaseHTTPRequestHandler):
         return symbol
 
     def _payload(self, symbol: str, resolution: str, limit: int,
-                 day: str | None = None, days: int = 0) -> dict:
+                 day: str | None = None, days: int = 0,
+                 backfill: int = 0) -> dict:
         """The chart payload for one symbol, via the shared builder.
 
         ``day`` names one session; without it the builder describes today and
         falls back to the newest stored session when today has nothing, which
         is what makes the chart useful at 02:00 on a Sunday. ``days`` bigger
-        than one merges the newest sessions into one intraday chart.
+        than one merges the newest sessions into one intraday chart, and
+        ``backfill`` extends that merged chart with daily-grain history
+        behind the intraday sessions it spans.
         """
         body = build_payload(self.state.store, self.state.source, symbol,
                              resolution, limit=limit,
                              moment=self.state.moment(), day=day,
-                             days=days).as_dict()
+                             days=days, backfill=backfill).as_dict()
         body["ok"] = True
         body["ingest"] = self.state.ingestor.health()
         return body
@@ -471,6 +475,13 @@ class ChartHandler(BaseHTTPRequestHandler):
         if days < 2:
             # A merge of one day is not a merge: it is the ordinary chart.
             days = 0
+        try:
+            backfill = max(0, min(service.DAILY_BACKFILL_CAP,
+                                  int(query.get("backfill", "0"))))
+        except ValueError:
+            self._send_error_json(400, "BAD_BACKFILL",
+                                  "backfill must be a whole number")
+            return
         day = self._day_or_error(query)
         if day is None:
             return
@@ -489,7 +500,7 @@ class ChartHandler(BaseHTTPRequestHandler):
             # warming, because the next poll of this chart will want it.
             self.state.ingestor.watch(symbol)
         self._send_json(self._payload(symbol, resolution, limit, day or None,
-                                      days))
+                                      days, backfill))
 
     # ----------------------------------------------------------------- SSE
     def _stream(self, query: dict) -> None:

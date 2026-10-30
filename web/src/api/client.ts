@@ -165,6 +165,8 @@ export class ChartClient {
       day?: string;
       /** Merge this many newest sessions into one chart (2+). */
       days?: number | undefined;
+      /** Fill older coarser-grained bars so the chart scrolls back years. */
+      backfill?: number | undefined;
       signal?: AbortSignal;
     } = {},
   ): Promise<ChartPayload> {
@@ -177,6 +179,9 @@ export class ChartClient {
     }
     if (options.days !== undefined && options.days > 1) {
       query.set("days", String(Math.round(options.days)));
+    }
+    if (options.backfill !== undefined && options.backfill > 1) {
+      query.set("backfill", String(Math.round(options.backfill)));
     }
     const url = `${this.baseUrl}/api/bars?${query.toString()}`;
     const raw = await this.request(url, options.signal);
