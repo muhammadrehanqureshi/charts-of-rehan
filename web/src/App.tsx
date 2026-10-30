@@ -83,6 +83,26 @@ function spanFor(resolution: Resolution): number {
 }
 
 /**
+ * How much older, coarser-grained history a rung's chart asks for, in
+ * whole sessions. The mirror rungs already fold identical session
+ * windows, so every whole number of them keeps daily-grain archive bars
+ * aligned with the intraday ones; small values keep each chart inside
+ * the ten-year store without carrying a decade of candles in memory.
+ */
+function backfillFor(resolution: Resolution): number {
+  switch (resolution) {
+    case "1s": case "10s": return 3;
+    case "1m": case "5m": return 8;
+    case "10m": case "15m": return 6;
+    case "30m": return 7;
+    case "1h": return 7;
+    case "4h": return 35;
+    case "1D": case "1W": case "1M":
+    case "1d": case "session": return 0;
+  }
+}
+
+/**
  * Age of the newest bar beyond which a chart in play is warned about
  * (minutes), by rung. A fixed dozen minutes lies about the coarse rungs:
  * a 1h bar is expected to sit up to an hour old mid-run, and a daily
@@ -457,6 +477,7 @@ export function App() {
   const feed = useChartFeed(client, symbol, resolution, {
     day,
     days: day.length === 0 ? spanFor(resolution) : undefined,
+    backfillDays: day.length === 0 ? backfillFor(resolution) : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
   // live multi-day chart reads the merged span (days, unnamed), so every

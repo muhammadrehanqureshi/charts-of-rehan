@@ -77,10 +77,16 @@ export function useChartFeed(
   client: ChartClient,
   symbol: string,
   resolution: Resolution,
-  options: { day?: string; days?: number | undefined; limit?: number } = {},
+  options: {
+    day?: string;
+    days?: number | undefined;
+    limit?: number;
+    backfillDays?: number | undefined;
+  } = {},
 ): FeedState {
   const day = options.day ?? "";
   const days = Math.max(0, Math.floor(options.days ?? 0));
+  const backfill = Math.max(0, Math.floor(options.backfillDays ?? 0));
   // A merge of one day is no merge: that is the ordinary live chart.
   const merged = days > 1 && day.length === 0;
   const limit = options.limit ?? 2000;
@@ -141,6 +147,7 @@ export function useChartFeed(
         limit,
         day,
         days: merged ? days : undefined,
+        backfill: backfill > 0 ? backfill : undefined,
         signal: controller.signal,
       })
       .then((payload) => {
@@ -207,7 +214,7 @@ export function useChartFeed(
       handle.close();
       series.clear();
     };
-  }, [client, symbol, resolution, limit, day, days, series, bump, manual,
+  }, [client, symbol, resolution, limit, day, days, backfill, series, bump, manual,
     visible]);
 
   const refresh = useCallback(() => setManual((value) => value + 1), []);
