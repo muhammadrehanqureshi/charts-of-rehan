@@ -11,6 +11,29 @@
 
 import { useEffect, useRef, useState } from "react";
 
+/**
+ * Inserting pasted text into a formula the long way.
+ *
+ * A paste event's default route has, on this machine, delivered formula
+ * text with chunks of it missing by the time the browser committed it -
+ * a controlled textarea whose value is rewritten on every keystroke can
+ * fight the browser's own insert, and a paste of a 500-line study loses
+ * the fight. Taking the clipboard here, splicing it into the value, and
+ * handing the result to the controller leaves one write, ours, and the
+ * spliced text is exactly what was on the clipboard.
+ */
+const CRLF = /\r\n?/g;
+
+function splicePastedText(
+  field: HTMLTextAreaElement,
+  pasted: string,
+  value: string,
+): string {
+  const start = field.selectionStart ?? value.length;
+  const end = field.selectionEnd ?? value.length;
+  return value.slice(0, start) + pasted + value.slice(end);
+}
+
 import type { IndicatorController } from "../hooks/useIndicators";
 import type { ChartAppearance } from "../hooks/useAppearance";
 import { FormulaError, validateFormula } from "../indicators/expression";
@@ -157,6 +180,11 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
     }
   })();
 
+  const formulaLines = definition?.formula
+    && typeof spec.params["expr"] === "string"
+    ? (spec.params["expr"] as string).split("\n").length
+    : 0;
+
   return (
     <Dialog
       title={definition === undefined ? "Indicator" : definition.label}
@@ -207,7 +235,32 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
                     value={paramValue(spec, param)}
                     onChange={(event) =>
                       controller.setParam(spec.id, param.key,
-                        event.target.value)}
+                        event.target.value.replace(CRLF, "\n"))}
+                    onPaste={(event) => {
+                      if (!definition?.formula) {
+                        return;
+                      }
+                      const text =
+                        event.clipboardData.getData("text/plain");
+                      if (text.length === 0) {
+                        return;
+                      }
+                      // The browser's own insert is taken out here; the
+                      // spliced text is set on the controller, which is
+                      // the one write.
+                      event.preventDefault();
+                      const field = event.currentTarget;
+                      const at = (field.selectionStart ?? 0) + text.length;
+                      const next = splicePastedText(
+                        field, text.replace(CRLF, "\n"),
+                        paramValue(spec, param));
+                      controller.setParam(spec.id, param.key, next);
+                      // The caret lands at the end of what was inserted,
+                      // so the pasted study reads where it was put.
+                      requestAnimationFrame(() => {
+                        field.setSelectionRange(at, at);
+                      });
+                    }}
                   />
                 )}
               </label>
@@ -255,6 +308,13 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
             `close[1]` history, `//` comments, `ta.`/`math.` namespaces and
             `input.*` defaults. Drawing lines (indicator, plotshape, box.*,
             array.*, if blocks) are read and dropped, never drawn.
+          </p>
+        ) : null}
+        {definition?.formula ? (
+          <p className="settings-dialog__note" role="status">
+            {formulaLines} line(s) of the {1_000} a script is
+            allowed. The parser reads the whole script; the chart draws the
+            last plotted line.
           </p>
         ) : null}
         {formulaError !== null
