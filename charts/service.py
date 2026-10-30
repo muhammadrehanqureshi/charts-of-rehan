@@ -164,10 +164,85 @@ def _served_from_archive(source: BarSource, symbol: str, day) -> bool:
         return False
 
 
+#: How far a merged intraday chart can walk into the decade store, per rung.
+#: A daily bar reads a whole Karachi session, so the deeper the rung's
+#: intraday grain, the more sense a daily bar behind it makes. Ten minutes
+#: and up can read them; a minute chart's backfill stays zero because a
+#: daily bar at that grain is a lie about detail that never existed.
+DAILY_BACKFILL_DEPTH = {
+    "10m": 260,    # a year of trading days
+    "15m": 260,
+    "30m": 520,    # two years, at a grain that survives them
+    "1h": 1_100,   # four years
+    "4h": 2_600,   # the whole decade the store holds
+}
+#: The widest parameter the HTTP route accepts: one request can never ask the
+#: store to fold more than the decade it holds anyway.
+DAILY_BACKFILL_CAP = 2_600
+
+
+def _daily_backfill(source: BarSource, symbol: str, backfill: int,
+                    seen: dict[str, Bar], resolution: str) -> list[str]:
+    """Extend a merged intraday span with the decade store's daily bars.
+
+    The intraday part is already in ``seen``; the bars that are added here are
+    strictly older than its first bar's own Karachi day, so a day the tape
+    recorded can never also carry a daily bar beside its candles. The feed is
+    the source's own calendar history, the same one a 1D chart reads, so the
+    bars came from wherever the daily chart's bars come from. A source that
+    cannot serve the calendar rung (or fails) changes nothing: the merged
+    chart keeps its intraday sessions and the caller reads no back history -
+    an honest absence, and a note that says what was not added and why.
+    """
+    wanted = min(int(backfill or 0), DAILY_BACKFILL_CAP)
+    if wanted <= 0 or not seen:
+        return []
+    oldest = min(seen).split("T")[0]
+    if oldest <= "":  # pragma: no cover - defensive, never expected
+        return []
+    history = getattr(source, "history", None)
+    if not callable(history):
+        return []  # pragma: no cover - a source without history is unusable
+    try:
+        daily = list(history(symbol, "1D", limit=wanted))
+    except Exception as exc:  # noqa: BLE001 - a failed backfill is an absence
+        return [
+            f"the daily history behind the oldest intraday session could not "
+            f"be read ({type(exc).__name__}: {exc}), so the chart carries "
+            f"the intraday sessions only"]
+    added = 0
+    first = None
+    last = ""
+    for bar in daily:
+        if bar.t[:10] >= oldest:
+            break
+        if bar.t in seen:
+            continue
+        seen[bar.t] = bar
+        added += 1
+        if first is None:
+            first = bar
+        last = bar.t[:10]
+    if added == 0 or first is None:
+        return []
+    return [
+        f"the daily backfill added {added} daily-grain bar(s) behind the "
+        f"intraday sessions, back to {last}, from the same feed a 1D chart "
+        f"reads; a candle from {first.t[:10]} covers a whole Karachi day, "
+        f"not {spec_of(resolution)}",
+    ]
+
+
+#: A one-sentence grain reminder per rung, so the note above does not need to
+#: import the ladder's labels.
+def spec_of(resolution: str) -> str:
+    return ladder.spec_for(resolution).label
+
+
 def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
                          resolution: str, *, limit: int, context,
                          moment: datetime | None, today: date,
-                         days: int) -> ChartPayload:
+                         days: int, backfill: int = 0) -> ChartPayload:
     """The newest ``days`` sessions, concatenated into one contiguous chart.
 
     This is the TradingView habit the owner asked for: an intraday chart that
@@ -225,6 +300,7 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         held += 1
         for bar in payload.bars:
             seen[bar.t] = bar
+    daily_notes = _daily_backfill(source, symbol, backfill, seen, resolution)
     bars = [seen[key] for key in sorted(seen)]
     if limit > 0 and len(bars) > limit:
         bars = bars[-limit:]
@@ -238,6 +314,7 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
             f"merged {held} session(s) with bars for {symbol} of "
             f"{len(wanted_days)} session(s) requested, from "
             f"{payloads[0].session.day} to {payloads[-1].session.day}")
+    notes.extend(daily_notes)
     if empty_days:
         notes.append(
             f"{len(empty_days)} of these session(s) held no bar for {symbol} "
@@ -530,7 +607,8 @@ def _live_multi_payload(store: BarStore, source: BarSource, symbol: str,
 def build_payload(store: BarStore, source: BarSource, symbol: str,
                   resolution: str, *, limit: int = 1500,
                   moment: datetime | None = None,
-                  day: date | str | None = None, days: int = 0) -> ChartPayload:
+                  day: date | str | None = None, days: int = 0,
+                  backfill: int = 0) -> ChartPayload:
     """One symbol's chart payload, ready for the wire.
 
     ``limit`` keeps a long session from shipping thousands of bars to a screen
@@ -552,6 +630,14 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
     ``days`` bigger than one (and no ``day`` named) asks for the newest
     sessions merged into one contiguous intraday chart. A calendar rung
     ignores it: its whole point is that the bars already span the sessions.
+
+    ``backfill`` funds a merged intraday chart's own past: the tape only began
+    recording intraday sessions in late 2026, but the store holds a decade of
+    daily rows for every scrip, so a rung coarse enough to read them (ten
+    minutes and up) extends its merged span with daily-grain bars behind the
+    newest sessions. The chart says which stretch is which grain, because a
+    reader who opens a one-hour chart on 2019 deserves to know what a candle
+    there actually covers.
     """
     symbol = symbol.strip().upper()
     try:
@@ -579,7 +665,8 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
     if days > 1 and not spec.calendar:
         return _merged_days_payload(store, source, symbol, resolution,
                                     limit=limit, context=context,
-                                    moment=moment, today=today, days=days)
+                                    moment=moment, today=today, days=days,
+                                    backfill=backfill)
 
     if resolution != "1m":
         return _live_multi_payload(store, source, symbol, resolution,
