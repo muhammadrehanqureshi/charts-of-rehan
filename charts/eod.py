@@ -28,14 +28,15 @@ Command line::
 
     python -m charts.eod backfill            # the last 370 days
     python -m charts.eod backfill --from 2025-11-01 --to 2026-10-28
-    python -m charts.eod day 2026-10-28      # one day, for a rebuild
+    python -m charts.eod day 2026-10-28      # one day, for a rebuild    python -m charts.eod import-csv FILE      # a dataset of day rows
 """
-
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
+import csv
 import re
 import sys
 import tempfile
@@ -350,6 +351,58 @@ def eod_bar(day: date, row: dict) -> Bar:
                      h=row["h"], l=row["l"], c=row["c"], v=row.get("v") or 0.0)
 
 
+def import_csv(store: EodStore, file: Path) -> dict:
+    """Fold an ``eod_dataset`` CSV into the store, one day whole.
+
+    The columns are the dataset's own ``date,symbol,open,high,low,close,
+    volume``. A file named ``.gz`` is read decoded; anything else is read
+    plain. A day the store already holds is skipped untouched - the store is
+    written once-and-never-edited, so an exchange-fetched day beats the
+    dataset's copy of the same day, and no stored day is rewritten here.
+    A row whose OHLC is absent is dropped by ``save`` (its own law), so a
+    day of nothing but absent rows is counted as empty rather than stored.
+
+    Returns a small summary: day groups seen, groups stored, skipped.
+    """
+    opener = gzip.open if file.suffix == ".gz" else open  # type: ignore[assignment]
+    days: dict[str, list[dict]] = {}
+    with opener(file, "rt", encoding="utf-8", newline="") as stream:
+        rows = csv.DictReader(stream)
+        for row in rows:
+            day_text = (row.get("date") or "").strip()
+            symbol = (row.get("symbol") or "").strip().upper()
+            if not day_text or not symbol:
+                continue
+            try:
+                date.fromisoformat(day_text)
+            except ValueError:
+                continue
+            numbers: list[float] = []
+            for name in ("open", "high", "low", "close"):
+                value = (row.get(name) or "").strip()
+                numbers.append(float(value) if value else float("nan"))
+            volume_text = (row.get("volume") or "").strip()
+            volume = float(volume_text) if volume_text else 0.0
+            days.setdefault(day_text, []).append({
+                "symbol": symbol,
+                "o": numbers[0], "h": numbers[1], "l": numbers[2],
+                "c": numbers[3], "v": volume,
+            })
+    stored = 0
+    skipped = 0
+    empty = 0
+    for day_text in sorted(days):
+        if store.read(day_text):
+            skipped += 1
+            continue
+        if store.save(date.fromisoformat(day_text), days[day_text]) == 0:
+            empty += 1
+            continue
+        stored += 1
+    return {"groups": len(days), "stored": stored,
+            "skipped": skipped, "empty": empty}
+
+
 def weekday_range(start: date, end: date) -> list[date]:
     """Inclusive calendar range, oldest first, Saturdays removed.
 
@@ -434,9 +487,20 @@ def main() -> int:
     day_cmd = commands.add_parser("day", help="one day")
     day_cmd.add_argument("day", type=date.fromisoformat)
     day_cmd.add_argument("--root", default=None)
+    import_cmd = commands.add_parser(
+        "import-csv",
+        help="fold a dataset CSV (date,symbol,o,h,l,c,v) into the store")
+    import_cmd.add_argument("file", type=Path)
+    import_cmd.add_argument("--root", default=None)
     args = parser.parse_args()
 
     store = EodStore(args.root or (ROOT / "data" / "eod"))
+    if args.command == "import-csv":
+        summary = import_csv(store, args.file)
+        print(f"import {args.file}: {summary['stored']} days stored, "
+              f"{summary['skipped']} already, {summary['empty']} empty, "
+              f"of {summary['groups']} day groups")
+        return 0
     if args.command == "day":
         rows = fetch_day(args.day)[1]
         kept = store.save(args.day, rows)
