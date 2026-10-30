@@ -369,6 +369,19 @@ describe("named sessions and the catalogue facts", () => {
     expect(seen[1]).not.toContain("days=");
   });
 
+  it("asks for a daily backfill behind a coarse span with the query", async () => {
+    const seen: string[] = [];
+    const { client } = clientWith((input) => {
+      seen.push(String(input));
+      return Promise.resolve(jsonResponse(200, payloadBody()));
+    });
+    await client.bars("OGDC", "1h", { backfill: 32 });
+    expect(seen[0]).toContain("backfill=32");
+    // A backfill of nothing is never sent: the ordinary chart stays ordinary.
+    await client.bars("OGDC", "1m", { backfill: 1 });
+    expect(seen[1]).not.toContain("backfill=");
+  });
+
   it("does not put an empty day in the query", async () => {
     const seen: string[] = [];
     const { client } = clientWith((input) => {

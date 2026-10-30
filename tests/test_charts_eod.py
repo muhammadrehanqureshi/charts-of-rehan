@@ -47,6 +47,46 @@ PRL_ROW = ["PRL", "93.20", "93.00", "94.10", "92.50", "93.65",
            "0.45", "0.48%", "886,812"]
 
 
+class PruneTest(unittest.TestCase):
+    """The rolling decade window's oldest edge, cut once a day.
+
+    Each keeper day the window's first day advances, so the store becomes
+    2016-10-31 first today on 30 Oct 2026 arrives as the first usable day of
+    nothing on the next day. Pruning is calendar-honest: it removes exactly
+    the day files older than the cut, forgets their cache reads, and
+    reports what it removed.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.store = EodStore(self.tmp)
+
+    def an_old_day(self, text: str) -> None:
+        self.store.save(date.fromisoformat(text), [
+            {"symbol": "OGDC", "o": 1.0, "h": 2.0, "l": 0.5, "c": 1.5,
+             "v": 10.0},
+        ])
+
+    def test_a_day_older_than_the_cut_is_removed(self):
+        self.an_old_day("2026-10-30")
+        self.an_old_day("2026-10-31")
+        removed = self.store.prune(date(2026, 10, 31))
+        self.assertEqual(removed, ["2026-10-30"])
+        self.assertEqual(self.store.days(), ["2026-10-31"])
+        self.assertFalse(self.store.day_path("2026-10-30").exists())
+
+    def test_a_pruned_day_is_forgotten_by_the_reads_not_served_from_cache(self):
+        self.an_old_day("2026-10-30")
+        self.store.read("2026-10-30")
+        self.store.prune(date(2026, 10, 31))
+        self.assertEqual(self.store.read("2026-10-30"), {})
+
+    def test_a_cut_nobody_has_work_for_removes_nothing(self):
+        self.an_old_day("2026-10-31")
+        self.assertEqual(self.store.prune(date(2026, 10, 30)), [])
+
+
 class ImportCsvTest(unittest.TestCase):
     """Folding a dataset of day rows into the per-day store."""
 

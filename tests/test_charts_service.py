@@ -165,6 +165,60 @@ class ProvenanceTest(unittest.TestCase):
         self.assertEqual(payload.source.id, "broker_tape")
 
 
+class MergedBackfillTest(unittest.TestCase):
+    """A merged span's older, coarser-grained history behind its sessions.
+
+    The tape only began recording intraday sessions in late 2026, but the
+    decade store holds daily rows for every scrip. A merged chart's backfill
+    adds only the days the intraday span does not hold, never overlaps one,
+    and never invents bars when the history feed is missing - a failed
+    source is an honest absence with a note, not an error.
+    """
+
+    def daily_source(self, bars):
+        class BackfillSource(StubSource):
+            def history(self, symbol, resolution, *, limit=0):
+                self.asked = (symbol, resolution, limit)
+                return iter(bars)
+        return BackfillSource()
+
+    def test_daily_bars_older_than_the_span_are_added_behind_it(self):
+        daily = [
+            Bar.build(t="2026-10-09T12:00:00+05:00", o=97, h=99, l=96, c=98, v=7),
+            Bar.build(t="2026-10-08T12:00:00+05:00", o=96, h=100, l=95, c=97, v=8),
+            Bar.build(t="2026-10-13T12:00:00+05:00", o=98, h=101, l=97, c=100, v=9),
+        ]
+        source = self.daily_source(daily)
+        seen = {"2026-10-12T09:35:00+05:00": None,
+                "2026-10-13T09:35:00+05:00": None}
+        notes = service._daily_backfill(source, "OGDC", 40, seen, "1h")
+        added = [key for key, value in seen.items() if value is not None]
+        self.assertEqual(len(added), 2)
+        self.assertIn("2026-10-09T12:00:00+05:00", added)
+        self.assertEqual(source.asked, ("OGDC", "1D", 40))
+        self.assertTrue(any("daily backfill added 2" in note for note in notes))
+
+    def test_a_zero_backfill_and_an_empty_span_add_nothing(self):
+        source = self.daily_source([])
+        seen = {"2026-10-12T09:35:00+05:00": None}
+        self.assertEqual(service._daily_backfill(source, "OGDC", 0, seen, "1h"), [])
+        self.assertEqual(
+            service._daily_backfill(source, "OGDC", 40, {}, "1h"), [])
+
+    def test_a_failed_history_is_an_absence_with_a_note(self):
+        class FailingSource(StubSource):
+            def history(self, *args, **kwargs):
+                raise RuntimeError("down")
+        notes = service._daily_backfill(FailingSource(), "OGDC", 40, {
+            "2026-10-12T09:35:00+05:00": None}, "1h")
+        self.assertTrue(notes)
+        self.assertTrue(any("could not be read" in note for note in notes))
+
+    def test_the_cap_keeps_one_request_inside_the_decade(self):
+        self.assertLessEqual(service.DAILY_BACKFILL_CAP,
+                             max(service.DAILY_BACKFILL_DEPTH.values()))
+
+
 class MomentTest(unittest.TestCase):
     """The builder describes the session it is told about.
 

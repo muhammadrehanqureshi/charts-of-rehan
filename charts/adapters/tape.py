@@ -965,6 +965,16 @@ class TapeSource:
                 f"they are not attributed to any minute bar")
         return lines
 
+    @property
+    def eod(self) -> EodStore:
+        """The exchange's own daily-history store, for the maintenance loop.
+
+        The service's rolling-window thread prunes and banks through this
+        directly, so the store's address and caches stay owned by the source
+        that built them.
+        """
+        return self._eod
+
     def archive_summary(self, day: date | str):
         return self._archive.summary(day)
 
