@@ -84,22 +84,43 @@ function spanFor(resolution: Resolution): number {
 
 /**
  * How much older, coarser-grained history a rung's chart asks for, in
- * whole sessions. The keeper's rule is a year of history on any rung -
- * scrolling back is how a chart is read - so every fine rung carries a
- * year of daily-grain bars behind it; the four-hour rung, whose session
- * windows a daily bar nearly matches, asks for the whole decade. Each
- * number is a whole count so the daily bars stay aligned with the
- * intraday session windows they are folded among.
+ * whole sessions. The keeper's rule is that every minute rung carries the
+ * whole decade the store holds behind its own sessions - the store keeps a
+ * daily-grain row for every trading day since Oct 2016, and scrolling back
+ * is how a chart is read. The decade's daily bars behind a merged span are
+ * what a reader lands on after panning: the same answer the 1D rung serves.
+ * The sub-second rungs stay at a year: their payload is already beaten by
+ * their own tick bars, and a decade of ticks is not a screen.
  */
-function backfillFor(resolution: Resolution): number {
+export function backfillFor(resolution: Resolution): number {
   switch (resolution) {
-    case "1s": case "10s":
+    case "1s": case "10s": return 260;   // a year of trading days
     case "1m": case "5m": case "10m": case "15m":
-    case "30m": return 260;   // a year of trading days
-    case "1h": return 260;
-    case "4h": return 2_600;  // the whole decade the store holds
+    case "30m": case "1h": case "4h":
+      return 2_600;                    // the whole decade the store holds
     case "1D": case "1W": case "1M":
     case "1d": case "session": return 0;
+  }
+}
+
+/**
+ * How many bars a rung's merged span may draw, end to end.
+ *
+ * The decade the backfill asks for is 2,600 daily bars, so a limit smaller
+ * than that plus the span's own bars would silently cut the oldest years off
+ * the chart - the cap has to ride the rung, not a one-size default. Each
+ * number fits its spanFor with room to spare while staying a payload the
+ * browser parses in one frame.
+ */
+export function limitFor(resolution: Resolution): number {
+  switch (resolution) {
+    case "1s": case "10s": case "1m": case "5m": return 6_000;
+    case "10m": case "15m": case "30m": return 4_200;
+    case "1h": case "4h": return 3_400;
+    case "1D": return 2_800;
+    case "1W": case "1M":
+    // Legacy spellings a pre-v3 deployment still answers behind aliases.
+    case "1d": case "session": return 4_500;
   }
 }
 
@@ -477,6 +498,7 @@ export function App() {
 
   const feed = useChartFeed(client, symbol, resolution, {
     day,
+    limit: limitFor(resolution),
     days: day.length === 0 ? spanFor(resolution) : undefined,
     backfillDays: day.length === 0 ? backfillFor(resolution) : undefined,
   });
