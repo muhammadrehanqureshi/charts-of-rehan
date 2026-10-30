@@ -6,7 +6,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { anchorAt, frameFor, makePositions } from "./overlay";
+import { anchorAt, breakPlan, frameFor, makePositions, monthText } from "./overlay";
+import type { SessionBreak } from "./sessions";
 
 type Chartish = Parameters<typeof frameFor>[0];
 
@@ -48,6 +49,94 @@ describe("overlay frame", () => {
     const frame = frameFor(paged, 900, 520);
     expect(frame.plotHeight).toBe(360);
     expect(frame.plotWidth).toBe(842);
+  });
+});
+
+describe("break plan", () => {
+  /** A mapped chart: each Karachi day owns one pixel position. */
+  function mappedChart(
+    entries: readonly (readonly [day: string, x: number, first?: boolean])[],
+  ): { breaks: SessionBreak[]; xOf: (t: number) => number | null } {
+    const xByTime = new Map<number, number | null>();
+    const breaks: SessionBreak[] = [];
+    for (const [day, x, first = false] of entries) {
+      const t = Date.parse(`${day}T09:30:00+05:00`);
+      xByTime.set(t, x < 0 ? null : x);
+      breaks.push({
+        t,
+        day,
+        label: first || x < 0 ? day : day.slice(8, 10) + " Oct",
+        first,
+      });
+    }
+    return { breaks, xOf: (t: number) => xByTime.get(t) ?? null };
+  }
+
+  it("a roomy chart lines and labels every day join it can see", () => {
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", 100, true],
+      ["2026-10-20", 300],
+      ["2026-10-21", 500],
+    ]);
+    const plan = breakPlan(breaks, xOf, 800);
+    expect(plan.filter((item) => item.line)
+      .map((item) => item.x)).toEqual([300, 500]);
+    expect(plan.filter((item) => item.text !== null)
+      .map((item) => item.text)).toEqual(["20 Oct", "21 Oct"]);
+  });
+
+  it("a daily-grain dense chart says months, not one date per day", () => {
+    // A year of month starts at one pixel each: the dashed forest.
+    const entries: [string, number, boolean?][] = [];
+    for (let i = 0; i < 12; i += 1) {
+      entries.push([`2025-${String(i + 1).padStart(2, "0")}-01`, i, i === 0]);
+    }
+    const { breaks, xOf } = mappedChart(entries);
+    const plan = breakPlan(breaks, xOf, 700);
+    const lines = plan.filter((item) => item.line);
+    const texts = plan.filter((item) => item.text !== null);
+    // One pixel a month: nothing after the first join earns a line, and
+    // the crowded month names collapse to the first one that fits.
+    expect(lines).toHaveLength(1);
+    expect(texts.map((item) => item.text)).toEqual(["Feb"]);
+  });
+
+  it("a month name carries its year only where it would be ambiguous", () => {
+    expect(monthText("2025-07-21")).toBe("Jul");
+    expect(monthText("2026-01-05")).toBe("Jan '26");
+  });
+
+  it("a label never lands on its neighbour's words", () => {
+    // Room for lines, not for two day names beside each other: only the
+    // joins with space to the previous label keep their text.
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", 100, true],
+      ["2026-10-20", 110],
+      ["2026-10-21", 130],
+      ["2026-10-22", 660],
+      ["2026-10-23", 680],
+    ]);
+    const plan = breakPlan(breaks, xOf, 700);
+    const texts = plan.filter((item) => item.text !== null);
+    expect(texts.map((item) => item.text)).toEqual(["20 Oct", "22 Oct"]);
+  });
+
+  it("breaks off the drawn panel are decided away entirely", () => {
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", 50, true],
+      ["2026-10-20", 300],
+      ["2026-10-21", 900],
+    ]);
+    const plan = breakPlan(breaks, xOf, 700);
+    expect(plan.filter((item) => item.line)).toHaveLength(1);
+  });
+
+  it("nothing visible is an empty plan", () => {
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", -50, true],
+      ["2026-10-20", -10],
+    ]);
+    expect(breakPlan(breaks, xOf, 700)).toEqual([]);
   });
 });
 
