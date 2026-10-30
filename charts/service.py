@@ -164,16 +164,18 @@ def _served_from_archive(source: BarSource, symbol: str, day) -> bool:
         return False
 
 
-#: How far a merged intraday chart can walk into the decade store, per rung.
-#: A daily bar reads a whole Karachi session, so the deeper the rung's
-#: intraday grain, the more sense a daily bar behind it makes. Ten minutes
-#: and up can read them; a minute chart's backfill stays zero because a
-#: daily bar at that grain is a lie about detail that never existed.
+#: The keeper asks for a year of history on every rung, so the client
+#: decides how much it carries and the server honours a whole decade on
+#: request: a daily bar behind a very fine chart is coarser grain than
+#: that chart's own candles, and the payload's note always says exactly
+#: that, so the stretch a reader is looking at is never a lie about
+#: detail it never had. One request can never ask the store to fold more
+#: than the decade it holds.
 DAILY_BACKFILL_DEPTH = {
     "10m": 260,    # a year of trading days
     "15m": 260,
-    "30m": 520,    # two years, at a grain that survives them
-    "1h": 1_100,   # four years
+    "30m": 260,
+    "1h": 260,
     "4h": 2_600,   # the whole decade the store holds
 }
 #: The widest parameter the HTTP route accepts: one request can never ask the
