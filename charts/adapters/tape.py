@@ -258,6 +258,13 @@ class TapeSource:
                                    (capture_dirs or DEFAULT_CAPTURE_DIRS))
         self._archive = SessionArchive(archive_dir or DEFAULT_ARCHIVE_DIR)
         self._eod = EodStore(eod_dir or EodStore().root)
+        # A calendar rung reads every banked EOD day, and a decade's worth is
+        # a few seconds of first-request file reads on the machine running
+        # this. Warming the store as the service wakes costs one background
+        # pass, so the owner's first daily chart is not the one that pays it.
+        eod_warm = self._eod
+        threading.Thread(target=self._warm_eod, args=(eod_warm,),
+                         daemon=True, name="eod-warmup").start()
         self._day_override = _as_date(day)
         self._cache: dict[str, tuple[tuple, "tape_bars.TapeBars"]] = {}
         #: Concurrent API workers can ask for the same newly appended file at
@@ -1120,6 +1127,25 @@ class TapeSource:
                 if _bar_in_session(bar)]
         self._bars_cache[key] = list(rows)
         return rows
+
+    @staticmethod
+    def _warm_eod(store: "EodStore") -> None:
+        """Read every banked EOD day once, off the request path.
+
+        The store's own per-day cache keys on ISO day strings and is safe to
+        fill and read concurrently, so the warm pass only ever populates the
+        same cache a live request would, just earlier. A read that raises is
+        caught here: a corrupt day file must surface when a chart actually
+        asks for it, not kill the warm thread.
+        """
+        try:
+            for day_text in store.days():
+                try:
+                    store.read(day_text)
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            return
 
     def _available_days(self) -> list[date]:
         """Every day this deployment can draw, oldest first."""

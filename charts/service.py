@@ -284,6 +284,16 @@ def _session_payload(source: BarSource, symbol: str, resolution: str, *,
     bars = list(source.history(symbol, resolution, limit=limit or 1500,
                                day=day_date))
     expected = _expected_for(day_date, resolution)
+    # Law above: a finished session expects the whole day; the session still
+    # running expects only the minutes that have elapsed, because the hours
+    # ahead of the clock have not had their chance to print yet, and calling
+    # them missing would accuse the tape of a crime it has not had the time
+    # to commit.
+    now = sessions.law.as_karachi(moment)
+    forming = day_date == now.date()
+    if forming:
+        expected = [bucket for bucket in expected
+                    if _stamp(bucket) <= _stamp(now)]
     step = _gap_step(resolution)
     gap_floor = max(GAP_FLOOR_MINUTES, step)
     gaps = ([gap for gap in BarStore.gaps(bars, expected, step_minutes=step)
@@ -297,9 +307,10 @@ def _session_payload(source: BarSource, symbol: str, resolution: str, *,
             first = bars[0].t
             window = [bucket for bucket in expected if _stamp(bucket) >= first]
             late_start = len(expected) - len(window)
+            tail = ("in a session still forming" if forming
+                    else "in a finished session")
             notes.append(f"{len(bars)} bar(s) held against {len(expected)} "
-                         f"expected {spec.label} bucket(s) in a finished "
-                         f"session")
+                         f"expected {spec.label} bucket(s) {tail}")
             if late_start and not spec.calendar:
                 notes.append(
                     f"this series starts at {bars[0].t[11:16]} Karachi, "

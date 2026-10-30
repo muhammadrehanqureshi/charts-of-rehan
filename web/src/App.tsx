@@ -48,7 +48,7 @@ import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
   clearDrawings,
-  loadDrawings,
+  loadChartDrawings,
   saveDrawings,
   type Drawing,
   type DrawTool,
@@ -56,20 +56,57 @@ import {
 
 const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
 
-/** A session in play for longer than this gets a visible warning (minutes). */
-const STALE_AFTER_MINUTES = 12;
+/**
+ * Sessions the merged chart spans, by rung.
+ *
+ * A fixed five sessions starves the coarse rungs: a 1h chart of five
+ * trading days is barely a dozen bars, drawn as wide plates rather than a
+ * chart. The span grows with the rung so every merged chart carries a
+ * few hundred bars - a minute chart a week, an hour chart a quarter,
+ * and the daily rung a full year of Karachi sessions.
+ */
+function spanFor(resolution: Resolution): number {
+  switch (resolution) {
+    case "1s": case "10s": return 3;
+    case "1m": case "5m": return 7;
+    case "10m": case "15m": return 15;
+    case "30m": return 25;
+    case "1h": return 32;
+    case "4h": return 70;
+    case "1D": return 260;   // a year of trading days
+    case "1W": return 160;   // three years of weeks
+    case "1M": return 160;   // over a decade of months
+    // Legacy spellings a pre-v3 deployment still answers behind aliases.
+    case "1d": return 260;
+    case "session": return 260;
+  }
+}
 
 /**
- * How many sessions the default chart spans.
- *
- * Five: the reader can pan back through the week without leaving the chart,
- * exactly as the terminal's own continuous series behaves. The sessions are
- * packed edge to edge, so the chart draws a dashed divider and the day's
- * label wherever the Karachi date changes - without that a merged chart
- * reads as a clock running backwards. Naming a stored day in the session
- * selector still opens exactly that day.
+ * Age of the newest bar beyond which a chart in play is warned about
+ * (minutes), by rung. A fixed dozen minutes lies about the coarse rungs:
+ * a 1h bar is expected to sit up to an hour old mid-run, and a daily
+ * session's own bar ages all day while the market is open. The threshold
+ * rides the rung: a bar's step plus the same fifteen minutes of grace a
+ * 1m chart used to get, so honesty scales instead of the bar chart's
+ * clock.
  */
-const SPAN_SESSIONS = 5;
+function staleFor(resolution: Resolution): number {
+  switch (resolution) {
+    case "1s": return 3;
+    case "10s": return 6;
+    case "1m": case "5m": return 12;
+    case "10m": return 22;
+    case "15m": return 30;
+    case "30m": return 45;
+    case "1h": return 75;
+    case "4h": return 255;
+    case "1D": return 375;   // the band ran its length and a quarter more
+    case "1W": return 720;
+    case "1M": return 3_000;
+    case "1d": case "session": return 375;
+  }
+}
 
 const WATCHLIST_KEY = "charts-watchlist";
 
@@ -228,24 +265,33 @@ export function App() {
   // The drawings the reader keeps on this chart, one tool at a time.
   const [tool, setTool] = useState<DrawTool>("cursor");
   const [drawingsHidden, setDrawingsHidden] = useState(false);
-  const viewKey = `${symbol}|${day}|${resolution}`;
+  // The notebook lives per chart (symbol|session), not per timeframe: a
+  // trend line is a drawing on the tape behind every rung, so switching
+  // 1m -> 30m keeps it exactly where it was drawn.
+  const drawingKey = `${symbol}|${day}`;
   const [drawings, setDrawings] = useState<readonly Drawing[]>(
-    () => loadDrawings(`${initial.symbol}|${JUST_LIVE}|1m`),
+    () => loadChartDrawings(`${initial.symbol}|${JUST_LIVE}`),
   );
   useEffect(() => {
-    setDrawings(loadDrawings(viewKey));
-  }, [viewKey]);
+    setDrawings(loadChartDrawings(drawingKey));
+  }, [drawingKey]);
   const onDrawingComplete = useCallback((drawing: Drawing) => {
     setDrawings((current) => {
       const next = [...current, drawing];
-      saveDrawings(viewKey, next);
+      saveDrawings(drawingKey, next);
       return next;
     });
-  }, [viewKey]);
+  }, [drawingKey]);
   const onClearDrawings = useCallback(() => {
-    clearDrawings(viewKey, window.localStorage);
+    clearDrawings(drawingKey, window.localStorage);
     setDrawings([]);
-  }, [viewKey]);
+  }, [drawingKey]);
+  // The rail's Save button: the notebook already writes on every commit,
+  // so this is the explicit flush the rail offers - the same bytes, now,
+  // for a reader who wants the assurance.
+  const onSaveDrawings = useCallback(() => {
+    saveDrawings(drawingKey, drawings);
+  }, [drawingKey, drawings]);
 
   useEffect(() => {
     window.localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watch));
@@ -410,16 +456,19 @@ export function App() {
 
   const feed = useChartFeed(client, symbol, resolution, {
     day,
-    days: day.length === 0 ? SPAN_SESSIONS : undefined,
+    days: day.length === 0 ? spanFor(resolution) : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
   // live multi-day chart reads the merged span (days, unnamed), so every
   // pane's session is drawn from its own tape; a stored session reads only
-  // its own capture.
+  // its own capture. A wide span ships its whole ledger in one answer, so
+  // its cadence is three seconds - the folds on the server are incremental
+  // and always current, this only spaces out how often the browser redraws
+  // a history the pane is not scrolling through.
+  const deltaSpan = day.length === 0 ? spanFor(resolution) : 0;
   const delta = useDelta(client, symbol,
     day.length === 0 ? "" : (feed.meta.session?.day ?? day),
-    symbol.length > 0, 1_000,
-    day.length === 0 ? SPAN_SESSIONS : 0);
+    symbol.length > 0, deltaSpan > 8 ? 3_000 : 1_000, deltaSpan);
 
   // The venue's own book, for the plate under the volume split: a cadence
   // read that stops with the stored session and with the hidden tab.
@@ -431,7 +480,7 @@ export function App() {
   // asking for its ledger would only read a file that is gone.
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0 && !(feed.meta.session?.archived ?? false),
-    1_000, SPAN_SESSIONS);
+    1_000, day.length === 0 ? spanFor(resolution) : 0);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
@@ -520,6 +569,7 @@ export function App() {
           onHideToggle={() => setDrawingsHidden((hidden) => !hidden)}
           count={drawings.length}
           onClear={onClearDrawings}
+          onSave={onSaveDrawings}
         />
 
         <main className="app__main">
@@ -562,7 +612,7 @@ export function App() {
             lastBarAt={feed.meta.payload?.bars.at(-1)?.t ?? ""}
             asOf={feed.meta.payload?.as_of ?? ""}
             volumeAvailable={session?.volume_available ?? false}
-            staleAfterMinutes={STALE_AFTER_MINUTES}
+            staleAfterMinutes={staleFor(resolution)}
             ordersTotal={flow.get(symbol)?.orders ?? null}
             error={feed.error ?? (bootError === null ? null
               : { category: "INTERNAL", detail: bootError })}

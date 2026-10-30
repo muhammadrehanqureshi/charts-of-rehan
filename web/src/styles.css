@@ -293,7 +293,7 @@ button:disabled {
 
 /* ------------------------------------------------------------------- rail */
 
-.rail {
+.tv-rail {
   display: grid;
   grid-auto-rows: min-content;
   gap: 2px;
@@ -305,32 +305,51 @@ button:disabled {
   background: var(--panel);
 }
 
-.rail__sep {
+.tv-rail__sep {
   margin: 6px 2px;
   width: 100%;
   height: 1px;
   background: var(--line);
 }
 
-.rail__button {
+.tv-rail__gap {
+  margin: 2px;
+}
+
+.tv-rail__tool {
   width: 100%;
   padding: 7px 0;
   border: 0;
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
+  display: flex;
+  justify-content: center;
+  cursor: pointer;
 }
 
-.rail__button:hover:not(:disabled) {
+.tv-rail__tool svg {
+  display: block;
+}
+
+.tv-rail__tool:hover:not(:disabled) {
   background: var(--panel-2);
   color: var(--text);
 }
 
-.rail__button--on {
+.tv-rail__tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tv-rail__tool--on {
   color: var(--focus);
   background: var(--panel-2);
+}
+
+/* The rail's Save click: a teal icon for a moment, then it fades. */
+.tv-rail__tool--saved {
+  color: var(--tv-up);
 }
 
 /* ---------------------------------------------------------------- watchlist */
@@ -1047,6 +1066,54 @@ button:disabled {
   border-radius: 3px;
 }
 
+.tape__cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 10px;
+  margin-top: 6px;
+}
+
+.tape__col {
+  min-width: 0;
+}
+
+.tape__colhead {
+  padding-bottom: 2px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tape__colhead--buy {
+  color: var(--tv-up);
+}
+
+.tape__colhead--sell {
+  color: var(--tv-down);
+}
+
+.tape__list--side {
+  /* The columns sit beside each other under one plate, so their scroll
+     edges and their row heights must agree with the shared list rules. */
+  max-height: 160px;
+}
+
+.tape__col--buy .tape__price {
+  color: var(--tv-up);
+}
+
+.tape__col--sell .tape__price {
+  color: var(--tv-down);
+}
+
+.tape__empty {
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .tape__row {
   display: flex;
   align-items: baseline;
@@ -1719,7 +1786,7 @@ button:disabled {
     overflow: visible;
   }
 
-  .rail {
+  .tv-rail {
     display: flex;
     width: 100%;
     padding: 4px;
@@ -1727,7 +1794,7 @@ button:disabled {
     border-bottom: 1px solid var(--line);
   }
 
-  .rail__sep {
+  .tv-rail__sep {
     margin: 2px;
     width: 1px;
     height: auto;

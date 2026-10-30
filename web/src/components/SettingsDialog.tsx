@@ -246,7 +246,7 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
         )}
         {definition?.formula ? (
           <p className="settings-dialog__note">
-            A formula or a pasted Pine study, up to 8,000 characters; its
+            A formula or a pasted Pine study, up to 1,000 lines; its
             last line is what the chart draws. Series (open, high, low,
             close, volume, hl2, ohlc4, bar_index, na, true/false), functions
             (sma, ema, rsi, atr, stddev, highest, lowest, roc, change, obv,

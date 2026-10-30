@@ -127,6 +127,21 @@ export function Watchlist(props: WatchlistProps) {
     onWatchChange(watch.filter((item) => item !== name));
   };
 
+  /**
+   * The live order columns: the newest classified prints split apart.
+   *
+   * The reader asked for the buys and the sells in their own columns,
+   * not one interleaved list, so each side reads top-down the way it
+   * arrives - newest first, the price and the size of every print, the
+   * side letter itself redundant inside its own column. A print the
+   * ledger could not attribute belongs to neither column; the day
+   * table above always carries the full measured split.
+   */
+  const buys = tape === null || tape === undefined
+    ? [] : tape.events.filter((event) => event.side === "B").slice(-25).reverse();
+  const sells = tape === null || tape === undefined
+    ? [] : tape.events.filter((event) => event.side === "S").slice(-25).reverse();
+
   return (
     <div className="watchpane">
       <SymbolSearch
@@ -500,32 +515,52 @@ export function Watchlist(props: WatchlistProps) {
                       </tbody>
                     </table>
                   )}
-                  <ul className="tape__list">
-                    {tape.events.slice(-40).reverse().map((event, at) => (
-                      <li
-                        key={`${event.t}-${at}`}
-                        className="tape__row"
-                      >
-                        <span className="tape__time">
-                          {formatClockSeconds(event.t)}
-                        </span>
-                        <span className={event.side === "B"
-                          ? "tape__side tape__side--buy"
-                          : event.side === "S"
-                            ? "tape__side tape__side--sell"
-                            : "tape__side"}>
-                          {event.side === "B" ? "B" : event.side === "S" ? "S" : "–"}
-                        </span>
-                        <span className="tape__price">
-                          {formatPrice(event.price)}
-                        </span>
-                        <span className="tape__size">
-                          {event.size == null
-                            ? "–" : formatVolume(event.size)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="tape__cols" aria-label="live orders, buy and sell sides">
+                    <div className="tape__col tape__col--buy">
+                      <div className="tape__colhead tape__colhead--buy">buy</div>
+                      <ul className="tape__list tape__list--side">
+                        {buys.length > 0
+                          ? buys.map((event, at) => (
+                            <li key={`b-${event.t}-${at}`} className="tape__row">
+                              <span className="tape__time">
+                                {formatClockSeconds(event.t)}
+                              </span>
+                              <span className="tape__price">
+                                {formatPrice(event.price)}
+                              </span>
+                              <span className="tape__size">
+                                {event.size == null ? "–" : formatVolume(event.size)}
+                              </span>
+                            </li>
+                          ))
+                          : (
+                            <li className="tape__empty">no buys yet</li>
+                          )}
+                      </ul>
+                    </div>
+                    <div className="tape__col tape__col--sell">
+                      <div className="tape__colhead tape__colhead--sell">sell</div>
+                      <ul className="tape__list tape__list--side">
+                        {sells.length > 0
+                          ? sells.map((event, at) => (
+                            <li key={`s-${event.t}-${at}`} className="tape__row">
+                              <span className="tape__time">
+                                {formatClockSeconds(event.t)}
+                              </span>
+                              <span className="tape__price">
+                                {formatPrice(event.price)}
+                              </span>
+                              <span className="tape__size">
+                                {event.size == null ? "–" : formatVolume(event.size)}
+                              </span>
+                            </li>
+                          ))
+                          : (
+                            <li className="tape__empty">no sells yet</li>
+                          )}
+                      </ul>
+                    </div>
+                  </div>
                   {tape.notes.length > 0
                     ? <p className="watchlist__note">{tape.notes.join(" ")}</p>
                     : null}

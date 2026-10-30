@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearDrawings,
+  loadChartDrawings,
   loadDrawings,
   measureBetween,
   parseDrawings,
@@ -61,6 +62,55 @@ describe("drawings", () => {
     clearDrawings("ABOT|1m", window.localStorage);
     expect(loadDrawings("ABOT|1m")).toEqual([]);
     expect(loadDrawings("PRL|5m")).toEqual([]);
+  });
+
+  it("loads a chart's drawings from the chart's own key", () => {
+    saveDrawings("PRL|live", [SEGMENT]);
+    expect(loadChartDrawings("PRL|live")).toEqual([SEGMENT]);
+  });
+
+  it("a chart's own notebook wins over its old timeframe shards", () => {
+    saveDrawings("OGDC|live", [SEGMENT]);
+    saveDrawings("OGDC|live|1m", [RAY]);
+    expect(loadChartDrawings("OGDC|live")).toEqual([SEGMENT]);
+    // The own key stood; nothing was migrated or deleted.
+    expect(loadDrawings("OGDC|live|1m")).toEqual([RAY]);
+  });
+
+  it("adopts the richest old timeframe shard when the chart has none", () => {
+    saveDrawings("CPPL|live|1m", [SEGMENT]);
+    saveDrawings("CPPL|live|30m", [
+      RAY,
+      { id: "d-3", kind: "trend", points: [A, { t: B.t, price: A.price }] },
+    ]);
+    const loaded = loadChartDrawings("CPPL|live");
+    expect(loaded).toEqual([
+      RAY,
+      { id: "d-3", kind: "trend", points: [A, { t: B.t, price: A.price }] },
+    ]);
+    expect(loadDrawings("CPPL|live")).toEqual([loaded[0], loaded[1]]);
+    // The old shards are retired, not left behind to migrate forever.
+    expect(loadDrawings("CPPL|live|1m")).toEqual([]);
+    expect(loadDrawings("CPPL|live|30m")).toEqual([]);
+  });
+
+  it("steals nothing from another chart's old shards", () => {
+    saveDrawings("LUCK|live|1m", [SEGMENT]);
+    expect(loadChartDrawings("PPL|live")).toEqual([]);
+    expect(loadDrawings("LUCK|live|1m")).toEqual([SEGMENT]);
+  });
+
+  it("a page with no old shards loads empty at once", () => {
+    saveDrawings("OTHER|2026-10-28", [SEGMENT]); // a different chart state
+    expect(loadChartDrawings("NOBODY|live")).toEqual([]);
+  });
+
+  it("clears a chart's notebook without touching other charts", () => {
+    saveDrawings("A|live", [SEGMENT]);
+    saveDrawings("B|live", [RAY]);
+    clearDrawings("A|live", window.localStorage);
+    expect(loadChartDrawings("A|live")).toEqual([]);
+    expect(loadChartDrawings("B|live")).toEqual([RAY]);
   });
 
   it("measures a distance with its own percent and minutes", () => {
