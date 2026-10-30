@@ -164,19 +164,18 @@ def _served_from_archive(source: BarSource, symbol: str, day) -> bool:
         return False
 
 
-#: The keeper asks for a year of history on every rung, so the client
-#: decides how much it carries and the server honours a whole decade on
-#: request: a daily bar behind a very fine chart is coarser grain than
-#: that chart's own candles, and the payload's note always says exactly
-#: that, so the stretch a reader is looking at is never a lie about
-#: detail it never had. One request can never ask the store to fold more
-#: than the decade it holds.
+#: The minute rungs carry the whole decade the store holds behind their own
+#: sessions: a daily bar behind a fine chart is coarser grain than that
+#: chart's own candles, and the payload's note always says exactly that, so
+#: the stretch a reader is looking at is never a lie about detail it never
+#: had. One request can never ask the store to fold more than the decade it
+#: holds.
 DAILY_BACKFILL_DEPTH = {
-    "10m": 260,    # a year of trading days
-    "15m": 260,
-    "30m": 260,
-    "1h": 260,
-    "4h": 2_600,   # the whole decade the store holds
+    "10m": 2_600,  # the whole decade the store holds
+    "15m": 2_600,
+    "30m": 2_600,
+    "1h": 2_600,
+    "4h": 2_600,
 }
 #: The widest parameter the HTTP route accepts: one request can never ask the
 #: store to fold more than the decade it holds anyway.
