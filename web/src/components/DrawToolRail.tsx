@@ -9,6 +9,8 @@
  * felt language, without borrowing anyone's asset files.
  */
 
+import { useEffect, useState } from "react";
+
 import type { DrawTool } from "../chart/drawings";
 
 export interface DrawToolRailProps {
@@ -21,6 +23,8 @@ export interface DrawToolRailProps {
   /** Drawing count on this chart, for the clear button's title. */
   readonly count: number;
   readonly onClear: () => void;
+  /** A save click: flush the notebook on demand. */
+  readonly onSave?: () => void;
   readonly disabled?: boolean;
 }
 
@@ -102,6 +106,14 @@ function Icon({ name }: { readonly name: string }) {
                 strokeDasharray="2.6 2.2" strokeWidth="1" />
         </svg>
       );
+    case "save":
+      return (
+        <svg {...common}>
+          <path d="M4.5 4.5h9l2 2v9h-11v-11Z" />
+          <path d="M7 4.5V8h6V4.5" />
+          <rect x="7.2" y="10.6" width="5.6" height="5" />
+        </svg>
+      );
     case "eye":
       return (
         <svg {...common}>
@@ -143,8 +155,18 @@ const TOOLS: readonly {
 
 export function DrawToolRail(props: DrawToolRailProps) {
   const {
-    tool, onTool, hidden, onHideToggle, count, onClear, disabled,
+    tool, onTool, hidden, onHideToggle, count, onClear, onSave, disabled,
   } = props;
+  // The save feedback: a short green flash on the icon, then it fades and
+  // the icon is a plain diskette again.
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (!saved) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setSaved(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [saved]);
   const pick = (next: DrawTool) => {
     onTool(next === tool ? "cursor" : next);
   };
@@ -154,11 +176,15 @@ export function DrawToolRail(props: DrawToolRailProps) {
     label: string,
     onClick: () => void,
     keyPrefix = "t",
+    extraClass = "",
   ) => (
     <button
       type="button"
       key={`${keyPrefix}-${name}`}
-      className={active ? "tv-rail__tool tv-rail__tool--on" : "tv-rail__tool"}
+      className={
+        (active ? "tv-rail__tool tv-rail__tool--on" : "tv-rail__tool")
+        + (extraClass.length > 0 ? ` ${extraClass}` : "")
+      }
       aria-pressed={active}
       aria-label={label}
       title={label}
@@ -185,6 +211,18 @@ export function DrawToolRail(props: DrawToolRailProps) {
         "measure",
         "Measure (drag, read, release - never kept)",
         () => pick("measure"),
+      )}
+      {button(
+        false,
+        "save",
+        saved ? "Saved - the drawings on this chart are kept"
+          : "Save drawings on this chart",
+        () => {
+          onSave?.();
+          setSaved(true);
+        },
+        "m",
+        saved ? "tv-rail__tool--saved" : "",
       )}
       <div className="tv-rail__gap" aria-hidden="true" />
       {button(

@@ -1,11 +1,13 @@
 /**
  * Drawings: what a reader has drawn on one chart, and how it is kept.
  *
- * A drawing belongs to one chart key (symbol|session|interval) and is two
- * anchored points on the tape's own coordinates - a Karachi-clock instant
- * and a price - so it lands back on the same bars after reload, zoom or a
- * merged-session shift. One tool measures and is never kept: measurement
- * is read, not recorded, exactly like TradingView's ruler.
+ * A drawing belongs to one chart (symbol|session) and is two anchored
+ * points on the tape's own coordinates - a Karachi-clock instant and a
+ * price - so it lands back on the same bars after reload, zoom, a
+ * timeframe switch or a merged-session shift. The screen holds the
+ * notebook on every commit; the rail's Save button flushes it on demand.
+ * One tool measures and is never kept: measurement is read, not recorded,
+ * exactly like TradingView's ruler.
  */
 
 /** The rail's tools, in the order the rail draws them. */
@@ -58,6 +60,62 @@ export function loadDrawings(viewKey: string): Drawing[] {
     return parseDrawings(list);
   } catch {
     // A corrupt notebook is still a notebook, not a crash.
+    return [];
+  }
+}
+
+/**
+ * The drawings on one chart, and whatever the older notebook held.
+ *
+ * The drawings used to live per timeframe (`symbol|day|1m`), so a trend
+ * line vanished the moment a reader switched from 1m to 30m - the chart
+ * with the other key loaded an empty page. They are keyed by chart now;
+ * this load additionally adopts the richest old timeframe shard and
+ * retires it, so work drawn before the fix survives the notebook's move.
+ */
+export function loadChartDrawings(chartKey: string): Drawing[] {
+  const own = loadDrawings(chartKey);
+  if (own.length > 0) {
+    return own;
+  }
+  return migrateChartDrawings(chartKey);
+}
+
+/**
+ * The migration itself: read every string shard `chartKey|x`, keep the
+ * richest, write it under `chartKey` and delete the shards. Read-only on
+ * any failure, exactly like `loadDrawings`.
+ */
+export function migrateChartDrawings(chartKey: string): Drawing[] {
+  try {
+    const raw = window.localStorage.getItem(STORE_KEY);
+    if (raw === null) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object") {
+      return [];
+    }
+    const record = { ...(parsed as Record<string, unknown>) };
+    let best: Drawing[] = [];
+    for (const key of Object.keys(record)) {
+      if (!key.startsWith(`${chartKey}|`)) {
+        continue;
+      }
+      const list = parseDrawings(record[key]);
+      if (list.length > best.length) {
+        best = list;
+      }
+      delete record[key];
+    }
+    if (best.length === 0) {
+      return [];
+    }
+    record[chartKey] = best;
+    window.localStorage.setItem(STORE_KEY, JSON.stringify(record));
+    return best;
+  } catch {
+    // A refusing store loses the migration, not the session.
     return [];
   }
 }

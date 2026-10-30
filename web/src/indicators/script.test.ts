@@ -90,6 +90,36 @@ describe("multi-statement scripts", () => {
     expect(() => validateFormula(script)).not.toThrow();
   });
 
+  it("keeps the promised limit: a thousand lines end, and not before", () => {
+    const lines = (count: number): string => {
+      const rows: string[] = [];
+      for (let index = 1; index <= count; index += 1) {
+        rows.push(`a${index} = sma(close, ${1 + (index % 99)})`);
+      }
+      rows.push("plot(a999)");
+      return rows.join("\n");
+    };
+    expect(() => validateFormula(lines(999))).not.toThrow();
+  });
+
+  it("refuses a script past the thousand-line limit", () => {
+    const wide = (count: number, padding: number): string => {
+      const rows: string[] = [];
+      for (let index = 1; index <= count; index += 1) {
+        rows.push(`a${index} = sma(close, ${1 + (index % 99)})` +
+          " // " + "x".repeat(padding));
+      }
+      rows.push("plot(a1)");
+      return rows.join("\n");
+    };
+    // The ceiling travels with the colour comment a pasted study carries,
+    // so the refusal turns on the number of lines, not the characters.
+    const manyAgain = wide(1008, 10);
+    expect(manyAgain.length).toBeLessThan(100_000);
+    expect(() => validateFormula(manyAgain))
+      .toThrow(/longer than 1,?000 lines/);
+  });
+
   it("reads a pasted Pine banner, declaration and namespace", () => {
     const script = [
       "//@version=5",
