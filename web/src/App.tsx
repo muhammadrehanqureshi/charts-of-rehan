@@ -84,19 +84,20 @@ function spanFor(resolution: Resolution): number {
 
 /**
  * How much older, coarser-grained history a rung's chart asks for, in
- * whole sessions. The mirror rungs already fold identical session
- * windows, so every whole number of them keeps daily-grain archive bars
- * aligned with the intraday ones; small values keep each chart inside
- * the ten-year store without carrying a decade of candles in memory.
+ * whole sessions. The keeper's rule is a year of history on any rung -
+ * scrolling back is how a chart is read - so every fine rung carries a
+ * year of daily-grain bars behind it; the four-hour rung, whose session
+ * windows a daily bar nearly matches, asks for the whole decade. Each
+ * number is a whole count so the daily bars stay aligned with the
+ * intraday session windows they are folded among.
  */
 function backfillFor(resolution: Resolution): number {
   switch (resolution) {
-    case "1s": case "10s": return 3;
-    case "1m": case "5m": return 8;
-    case "10m": case "15m": return 6;
-    case "30m": return 7;
-    case "1h": return 7;
-    case "4h": return 35;
+    case "1s": case "10s":
+    case "1m": case "5m": case "10m": case "15m":
+    case "30m": return 260;   // a year of trading days
+    case "1h": return 260;
+    case "4h": return 2_600;  // the whole decade the store holds
     case "1D": case "1W": case "1M":
     case "1d": case "session": return 0;
   }
