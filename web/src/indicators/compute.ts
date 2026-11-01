@@ -268,32 +268,31 @@ function computeOne(spec: IndicatorSpec, data: SeriesData): IndicatorOutput {
         };
       }
       case "volumedelta": {
-        // The tape's own split when it exists, the candle's signed volume
-        // otherwise. A bar the tape never classified says so (NaN) rather
-        // than borrowing the neighbour's number. Per-bar bars only: a
-        // cumulative line on the same axis would rescale the pane by the
-        // week's running sum and flatten every bar into invisibility.
+        // The tape's own split where it classified the bar, the candle's
+        // signed volume where it did not. A live tape starts mid-session and
+        // a daily series can never have a split at all, so drawing only the
+        // classified bars left most of the pane blank. The fallback is a
+        // proxy (close versus open), not buyer/seller evidence, and it is
+        // used per bar: one unclassified bar keeps its neighbours' measured
+        // numbers intact. Per-bar bars only: a cumulative line on the same
+        // axis would rescale the pane by the week's running sum and flatten
+        // every bar into invisibility.
         const net = filled(data.length);
         for (let index = 0; index < data.length; index += 1) {
           const bought = data.buy?.[index];
           const sold = data.sell?.[index];
-          let value = Number.NaN;
           if (bought !== undefined && sold !== undefined
               && Number.isFinite(bought) && Number.isFinite(sold)) {
-            value = bought - sold;
-          } else if (data.buy === undefined || data.sell === undefined) {
-            // Preserve the old signed-volume proxy only when this payload has
-            // no tape split at all. Missing classified windows in a live tape
-            // remain NaN; candle colour is not buyer/seller evidence.
-            const volume = data.volume[index];
-            const open = data.open[index];
-            const close = data.close[index];
-            if (volume !== undefined && Number.isFinite(volume)
-                && open !== undefined && close !== undefined) {
-              value = close >= open ? volume : -volume;
-            }
+            net[index] = bought - sold;
+            continue;
           }
-          net[index] = value;
+          const volume = data.volume[index];
+          const open = data.open[index];
+          const close = data.close[index];
+          if (volume !== undefined && Number.isFinite(volume)
+              && open !== undefined && close !== undefined) {
+            net[index] = close >= open ? volume : -volume;
+          }
         }
         return {
           id: spec.id, type: spec.type, label, placement,
