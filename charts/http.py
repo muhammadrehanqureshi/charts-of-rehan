@@ -577,12 +577,16 @@ class ChartHandler(BaseHTTPRequestHandler):
                         break
                     continue
                 idle = 0.0
-                # The ingestor polls the tape's own grain (one minute). A
-                # coarser rung must be rebuilt from it rather than forwarding
-                # minute bars under a coarser label: a client that folded
-                # them itself would double-fold, and one that did not would
-                # draw the wrong candle width.
-                if resolution == self.state.default_resolution:
+                # The ingestor's event can lag the tape by its own interval.
+                # Every intraday rung rebuilds from the source even when the
+                # event is this resolution, so a forming candle is never
+                # replaced by an older copy of itself between ticks. A coarser
+                # rung must be rebuilt too rather than forwarding minute bars
+                # under a coarser label: a client that folded them itself
+                # would double-fold, and one that did not would draw the wrong
+                # candle width.
+                if (resolution == self.state.default_resolution
+                        and not intraday):
                     self._write_event("bars", event)
                     last_bars = [dict(bar) for bar in event["bars"]]
                 else:
