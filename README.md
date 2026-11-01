@@ -1,7 +1,14 @@
-# Charts of Rehan
+<p align="center">
+  <img src="assets/charts-of-rehan.png" alt="Charts of Rehan" width="340" />
+</p>
 
-![Charts of Rehan](assets/charts-of-rehan.png)
+<h1 align="center">Charts of Rehan</h1>
 
+<p align="center">
+  An honest charting terminal for the exchange's own session: one-second to
+  one-month candles, volume, measured delta, drawing tools and the Karachi
+  session clock.
+</p>
 
 A charting service for the exchange's own session, built from this project's own
 market data. It serves candles at twelve resolutions from one second to one
@@ -67,7 +74,7 @@ The front end needs Node for its development server and its build:
 cd web
 npm install
 npm run dev        # http://localhost:5173, proxying /api to the service
-npm test           # 134 unit tests
+npm test           # 223 unit tests
 npm run build      # writes web/dist, which the service then serves
 ```
 
@@ -112,7 +119,7 @@ the event stream.
 ## Testing
 
 ```bash
-python -m pytest tests -q     # 222 tests
+python -m pytest tests -q     # 281 tests
 cd web && npm run typecheck && npm test
 python tools/sanitize.py      # must report zero findings before publishing
 ```
