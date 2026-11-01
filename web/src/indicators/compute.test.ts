@@ -122,7 +122,7 @@ describe("indicator engine", () => {
     expect(histogram[1]).toBe(11);
   });
 
-  it("does not invent buy/sell delta for an unclassified tape bar", () => {
+  it("falls back to signed volume for a bar the tape left unclassified", () => {
     const series = seriesFor([10, 11, 10]);
     const data = seriesData(series);
     const spec = createIndicator("volumedelta");
@@ -133,7 +133,9 @@ describe("indicator engine", () => {
     })[0];
     const histogram = output?.histogram?.values ?? new Float64Array();
     expect(histogram[0]).toBe(8);
-    expect(Number.isNaN(histogram[1])).toBe(true);
+    // Bar 1 has no classified flow, so it keeps the signed-volume proxy
+    // instead of leaving a hole between two measured neighbours.
+    expect(histogram[1]).toBe(11);
     expect(histogram[2]).toBe(-5);
   });
 

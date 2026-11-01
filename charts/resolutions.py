@@ -154,12 +154,13 @@ BUILD_NOTES: dict[str, str] = {
     "1h": "1-hour bars are folded from the session's 1-minute tape bars",
     "4h": "4-hour bars are folded from the session's 1-minute tape bars; a "
           "short PSX session may hold only one or two of them",
-    "1D": "daily bars are one trading session each, folded from that session's "
-          "minute bars",
+    "1D": "daily bars are one trading session each, read from the exchange's "
+          "own daily row whenever the store holds it; a session without that "
+          "row is folded from its own minute bars",
     "1W": "weekly bars group trading sessions by ISO week, folded from their "
-          "minute bars",
+          "daily rows (or minute bars where no daily row exists)",
     "1M": "monthly bars group trading sessions by calendar month, folded from "
-          "their minute bars",
+          "their daily rows (or minute bars where no daily row exists)",
 }
 
 
@@ -299,7 +300,14 @@ def aggregate(bars: Iterable[Bar], resolution: str) -> list[Bar]:
     exchange time. A calendar fold groups every session in the series.
     """
     spec = spec_for(resolution)
-    rows = [bar for bar in bars if in_session(_bar_time(bar))]
+    # Only intraday input is minute- or tick-grained and therefore needs the
+    # session band to decide what belongs to the market. A calendar fold's
+    # input is already one bar per session (the exchange's own daily row, or a
+    # session's folded minutes), and its stamp is deliberately noon: filtering
+    # that stamp through the band would silently delete every half-day session
+    # whose band ended before noon.
+    rows = ([bar for bar in bars if in_session(_bar_time(bar))]
+            if spec.intraday else list(bars))
     if not rows:
         return []
     if spec.intraday and spec.id == "1m":

@@ -1226,28 +1226,41 @@ class TapeSource:
         rows: list[Bar] = []
         missing: UpstreamError | None = None
         for item in days:
-            try:
-                part = self._minute_history(symbol, item)
-            except UpstreamError as exc:
-                banked = self._eod.bar(item, symbol)
-                if banked is not None:
-                    rows.append(banked)
-                    continue
-                if item == session:
-                    missing = exc
-                continue
-            if part:
-                rows.extend(part)
-                continue
-            # A day the tape genuinely holds nothing for is not an
-            # excuse to drop the bar the exchange itself published for
-            # that same day: its row in the history table is real data.
+            # The exchange's own daily row is the session's authoritative
+            # OHLCV: it carries the opening auction and every print, while a
+            # minute fold can only add the minutes the capture saw. The row
+            # wins whenever it exists; minutes are the fallback for a day the
+            # store has not banked yet (today's forming session, or a day
+            # outside its rolling window).
             banked = self._eod.bar(item, symbol)
             if banked is not None:
                 rows.append(banked)
+                continue
+            try:
+                part = self._minute_history(symbol, item)
+            except UpstreamError as exc:
+                if item == session:
+                    missing = exc
+                continue
+            rows.extend(part)
         if not rows and missing is not None:
             raise missing
-        return ladder.aggregate(rows, resolution)
+        folded = ladder.aggregate(rows, resolution)
+        if resolution == "1D":
+            # The exchange's daily row sits at Karachi noon. A fallback fold
+            # would otherwise wear its first minute's stamp, so a mixed
+            # series would shift on the axis from one day to the next.
+            folded = [self._at_noon(bar) for bar in folded]
+        return folded
+
+    @staticmethod
+    def _at_noon(bar: Bar) -> Bar:
+        """The same bar stamped at its own Karachi calendar noon."""
+        noon = f"{bar.t[:10]}T12:00:00+05:00"
+        if bar.t == noon:
+            return bar
+        return Bar.build(t=noon, o=bar.o, h=bar.h, l=bar.l,
+                         c=bar.c, v=bar.v)
 
     # ------------------------------------------------------------ sub-minute
     def _tick_state(self, session: date, resolution: str) -> dict | None:
