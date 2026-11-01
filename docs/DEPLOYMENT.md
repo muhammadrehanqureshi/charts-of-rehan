@@ -46,6 +46,10 @@ npm run build         # writes web/dist
 
 ## Operating notes
 
+- **Machine budget.** The open chart stream may tick at most once per second
+  while visible; ancillary polls are at least five seconds; source polling
+  defaults to fifteen seconds with a five-second floor; EOD maintenance runs
+  every fifteen minutes. Hidden tabs stop. Do not add another daemon.
 - **Politeness.** The portal source paces its requests through a token bucket with
   bounded retries and a circuit breaker. Do not raise the interval below the
   default without measuring the effect on the upstream page.
