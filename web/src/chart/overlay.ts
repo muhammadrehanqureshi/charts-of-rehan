@@ -500,7 +500,11 @@ export function breakPlan(
     // Lines keep a rhythm of their own: in the dense mode only the month's
     // first bar asks for one, and none crowds the previous within 18px.
     const asks = !dense || monthStart;
-    if (asks && item.x - lastLine >= LINE_MIN_PX) {
+    // The 18px rhythm exists to stop a daily-grain chart turning into a
+    // dashed forest. An intraday chart has one join per real session and
+    // the owner asked for every one of them, even when a zoom packs two
+    // joins within a few pixels.
+    if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
       plan.push({ x: item.x, line: true, text: null });
       lastLine = item.x;
     }

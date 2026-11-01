@@ -558,7 +558,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // A normal fit can leave whitespace on the left while every bar is
       // still on screen. Only name the boundary when the viewport has
       // actually run past the end of the tape and no bar is visible.
-      if (first === undefined || range === null || range.to >= -0.5) {
+      const pastStart = range !== null
+        && (range.to < -0.5 || (zoomed.current && range.from < -0.5));
+      if (first === undefined || range === null || !pastStart) {
         el.hidden = true;
         el.textContent = "";
         return;
