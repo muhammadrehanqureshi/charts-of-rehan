@@ -522,10 +522,16 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // zoom is never touched.
       if (!zoomed.current && fitCount.current > 0) {
         const newest = Math.min(WINDOW_BARS, fitCount.current);
-        chart.timeScale().setVisibleLogicalRange({
-          from: Math.max(0, fitCount.current - newest),
-          to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
-        });
+        if (fitCount.current <= WINDOW_BARS) {
+          // Every loaded bar fits: show the whole tape, including its first
+          // session, rather than leaving the opening window short of it.
+          chart.timeScale().fitContent();
+        } else {
+          chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, fitCount.current - newest),
+            to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
+          });
+        }
       }
     };
     const observer = new ResizeObserver(resize);
@@ -555,22 +561,20 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       const first = state.barTimes[0];
       const range = state.chart.timeScale().getVisibleLogicalRange();
-      // A normal fit can leave whitespace on the left while every bar is
-      // still on screen. Only name the boundary when the viewport has
-      // actually run past the end of the tape and no bar is visible.
-      const pastStart = range !== null
-        && (range.to < -0.5 || (zoomed.current && range.from < -0.5));
-      if (first === undefined || range === null || !pastStart) {
+      // An intraday tape is shorter than the calendar series behind it.
+      // Keep its first recorded day visible as a calm caption, whatever
+      // window the reader has chosen; a calendar chart needs no caption.
+      const intraday = resolution !== "1D" && resolution !== "1W"
+        && resolution !== "1M" && resolution !== "1d"
+        && resolution !== "session";
+      const showBoundary = range !== null && intraday;
+      if (first === undefined || range === null || !showBoundary) {
         el.hidden = true;
         el.textContent = "";
         return;
       }
-      const intraday = resolution !== "1D" && resolution !== "1W"
-        && resolution !== "1M" && resolution !== "1d"
-        && resolution !== "session";
       el.textContent = `${resolution} recorded history begins ` +
-        karachiDay.format(new Date(first)) +
-        (intraday ? " · older days are in 1D" : "");
+        karachiDay.format(new Date(first)) + " · older days are in 1D";
       el.hidden = false;
     };
     const rangeSub = () => {
@@ -757,8 +761,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // the reader pans or zooms, nothing here moves their window again.
     const fit = candlesData.length > fitCount.current
       || candlesData.length < fitCount.current;
-    if (fitPending.current || fitKey.current !== viewKey
-        || (!zoomed.current && fit)) {
+    const shouldFit = fitPending.current || fitKey.current !== viewKey
+        || (!zoomed.current && fit);
+    if (shouldFit) {
       fitPending.current = false;
       fitKey.current = viewKey;
       fitCount.current = candlesData.length;
@@ -767,6 +772,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // candles. The earlier sessions are a pan away, which is what a
       // continuous series is for.
       const newest = Math.min(WINDOW_BARS, candlesData.length);
+      const showAll = candlesData.length <= WINDOW_BARS;
       const range = {
         from: Math.max(0, candlesData.length - newest),
         to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
@@ -779,7 +785,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
             || engine.current?.chart !== state.chart) {
           return;
         }
-        timeScale.setVisibleLogicalRange(range);
+        if (showAll) {
+          // fitContent is the engine's own full-tape fit. A logical range
+          // with from=0 can be ignored while the chart is still laying out,
+          // leaving the oldest sessions cut off at the left edge.
+          timeScale.fitContent();
+        } else {
+          timeScale.setVisibleLogicalRange(range);
+        }
       };
       apply();
       // The engine lays out its own scale once the first data lands. A second
