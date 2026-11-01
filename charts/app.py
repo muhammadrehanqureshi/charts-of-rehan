@@ -48,6 +48,11 @@ from charts.adapters.tape import TapeSource, read_universe
 from charts.archive import discover_capture_dirs
 from charts.contract import RESOLUTION_MINUTE
 from charts.eod import decade_start
+from charts.lightweight import (
+    DEFAULT_INGEST_SECONDS,
+    EOD_MAINTENANCE_SECONDS,
+    MIN_INGEST_SECONDS,
+)
 from charts.http import ChartServer
 from charts.ingest import Ingestor
 from charts.store import BarStore
@@ -58,7 +63,7 @@ LOGGER = logging.getLogger("charts.app")
 #: collide with a development server or another tool on this machine.
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8788
-DEFAULT_INTERVAL = 5.0
+DEFAULT_INTERVAL = DEFAULT_INGEST_SECONDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STATIC = ROOT / "web" / "dist"
@@ -164,9 +169,8 @@ def _source_for(args, clock=None):
 #: Recent days a maintenance pass re-checks, so a shortfall the window edge
 #: caused catches up politely instead of on every startup once.
 EOD_CATCHUP_DAYS = 20
-#: Maintenance cadence. A pass with nothing to do touches nothing; the
-#: network is only opened for days that are genuinely missing.
-EOD_MAINTENANCE_SECONDS = 15 * 60.0
+#: Maintenance cadence lives in charts.lightweight; see that file for the
+#: machine budget.
 
 
 class Refused(Exception):
@@ -250,7 +254,7 @@ def build(args) -> tuple[BarStore, Ingestor, ChartServer]:
             f"{', '.join(capabilities.resolutions)}")
     store = BarStore()
     ingestor = Ingestor(store, source, resolution=resolution,
-                        interval_seconds=max(2.0, args.interval))
+                        interval_seconds=max(MIN_INGEST_SECONDS, args.interval))
     static = Path(args.static) if args.static else None
     when = sessions.market_context()
     cors = tuple(_symbols(args.cors)) + ("http://localhost:5173",

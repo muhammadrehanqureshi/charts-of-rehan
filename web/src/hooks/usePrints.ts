@@ -2,7 +2,8 @@
  * One polling hook for the order-print ledger.
  *
  * The bars stream is push; the prints ledger is polled, because the server
- * rebuilds it from a growing capture file and a poll of one second is * exactly what the tape itself observes anyway. The refetch never cries
+ * rebuilds it from a growing capture file; a five-second poll is enough for
+ * the ledger. The refetch never cries
  * wolf: a source without a ledger answers an empty report with a note, so a
  * missing feature stays quiet instead of turning into an error state.
  */
@@ -11,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ChartClient } from "../api/client.js";
 import type { PrintReport } from "../api/types.js";
+import { AUXILIARY_POLL_MS } from "../lightweight";
 import { useVisibility } from "./useVisibility.js";
 
 export interface PrintsState {
@@ -32,7 +34,7 @@ export function usePrints(
   symbol: string,
   day: string,
   enabled: boolean,
-  intervalMs = 1_000,
+  intervalMs = AUXILIARY_POLL_MS,
   /** Newest sessions to carry per-day totals for (0 = just `day`). */
   days = 0,
 ): PrintsState {
