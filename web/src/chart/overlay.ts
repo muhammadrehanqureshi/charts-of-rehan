@@ -466,7 +466,16 @@ export function breakPlan(
     if (item.first) {
       continue;
     }
-    const x = xOf(item.t);
+    let x = xOf(item.t);
+    // A day changes between two candles, not through the first one: put
+    // the rule midway between the last bar of the old session and the
+    // first of the new one whenever both map to the screen.
+    if (x !== null && item.previous !== undefined) {
+      const before = xOf(item.previous);
+      if (before !== null) {
+        x = (before + x) / 2;
+      }
+    }
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
@@ -527,7 +536,15 @@ export function paintSessionBreaks(
   denseAllowed = true,
   /** How far down the stack the rule runs: every pane, not only price. */
   bottom = frame.plotHeight,
+  /** The display's device-pixel ratio, so every rule has equal weight. */
+  dpr = 1,
 ): void {
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  // A one-CSS-pixel rule at a fractional DPR lands on a different pixel
+  // phase from one rule to the next, so some lines read bold and some read
+  // faint. Snap every rule to a device-pixel centre: same width and weight.
+  const deviceX = (x: number): number =>
+    (Math.round(x * ratio - 0.5) + 0.5) / ratio;
   if (breaks.length < 2) {
     return;
   }
@@ -549,9 +566,10 @@ export function paintSessionBreaks(
       context.setLineDash([2, 4]);
       context.strokeStyle = colors.line;
       context.lineWidth = 1;
+      const x = deviceX(item.x);
       context.beginPath();
-      context.moveTo(item.x + 0.5, 0);
-      context.lineTo(item.x + 0.5, bottom);
+      context.moveTo(x, 0);
+      context.lineTo(x, bottom);
       context.stroke();
       context.setLineDash([]);
     } else if (item.text !== null) {
