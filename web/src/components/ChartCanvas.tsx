@@ -281,6 +281,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const legend = useRef<HTMLDivElement | null>(null);
   /** Shown when the reader pans past the oldest bar the tape holds. */
   const historyEdge = useRef<HTMLParagraphElement | null>(null);
+  /** Re-run the boundary caption after a data paint, not only on range events. */
+  const refreshHistoryEdge = useRef<(() => void) | null>(null);
   const engine = useRef<EngineState | null>(null);
   const engineView = useRef(viewKey);
   /** A view switch owes the next dataset one fit, whatever the old zoom. */
@@ -593,6 +595,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       scheduleOverlayPaint();
       writeHistoryEdge();
     };
+    refreshHistoryEdge.current = writeHistoryEdge;
     chart.timeScale().subscribeVisibleTimeRangeChange(rangeSub);
 
     engine.current = {
@@ -627,6 +630,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     window.setTimeout(writeHistoryEdge, 0);
 
     return () => {
+      refreshHistoryEdge.current = null;
       observer.disconnect();
       surfaceEl.removeEventListener("wheel", tookTheWindow, true);
       surfaceEl.removeEventListener("pointerdown", tookTheWindow, true);
@@ -818,6 +822,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       setTimeout(apply, 0);
       requestAnimationFrame(apply);
     }
+    refreshHistoryEdge.current?.();
   }
 
   useEffect(() => {
