@@ -86,9 +86,9 @@ const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
 
-/** Rungs whose bars are calendar folds, not sessions to divide. */
-const CALENDAR_RUNGS: ReadonlySet<string> = new Set([
-  "1D", "1W", "1M", "1d", "session",
+/** The only rungs that carry session breaks, exactly as the owner listed. */
+const SESSION_BREAK_RUNGS: ReadonlySet<string> = new Set([
+  "1s", "10s", "1m", "5m", "15m", "30m", "1h",
 ]);
 
 /** The chart's colour tokens: one theme, black, with TV's own candle hues. */
@@ -383,12 +383,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
         fontFamily: "'Trebuchet MS', 'Segoe UI', Verdana, sans-serif",
         panes: { separatorColor: tokens.border },
       },
-      grid: appearance?.gridOn === false
-        ? { vertLines: { visible: false }, horzLines: { visible: false } }
-        : {
-            vertLines: { color: tokens.grid },
-            horzLines: { color: tokens.grid },
-          },
+      // The owner's plate: candles, and nothing ruling the space behind
+      // them except the blue dotted session breaks the overlay paints.
+      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
@@ -670,9 +667,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The drawing anchors and the y-picks map from these; the whole
     // drawing path speaks milliseconds, so keep them ms here too.
     state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
-    state.breaks = CALENDAR_RUNGS.has(resolution)
-      ? []
-      : sessionBreaks(state.barTimes);
+    state.breaks = SESSION_BREAK_RUNGS.has(resolution)
+      ? sessionBreaks(state.barTimes)
+      : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
       // An empty plate is cleared, not left with stale bars behind the
@@ -833,13 +830,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
       bars,
     });
     // The dotted session rules: one blue line at every Karachi day change,
-    // through the price pane and every study pane beneath it. Intraday charts
-    // are never "dense" in the calendar sense, so an hourly window keeps its
-    // rules even when its bars are packed into a few hundred pixels.
+    // through the price pane and every study pane beneath it. Only the seven
+    // rungs the owner named carry them; these are never "dense" in the
+    // calendar sense, so a packed hour window keeps every rule.
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
         { line: "rgba(41, 98, 255, 0.6)", label: "#8f9bb3" },
-        !CALENDAR_RUNGS.has(resolution), cssHeight);
+        false, cssHeight);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,

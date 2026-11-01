@@ -120,13 +120,6 @@ export function ChartSettingsDialog(props: ChartSettingsProps) {
                  onChange={(event) => onAppearance({ down: event.target.value })} />
         </label>
         <label className="settings-row settings-row--check">
-          <span>grid lines</span>
-          <input type="checkbox" checked={appearance.gridOn}
-                 aria-label="grid lines"
-                 onChange={(event) =>
-                   onAppearance({ gridOn: event.target.checked })} />
-        </label>
-        <label className="settings-row settings-row--check">
           <span>symbol watermark</span>
           <input type="checkbox" checked={appearance.watermarkOn}
                  aria-label="symbol watermark"

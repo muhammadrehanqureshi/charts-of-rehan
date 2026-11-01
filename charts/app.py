@@ -37,7 +37,7 @@ import os
 import sys
 import threading
 import time as _time
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from charts import __version__, sessions
@@ -158,10 +158,18 @@ def _source_for(args, clock=None):
                         clock=clock)
 
 
-#: The rolling decade window, in calendar days. Sunday is not excluded: the
-#: window's edge is a calendar fact about "how far back the store reaches",
-#: and the fetcher's own weekday rule decides what trades on which day.
-EOD_WINDOW_DAYS = 3_653
+#: The rolling decade window is a calendar anniversary, not a fixed day
+#: count: on 1 Nov 2026 it reaches back to 1 Nov 2016 exactly. Counting 3,653
+#: days landed on 31 Oct and kept one stale session at the window's edge.
+#: Sunday is not excluded: the fetcher's own weekday rule decides what trades.
+def decade_start(today: date) -> date:
+    """The same calendar day ten years earlier, leap day included."""
+    try:
+        return today.replace(year=today.year - 10)
+    except ValueError:
+        # 29 February in a non-leap target year: the window starts on the
+        # 28th, the last day that exists in that month.
+        return today.replace(year=today.year - 10, day=28)
 #: Recent days a maintenance pass re-checks, so a shortfall the window edge
 #: caused catches up politely instead of on every startup once.
 EOD_CATCHUP_DAYS = 20
@@ -299,7 +307,7 @@ def _roll_eod_window(source: TapeSource, logger: logging.Logger) -> str:
     store = source.eod
     now = sessions.law.now_karachi()
     today = sessions.law.as_karachi(now).date()
-    window_start = today - timedelta(days=EOD_WINDOW_DAYS)
+    window_start = decade_start(today)
     removed = store.prune(window_start)
     # Today's own rows are banked only once its session is over: a half-day
     # table would be stored as the day's whole truth, and the store is
