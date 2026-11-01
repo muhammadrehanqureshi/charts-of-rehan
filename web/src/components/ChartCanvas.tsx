@@ -423,6 +423,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
         borderColor: tokens.border,
         rightOffset: RIGHT_OFFSET_BARS,
         barSpacing: 8,
+        // The recorder omits non-trading days. A date-proportional axis
+        // turns those omissions into large empty slots and makes the same
+        // sessions look unrelated at different resolutions. TradingView's
+        // continuous tape uses uniform spacing; every real bar gets a slot.
+        uniformDistribution: true,
         timeVisible: true,
         secondsVisible: showSeconds,
         tickMarkFormatter:
@@ -523,12 +528,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (!zoomed.current && fitCount.current > 0) {
         const newest = Math.min(WINDOW_BARS, fitCount.current);
         if (fitCount.current <= WINDOW_BARS) {
-          // Every loaded bar fits: show the whole tape, including its first
-          // session, rather than leaving the opening window short of it.
+          // Every loaded bar fits: fit the whole tape, then open one bar of
+          // whitespace on each side. fitContent puts the first candle centre
+          // exactly on the left edge, where half of it is clipped.
           chart.timeScale().fitContent();
-        } else {
           chart.timeScale().setVisibleLogicalRange({
-            from: Math.max(0, fitCount.current - newest),
+            from: -1,
+            to: fitCount.current,
+          });
+        } else {
+          // One extra bar on the left keeps the oldest visible candle whole
+          // when a reader pans to the start of a longer series.
+          chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, fitCount.current - newest - 1),
             to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
           });
         }
@@ -774,7 +786,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const newest = Math.min(WINDOW_BARS, candlesData.length);
       const showAll = candlesData.length <= WINDOW_BARS;
       const range = {
-        from: Math.max(0, candlesData.length - newest),
+        from: Math.max(0, candlesData.length - newest - 1),
         to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
       };
       const token = fitToken.current + 1;
@@ -788,8 +800,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
         if (showAll) {
           // fitContent is the engine's own full-tape fit. A logical range
           // with from=0 can be ignored while the chart is still laying out,
-          // leaving the oldest sessions cut off at the left edge.
+          // leaving the oldest sessions cut off at the left edge. Fit first,
+          // then expand by one bar so the first and last candles are whole.
           timeScale.fitContent();
+          timeScale.setVisibleLogicalRange({
+            from: -1,
+            to: candlesData.length,
+          });
         } else {
           timeScale.setVisibleLogicalRange(range);
         }
