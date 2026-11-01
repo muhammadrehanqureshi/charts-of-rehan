@@ -309,6 +309,16 @@ def _roll_eod_window(source: TapeSource, logger: logging.Logger) -> str:
     today = sessions.law.as_karachi(now).date()
     window_start = decade_start(today)
     removed = store.prune(window_start)
+    # The exchange's index minutes are a separate durable series: bank every
+    # finished session, and prune its oldest days on the same anniversary as
+    # the scrip store. A failure here is logged, never fatal to the pass.
+    removed_indices = 0
+    banked_indices = 0
+    try:
+        removed_indices = len(source.prune_index_days(window_start))
+        banked_indices = source.bank_index_days(since=window_start)
+    except Exception as exc:  # noqa: BLE001 - logged, never fatal
+        logger.warning("index store: %s: %s", type(exc).__name__, exc)
     # Today's own rows are banked only once its session is over: a half-day
     # table would be stored as the day's whole truth, and the store is
     # written once and never edited. A pre-open, post-close or fully closed
@@ -327,9 +337,11 @@ def _roll_eod_window(source: TapeSource, logger: logging.Logger) -> str:
               if not missing
               else eod_backfill(store, first=missing[0], last=missing[-1],
                                 progress=logger.info)["stored"])
-    if removed or banked:
+    if removed or banked or removed_indices or banked_indices:
         sentence = (f"eod window: pruned {len(removed)} day(s) behind "
-                    f"{window_start.isoformat()}, banked {banked} day(s)")
+                    f"{window_start.isoformat()}, banked {banked} day(s), "
+                    f"{banked_indices} index day(s) banked / "
+                    f"{removed_indices} pruned")
         logger.info(sentence)
         return sentence
     return ""
