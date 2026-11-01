@@ -64,10 +64,9 @@ import {
   frameFor,
   makePositions,
   paintOverlay,
-  paintSessionBreaks,
   type OverlayPositions,
+  type ProfileBarSource,
 } from "../chart/overlay";
-import { sessionBreaks } from "../chart/sessions";
 import { flowColumns } from "../chart/flow";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
@@ -281,7 +280,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
    * batched repaint, so a pointer move costs one frame, not a render. */
   const overlay = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<{
-    kind: "trend" | "ob" | "flatTop" | "flatBottom" | "measure";
+    kind: "trend" | "ob" | "flatTop" | "flatBottom" | "fib" | "profile"
+      | "measure";
     a: AnchoredPoint;
     b: AnchoredPoint | null;
   } | null>(null);
@@ -769,23 +769,28 @@ export function ChartCanvas(props: ChartCanvasProps) {
       && drag.kind === "measure" && drag.b !== null
       ? measureBetween(drag.a, drag.b)
       : null;
+    // The profile tool's own bars, handed in as the columns the chart is
+    // already drawing. Null when nothing has arrived: the tool then says so
+    // rather than inventing a distribution.
+    const bars: ProfileBarSource | null = state.data === null ? null : {
+      time: state.data.time,
+      high: state.data.high,
+      low: state.data.low,
+      volume: state.data.volume,
+    };
     paintOverlay(context, state.chart, state.candles, frame, {
       drawings: overlayProps.current.drawings ?? [],
       hidden: overlayProps.current.drawingsHidden ?? false,
       toolColor: "#2962ff",
       midDrag,
       positions,
+      bars,
     });
-    // The session dividers sit behind the reader's own drawings: where one
-    // Karachi trading day ends and the next begins, so a merged chart cannot
-    // be read as a clock running backwards.
-    if (state.data !== null) {
-      paintSessionBreaks(context, state.chart, frame,
-        sessionBreaks(state.data.time),
-        { line: "rgba(120, 123, 134, 0.32)", label: "#787b86" });
-    }
+    // Session dividers are painted by the chart renderer itself, dotted and
+    // full height, so they are not drawn twice on the price pane here.
     if (drag !== null) {
-      paintLive(context, state.chart, state.candles, frame, drag, positions);
+      paintLive(context, state.chart, state.candles, frame, drag, positions,
+        bars);
     }
   };
 
@@ -796,6 +801,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     frame: ReturnType<typeof frameFor>,
     drag: NonNullable<typeof dragRef.current>,
     positions: OverlayPositions,
+    bars: ProfileBarSource | null,
   ) => {
     if (drag.b === null) {
       return;
@@ -813,7 +819,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       id: "live",
       kind: drag.kind,
       points,
-    }, positions);
+    }, positions, bars);
   };
 
   /**
@@ -893,6 +899,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
         : activeTool === "trend" ? "trend"
         : activeTool === "ob" ? "ob"
         : activeTool === "flatTop" ? "flatTop"
+        : activeTool === "fib" ? "fib"
+        : activeTool === "profile" ? "profile"
         : "flatBottom",
       a: anchor,
       b: null,
@@ -1072,6 +1080,7 @@ function paintOne(
   frame: ReturnType<typeof frameFor>,
   shape: Drawing,
   positions: OverlayPositions,
+  bars: ProfileBarSource | null,
 ): void {
   // The live shape draws through the same painter as the kept ones.
   paintOverlay(context, chart, candles, frame, {
@@ -1080,6 +1089,7 @@ function paintOne(
     toolColor: "#2962ff",
     midDrag: null,
     positions,
+    bars,
   });
 }
 
