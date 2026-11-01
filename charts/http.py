@@ -664,7 +664,13 @@ class ChartServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
     request_queue_size = 32
-    max_handler_threads = 32
+    # One worker per in-flight request or live stream. A browser opens
+    # several streams and a burst of snapshots at once, and an abandoned
+    # stream can hold its worker until the next heartbeat fails; a budget of
+    # 32 was small enough that a few tabs exhausted it and every further
+    # request got BUSY. 96 keeps the process bounded while leaving room for
+    # the reconnect storms a page reload actually produces.
+    max_handler_threads = 96
 
     def process_request(self, request, client_address) -> None:
         """Bound idle and streaming clients instead of spawning forever.
