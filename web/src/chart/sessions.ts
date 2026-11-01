@@ -35,6 +35,8 @@ export interface SessionBreak {
   readonly day: string;
   /** True for the first bar of the series (no line is drawn there). */
   readonly first: boolean;
+  /** The last bar before this session, when the series holds one. */
+  readonly previous?: number | undefined;
 }
 
 function keyOf(ms: number): string {
@@ -55,11 +57,14 @@ export function sessionBreaks(times: ArrayLike<number>): SessionBreak[] {
     }
     last = key;
     const moment = new Date(t);
+    const previous = i > 0 ? times[i - 1] : undefined;
     out.push({
       t,
       day: key,
       label: dayLabelFormat.format(moment),
       first: out.length === 0,
+      ...(previous !== undefined && Number.isFinite(previous)
+        ? { previous } : {}),
     });
   }
   return out;

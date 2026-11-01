@@ -279,6 +279,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const wrapper = useRef<HTMLDivElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const legend = useRef<HTMLDivElement | null>(null);
+  /** Shown when the reader pans past the oldest bar the tape holds. */
+  const historyEdge = useRef<HTMLParagraphElement | null>(null);
   const engine = useRef<EngineState | null>(null);
   const fitKey = useRef("");
   const fitCount = useRef(0);
@@ -535,7 +537,33 @@ export function ChartCanvas(props: ChartCanvasProps) {
     surfaceEl.addEventListener("pointerdown", tookTheWindow, true);
 
     // Pan or zoom moves the drawings too: repaint once per viewport change.
-    const rangeSub = () => scheduleOverlayPaint();
+    // The same callback names the tape's first bar when the viewport is
+    // panned into the blank before it, so nothing here has a reason.
+    const writeHistoryEdge = () => {
+      const el = historyEdge.current;
+      const state = engine.current;
+      if (el === null || state === null) {
+        return;
+      }
+      const first = state.barTimes[0];
+      const range = state.chart.timeScale().getVisibleLogicalRange();
+      if (first === undefined || range === null || range.from >= -0.5) {
+        el.hidden = true;
+        el.textContent = "";
+        return;
+      }
+      const intraday = resolution !== "1D" && resolution !== "1W"
+        && resolution !== "1M" && resolution !== "1d"
+        && resolution !== "session";
+      el.textContent = `${resolution} recorded history begins ` +
+        karachiDay.format(new Date(first)) +
+        (intraday ? " · older days are in 1D" : "");
+      el.hidden = false;
+    };
+    const rangeSub = () => {
+      scheduleOverlayPaint();
+      writeHistoryEdge();
+    };
     chart.timeScale().subscribeVisibleTimeRangeChange(rangeSub);
 
     engine.current = {
@@ -561,6 +589,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     fitCount.current = 0;
     zoomed.current = false;
     paintData();
+    window.setTimeout(writeHistoryEdge, 0);
 
     return () => {
       observer.disconnect();
@@ -836,7 +865,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
         { line: "rgba(41, 98, 255, 0.6)", label: "#8f9bb3" },
-        false, cssHeight);
+        false, cssHeight, dpr);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
@@ -1021,7 +1050,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
         <p className="chart__empty" role="status">
           {emptyNote}
         </p>
-      ) : null}
+      ) : (
+        <p className="chart__edge" ref={historyEdge} hidden />
+      )}
       {/* The TV legend: OHLC + change, live under the pointer. */}
       <div className="tv-legend" ref={legend} aria-live="off" />
       {/* The drawing overlay: interactive only while a tool is picked, so
