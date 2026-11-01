@@ -94,6 +94,21 @@ function Icon({ name }: { readonly name: string }) {
           <path d="M3 10h1.6M15.4 10H17" strokeDasharray="1.6 1.6" />
         </svg>
       );
+    case "fib":
+      return (
+        <svg {...common}>
+          <path d="M3 5.5h14M3 9h14M3 12.5h14M3 16h14" strokeWidth="1" />
+          <path d="M4.5 16 15.5 5.5" strokeDasharray="2 2" />
+        </svg>
+      );
+    case "profile":
+      return (
+        <svg {...common}>
+          <path d="M4 4v12" />
+          <path d="M6.5 5.5h9M6.5 8.5h5.5M6.5 11.5h8M6.5 14.5h3.5"
+                strokeWidth="1.7" />
+        </svg>
+      );
     case "measure":
       return (
         <svg {...common}>
@@ -147,6 +162,9 @@ const TOOLS: readonly {
   { tool: "cursor", label: "Cross (the chart's own pointer)" },
   { tool: "trend", label: "Trend line (drag between two bars)" },
   { tool: "ob", label: "Order block (drag a box over the zone)" },
+  { tool: "fib", label: "Fib retracement (drag from swing to swing)" },
+  { tool: "profile",
+    label: "Fixed range volume profile (drag over a range)" },
   { tool: "flatTop", label: "Flat top (drag along a ceiling)" },
   { tool: "flatBottom", label: "Flat bottom (drag along a floor)" },
   { tool: "hline", label: "Horizontal line (click a level)" },
