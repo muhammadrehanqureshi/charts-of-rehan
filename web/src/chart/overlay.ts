@@ -466,16 +466,10 @@ export function breakPlan(
     if (item.first) {
       continue;
     }
-    let x = xOf(item.t);
-    // A day changes between two candles, not through the first one: put
-    // the rule midway between the last bar of the old session and the
-    // first of the new one whenever both map to the screen.
-    if (x !== null && item.previous !== undefined) {
-      const before = xOf(item.previous);
-      if (before !== null) {
-        x = (before + x) / 2;
-      }
-    }
+    const x = xOf(item.t);
+    // The engine spaces real dates, so the gap between two sessions can
+    // be a weekend or a holiday. The join is the first bar of the new
+    // session, not the middle of that empty calendar space.
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
