@@ -19,6 +19,8 @@ export type DrawTool =
   | "flatBottom"
   | "hline"
   | "hray"
+  | "fib"
+  | "profile"
   | "measure";
 
 /** The shapes a drawing can carry once committed. */
@@ -28,7 +30,9 @@ export type DrawingKind =
   | "flatTop"
   | "flatBottom"
   | "hline"
-  | "hray";
+  | "hray"
+  | "fib"
+  | "profile";
 
 export interface AnchoredPoint {
   /** Bar time, epoch ms in the tape's Karachi clock. */
@@ -203,7 +207,8 @@ function parseOne(value: unknown): Drawing | null {
 
 function isKind(value: unknown): value is DrawingKind {
   return value === "trend" || value === "ob" || value === "flatTop"
-    || value === "flatBottom" || value === "hline" || value === "hray";
+    || value === "flatBottom" || value === "hline" || value === "hray"
+    || value === "fib" || value === "profile";
 }
 
 function parsePoint(value: unknown): AnchoredPoint | null {

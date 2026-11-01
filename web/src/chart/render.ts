@@ -424,12 +424,17 @@ function drawSessionBreaks(
     if (left < frame.plotLeft - slot || left > frame.plotRight + slot) {
       continue;
     }
+    // Dotted, and all the way through every pane, the way the terminal
+    // divides two packed sessions: a quiet rule rather than a solid wall
+    // that reads as a grid line.
     context.strokeStyle = theme.sessionLine;
     context.lineWidth = 1;
+    context.setLineDash([2, 4]);
     context.beginPath();
     context.moveTo(Math.round(left) + 0.5, frame.plotTop);
     context.lineTo(Math.round(left) + 0.5, frame.timeAxisTop);
     context.stroke();
+    context.setLineDash([]);
   }
   context.restore();
 }
