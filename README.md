@@ -133,6 +133,11 @@ and a fake clock, so none of them waits a real second or touches an exchange.
 
 - **Foreground only.** It registers no schedule, no daemon, no watcher and no
   autostart entry.
+- **Lightweight machine contract.** One foreground service plus the existing
+  recorder; no extra daemons. Hidden tabs stop. The open chart stream may tick
+  at most once per second; all ancillary polls are at least five seconds;
+  source polling defaults to fifteen seconds with a five-second floor; EOD
+  maintenance runs every fifteen minutes. Heavy reads are cached.
 - **It refuses GitHub Actions.** Runner minutes belong to the market-hours scans,
   so `python -m charts` declines to start there.
 - **Loopback by default.** Binding to any other address needs

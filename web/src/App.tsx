@@ -43,6 +43,12 @@ import { useIndicators } from "./hooks/useIndicators";
 import { useDelta } from "./hooks/useDelta";
 import { usePrints } from "./hooks/usePrints";
 import { useVisibility } from "./hooks/useVisibility";
+import {
+  AUXILIARY_POLL_MS,
+  CATALOGUE_REFRESH_MS,
+  FEED_HEALTH_REFRESH_MS,
+  FLOW_REFRESH_MS,
+} from "./lightweight";
 
 import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
@@ -249,10 +255,6 @@ function hash(): { symbol: string; day: string } {
   const [symbol = "", day = ""] = raw.split("/");
   return { symbol: symbol.trim().toUpperCase(), day: day.trim() };
 }
-
-const CATALOGUE_REFRESH_MS = 15_000;
-const FLOW_REFRESH_MS = 1_000;
-const FEED_HEALTH_REFRESH_MS = 10_000;
 
 function useVisibleRefresh(
   refresh: () => void | Promise<void>,
@@ -530,25 +532,25 @@ export function App() {
   // live multi-day chart reads the merged span (days, unnamed), so every
   // pane's session is drawn from its own tape; a stored session reads only
   // its own capture. A wide span ships its whole ledger in one answer, so
-  // its cadence is three seconds - the folds on the server are incremental
+  // its cadence is five seconds - the folds on the server are incremental
   // and always current, this only spaces out how often the browser redraws
   // a history the pane is not scrolling through.
   const deltaSpan = day.length === 0 ? spanFor(resolution) : 0;
   const delta = useDelta(client, symbol,
     day.length === 0 ? "" : (feed.meta.session?.day ?? day),
-    symbol.length > 0, deltaSpan > 8 ? 3_000 : 1_000, deltaSpan);
+    symbol.length > 0, AUXILIARY_POLL_MS, deltaSpan);
 
   // The venue's own book, for the plate under the volume split: a cadence
   // read that stops with the stored session and with the hidden tab.
   const book = useBook(client, symbol, feed.meta.session?.day ?? day,
     day.length === 0);
 
-  // The tape's own print ledger: every order as it came, polled to the
-  // one-second tick. A stored drawn-from-archive session never grows, so
+  // The tape's own print ledger: every order as it came, on the five-second
+  // machine budget. A stored drawn-from-archive session never grows, so
   // asking for its ledger would only read a file that is gone.
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0 && !(feed.meta.session?.archived ?? false),
-    1_000, day.length === 0 ? spanFor(resolution) : 0);
+    AUXILIARY_POLL_MS, day.length === 0 ? spanFor(resolution) : 0);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);

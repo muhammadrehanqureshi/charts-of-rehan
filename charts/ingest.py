@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from charts import sessions
 from charts.adapters.base import BarSource
 from charts.contract import Bar
+from charts.lightweight import DEFAULT_INGEST_SECONDS, MIN_INGEST_SECONDS
 from charts.ratelimit import UpstreamError
 from charts.store import BarStore
 
@@ -59,13 +60,13 @@ class Ingestor:
     """Polling loop with subscribers, health, and a testable single step."""
 
     def __init__(self, store: BarStore, source: BarSource, *,
-                 resolution: str, interval_seconds: float = 15.0,
+                 resolution: str, interval_seconds: float = DEFAULT_INGEST_SECONDS,
                  clock=sessions.law.as_karachi,
                  sleep=time.sleep):
         self.store = store
         self.source = source
         self.resolution = resolution
-        self.interval_seconds = max(2.0, float(interval_seconds))
+        self.interval_seconds = max(MIN_INGEST_SECONDS, float(interval_seconds))
         self._clock = clock
         self._sleep = sleep
         self._lock = threading.RLock()
