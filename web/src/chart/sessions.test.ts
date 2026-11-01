@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { sessionBreaks } from "./sessions";
+import {
+  intradayStamps, isDailyGrainStamp, sessionBreaks,
+} from "./sessions";
 
 /** A Karachi clock instant as epoch milliseconds. */
 function pkt(day: string, clock: string): number {
@@ -34,6 +36,20 @@ describe("sessionBreaks", () => {
       pkt("2026-10-23", "09:32"),
     ];
     expect(sessionBreaks(times)).toHaveLength(1);
+  });
+
+  it("does not draw a session rule through daily-grain backfill", () => {
+    const times = [
+      pkt("2016-11-01", "12:00"),
+      pkt("2016-11-02", "12:00"),
+      pkt("2026-10-12", "09:32"),
+      pkt("2026-10-12", "11:59"),
+      pkt("2026-10-13", "09:32"),
+    ];
+    expect(isDailyGrainStamp(times[0] ?? 0)).toBe(true);
+    expect(isDailyGrainStamp(times[2] ?? 0)).toBe(false);
+    expect(sessionBreaks(intradayStamps(times)).map((item) => item.day))
+      .toEqual(["2026-10-12", "2026-10-13"]);
   });
 
   it("ignores holes and unusable stamps instead of inventing sessions", () => {

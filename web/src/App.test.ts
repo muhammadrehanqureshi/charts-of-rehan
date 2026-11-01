@@ -61,13 +61,16 @@ describe("the opening chart", () => {
   });
 });
 describe("how much history a rung asks for", () => {
-  it("asks for no daily-grain backfill on any intraday rung", () => {
-    // A daily row is one whole session; stamping it into an hourly series
-    // would draw a day-wide candle beside real hourly ones.
+  it("asks for the decade on every rung coarse enough to read it", () => {
     for (const resolution of [
-      "1s", "10s", "1m", "5m", "10m", "15m", "30m", "1h", "4h",
+      "1s", "10s", "1m", "5m",
     ] as const) {
       expect(backfillFor(resolution)).toBe(0);
+    }
+    for (const resolution of [
+      "10m", "15m", "30m", "1h", "4h",
+    ] as const) {
+      expect(backfillFor(resolution)).toBe(2_600);
     }
   });
 
