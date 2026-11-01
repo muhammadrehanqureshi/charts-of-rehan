@@ -426,13 +426,16 @@ function drawSessionBreaks(
     }
     // Dotted, and all the way through every pane, the way the terminal
     // divides two packed sessions: a quiet rule rather than a solid wall
-    // that reads as a grid line.
+    // that reads as a grid line. Snap to a device-pixel centre so a
+    // fractional DPR cannot make one day's rule bolder than another's.
+    const ratio = input.dpr > 0 ? input.dpr : 1;
+    const x = (Math.round(left * ratio - 0.5) + 0.5) / ratio;
     context.strokeStyle = theme.sessionLine;
     context.lineWidth = 1;
     context.setLineDash([2, 4]);
     context.beginPath();
-    context.moveTo(Math.round(left) + 0.5, frame.plotTop);
-    context.lineTo(Math.round(left) + 0.5, frame.timeAxisTop);
+    context.moveTo(x, frame.plotTop);
+    context.lineTo(x, frame.timeAxisTop);
     context.stroke();
     context.setLineDash([]);
   }

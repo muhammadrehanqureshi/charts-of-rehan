@@ -1358,6 +1358,25 @@ button:disabled {
   text-align: center;
 }
 
+.chart__edge {
+  position: absolute;
+  left: 12px;
+  bottom: 38px;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--muted);
+  font-size: 10.5px;
+  pointer-events: none;
+}
+
+.chart__edge[hidden] {
+  display: none;
+}
+
 .chart__overlay {
   position: absolute;
   inset: 6px 6px auto 6px;
