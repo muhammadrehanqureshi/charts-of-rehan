@@ -64,10 +64,12 @@ import {
   frameFor,
   makePositions,
   paintOverlay,
+  paintSessionBreaks,
   type OverlayPositions,
   type ProfileBarSource,
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
+import { sessionBreaks, type SessionBreak } from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
 import type { ChartAppearance } from "../hooks/useAppearance";
@@ -83,6 +85,11 @@ const MIN_HEIGHT = 220;
 const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
+
+/** Rungs whose bars are calendar folds, not sessions to divide. */
+const CALENDAR_RUNGS: ReadonlySet<string> = new Set([
+  "1D", "1W", "1M", "1d", "session",
+]);
 
 /** The chart's colour tokens: one theme, black, with TV's own candle hues. */
 export interface TvTheme {
@@ -179,6 +186,8 @@ interface EngineState {
   data: SeriesData | null;
   /** The candles' own epoch seconds, ascending: the drawing clip's bars. */
   barTimes: number[];
+  /** The Karachi day starts the overlay rules run between. */
+  breaks: readonly SessionBreak[];
 }
 
 /** A hex colour at an alpha, for the muted volume under the candles. */
@@ -273,6 +282,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const engine = useRef<EngineState | null>(null);
   const fitKey = useRef("");
   const fitCount = useRef(0);
+  /** Rides the last opening fit, so a late layout cannot undo it. */
+  const fitToken = useRef(0);
   /** True once the reader pans, zooms or drags: no fit after that. */
   const zoomed = useRef(false);
 
@@ -519,8 +530,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const tookTheWindow = () => {
       zoomed.current = true;
     };
-    surfaceEl.addEventListener("wheel", tookTheWindow, { passive: true });
-    surfaceEl.addEventListener("pointerdown", tookTheWindow);
+    // Capture, because the engine's own handlers stop short of this div:
+    // a wheel zoom must count as the reader taking the window even when the
+    // event never bubbles to us.
+    surfaceEl.addEventListener("wheel", tookTheWindow,
+      { passive: true, capture: true });
+    surfaceEl.addEventListener("pointerdown", tookTheWindow, true);
 
     // Pan or zoom moves the drawings too: repaint once per viewport change.
     const rangeSub = () => scheduleOverlayPaint();
@@ -536,6 +551,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       deltaShown: false,
       data: null,
       barTimes: [],
+      breaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -551,8 +567,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
 
     return () => {
       observer.disconnect();
-      surfaceEl.removeEventListener("wheel", tookTheWindow);
-      surfaceEl.removeEventListener("pointerdown", tookTheWindow);
+      surfaceEl.removeEventListener("wheel", tookTheWindow, true);
+      surfaceEl.removeEventListener("pointerdown", tookTheWindow, true);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(rangeSub);
       chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
@@ -577,6 +593,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
     if (state === null) {
       return;
     }
+    const timeScale = state.chart.timeScale();
+    // A reader's zoom is theirs, and the opening fit is the chart's. The
+    // tape repaints on every poll and setData re-anchors the engine's scale
+    // to its default bar spacing, so hold the logical window now and hand it
+    // straight back once the bars are in. Without this, every poll undid a
+    // wheel zoom a second after it happened.
+    const held = timeScale.getVisibleLogicalRange();
     const base = seriesData(series);
     const length = base.time.length;
     if (length === 0) {
@@ -647,6 +670,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The drawing anchors and the y-picks map from these; the whole
     // drawing path speaks milliseconds, so keep them ms here too.
     state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
+    state.breaks = CALENDAR_RUNGS.has(resolution)
+      ? []
+      : sessionBreaks(state.barTimes);
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
       // An empty plate is cleared, not left with stale bars behind the
@@ -674,6 +700,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
       writeLegend(state, length - 1, legendEl, state.volumeShown);
     }
 
+    if (held !== null) {
+      timeScale.setVisibleLogicalRange(held);
+    }
+
     // Fit in logical bars rather than pixels, so the window is the same
     // whatever width the pane happened to have when the data landed. A view
     // change refits; so does a wider dataset arriving while the reader has
@@ -690,10 +720,26 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // candles. The earlier sessions are a pan away, which is what a
       // continuous series is for.
       const newest = Math.min(WINDOW_BARS, candlesData.length);
-      state.chart.timeScale().setVisibleLogicalRange({
+      const range = {
         from: Math.max(0, candlesData.length - newest),
         to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
-      });
+      };
+      const token = fitToken.current + 1;
+      fitToken.current = token;
+      const apply = () => {
+        // A newer fit, the reader's own gesture, or a rebuilt engine wins.
+        if (fitToken.current !== token || zoomed.current
+            || engine.current?.chart !== state.chart) {
+          return;
+        }
+        timeScale.setVisibleLogicalRange(range);
+      };
+      apply();
+      // The engine lays out its own scale once the first data lands. A second
+      // pass on the next task keeps the opening window instead of the default
+      // spacing, which otherwise left a 43-bar chart two-thirds empty.
+      setTimeout(apply, 0);
+      requestAnimationFrame(apply);
     }
   }
 
@@ -786,8 +832,15 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // Session dividers are painted by the chart renderer itself, dotted and
-    // full height, so they are not drawn twice on the price pane here.
+    // The dotted session rules: one blue line at every Karachi day change,
+    // through the price pane and every study pane beneath it. Intraday charts
+    // are never "dense" in the calendar sense, so an hourly window keeps its
+    // rules even when its bars are packed into a few hundred pixels.
+    if (state.breaks.length > 1) {
+      paintSessionBreaks(context, state.chart, frame, state.breaks,
+        { line: "rgba(41, 98, 255, 0.6)", label: "#8f9bb3" },
+        !CALENDAR_RUNGS.has(resolution), cssHeight);
+    }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
         bars);

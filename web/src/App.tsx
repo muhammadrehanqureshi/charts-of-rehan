@@ -65,6 +65,19 @@ const FALLBACK_RESOLUTIONS: readonly Resolution[] = ["1m"];
  * few hundred bars - a minute chart a week, an hour chart a quarter,
  * and the daily rung a full year of Karachi sessions.
  */
+/**
+ * Calendar rungs read their own stored history, not a merged run of sessions.
+ *
+ * Asking a daily chart for "the newest 260 sessions" answered with one year of
+ * daily bars no matter how deep the store went, which is why the decade only
+ * appeared if the request omitted `days`. These rungs carry their depth in the
+ * limit, and every bar in it is the rung's own grain.
+ */
+function isCalendarRung(resolution: Resolution): boolean {
+  return resolution === "1D" || resolution === "1W" || resolution === "1M"
+    || resolution === "1d" || resolution === "session";
+}
+
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
     case "1s": case "10s": return 3;
@@ -493,7 +506,8 @@ export function App() {
   const feed = useChartFeed(client, symbol, resolution, {
     day,
     limit: limitFor(resolution),
-    days: day.length === 0 ? spanFor(resolution) : undefined,
+    days: day.length === 0 && !isCalendarRung(resolution)
+      ? spanFor(resolution) : undefined,
     backfillDays: day.length === 0 ? backfillFor(resolution) : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
