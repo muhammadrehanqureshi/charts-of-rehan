@@ -88,6 +88,17 @@ describe("break plan", () => {
       .map((item) => item.text)).toEqual(["20 Oct", "21 Oct"]);
   });
 
+  it("puts the rule between sessions, not through the new day's candle", () => {
+    const previous = Date.parse("2026-10-19T15:30:00+05:00");
+    const first = Date.parse("2026-10-20T09:30:00+05:00");
+    const breaks: SessionBreak[] = [{
+      t: first, day: "2026-10-20", label: "20 Oct", first: false, previous,
+    }];
+    const x = new Map([[previous, 200], [first, 220]]);
+    const plan = breakPlan(breaks, (t) => x.get(t) ?? null, 700);
+    expect(plan.find((item) => item.line)?.x).toBe(210);
+  });
+
   it("a daily-grain dense chart says months, not one date per day", () => {
     // A year of month starts at one pixel each: the dashed forest.
     const entries: [string, number, boolean?][] = [];
