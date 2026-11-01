@@ -78,13 +78,21 @@ function isCalendarRung(resolution: Resolution): boolean {
     || resolution === "1d" || resolution === "session";
 }
 
+/**
+ * Every intraday rung reads the same recorded session span.
+ *
+ * These used to shrink as the bar interval shrank, so switching from 15m to
+ * 1m silently cut the chart back from twelve sessions to seven. The reader
+ * sees time, not a target bar count: the same symbol and the same sessions
+ * must be behind every rung. The service's own limit still caps the payload.
+ */
+const INTRADAY_SESSIONS = 20;
+
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
-    case "1s": case "10s": return 3;
-    case "1m": case "5m": return 7;
-    case "10m": case "15m": return 15;
-    case "30m": return 25;
-    case "1h": return 32;
+    case "1s": case "10s": case "1m": case "5m":
+    case "10m": case "15m": case "30m": case "1h":
+      return INTRADAY_SESSIONS;
     case "4h": return 70;
     case "1D": return 260;   // a year of trading days
     case "1W": return 160;   // three years of weeks
