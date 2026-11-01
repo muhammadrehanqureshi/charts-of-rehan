@@ -2,8 +2,8 @@
  * One symbol's top of the venue's own book, polled.
  *
  * The book rides the incremental day build the bars already cache, so an
- * answer costs the service one tail read, and the plate is refreshed to the
- * one-second tick with a stop condition - a stored
+ * answer costs the service one tail read, and the plate is refreshed on the
+ * five-second machine budget with a stop condition - a stored
  * session never moves, and a hidden tab stops asking, the way the
  * never-hammer law asks of every repeating job. Reopening the tab fetches
  * once and the cadence resumes.
@@ -12,10 +12,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { type BookReport, ChartClient } from "../api/client";
+import { AUXILIARY_POLL_MS } from "../lightweight";
 import { useVisibility } from "./useVisibility";
-
-/** One refresh every second while the tab is shown. */
-const BOOK_INTERVAL_MS = 1_000;
 
 /**
  * @param client  the shared API client.
@@ -59,7 +57,7 @@ export function useBook(
         // Schedule after the response completes: a slow local file read can
         // never overlap another book request and pile work onto the PC.
         if (!cancelled && visible && live) {
-          timer = window.setTimeout(() => void ask(), BOOK_INTERVAL_MS);
+          timer = window.setTimeout(() => void ask(), AUXILIARY_POLL_MS);
         }
       }
     };

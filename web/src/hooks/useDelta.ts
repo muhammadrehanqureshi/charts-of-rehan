@@ -2,7 +2,7 @@
  * The per-minute buy/sell split, polled.
  *
  * The tape's counters grow during the session, so the split is re-read on
- * a one-second cadence: the server serves the ask from a streaming fold,
+ * a five-second cadence: the server serves the ask from a streaming fold,
  * one tail stat plus a small parse, never a re-walk of the day. Nothing
  * here runs while the page is hidden or the chart is showing a stored
  * session that cannot move.
@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ChartClient } from "../api/client.js";
 import type { DeltaReport } from "../api/types.js";
+import { AUXILIARY_POLL_MS } from "../lightweight";
 import { useVisibility } from "./useVisibility.js";
 
 export interface DeltaState {
@@ -24,7 +25,7 @@ export function useDelta(
   symbol: string,
   day: string,
   enabled: boolean,
-  intervalMs = 1_000,
+  intervalMs = AUXILIARY_POLL_MS,
   /** Sessions to merge on a live multi-day chart (0 = just `day`). */
   days = 0,
 ): DeltaState {
