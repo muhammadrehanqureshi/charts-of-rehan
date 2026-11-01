@@ -47,6 +47,7 @@ from charts.adapters.replay import ReplaySource
 from charts.adapters.tape import TapeSource, read_universe
 from charts.archive import discover_capture_dirs
 from charts.contract import RESOLUTION_MINUTE
+from charts.eod import decade_start
 from charts.http import ChartServer
 from charts.ingest import Ingestor
 from charts.store import BarStore
@@ -158,18 +159,8 @@ def _source_for(args, clock=None):
                         clock=clock)
 
 
-#: The rolling decade window is a calendar anniversary, not a fixed day
-#: count: on 1 Nov 2026 it reaches back to 1 Nov 2016 exactly. Counting 3,653
-#: days landed on 31 Oct and kept one stale session at the window's edge.
-#: Sunday is not excluded: the fetcher's own weekday rule decides what trades.
-def decade_start(today: date) -> date:
-    """The same calendar day ten years earlier, leap day included."""
-    try:
-        return today.replace(year=today.year - 10)
-    except ValueError:
-        # 29 February in a non-leap target year: the window starts on the
-        # 28th, the last day that exists in that month.
-        return today.replace(year=today.year - 10, day=28)
+# The rolling ten-year anniversary rule lives in charts.eod so the read
+# path and the maintenance pass cannot disagree about the oldest day.
 #: Recent days a maintenance pass re-checks, so a shortfall the window edge
 #: caused catches up politely instead of on every startup once.
 EOD_CATCHUP_DAYS = 20
