@@ -337,6 +337,33 @@ class TapeFallback(unittest.TestCase):
         self.assertEqual(bars[0].c, 214.0)
         self.assertEqual(bars[0].v, 1234567.0)
 
+    def test_the_exchange_row_wins_over_a_partial_capture(self):
+        # Monday can have both a recording and a banked exchange row. The
+        # official row carries the opening auction and every print; the
+        # minute fold only has the minutes the capture saw, so the row wins.
+        universe = self.tmp / "universe.json"
+        universe.write_text(json.dumps(["OGDC"]), encoding="utf-8")
+        capture = self.tmp / "capture_20261012.ndjson"
+        frame = {"kind": "MKT-FEED*x",
+                 "ts": "2026-10-12T09:33:05+05:00",
+                 "ticks": [{"scrip": "OGDC:REG", "last": "105.0",
+                            "volume": "1000", "tick_time": "09:33:05",
+                            "high": "106.0", "low": "104.0"}]}
+        capture.write_text(json.dumps(frame) + "\n", encoding="utf-8")
+        self.store.save(MONDAY, parse_history_table(her_table(OGDC_ROW)))
+        with mock.patch("charts.adapters.tape.tape_bars.capture_path",
+                        return_value=capture):
+            source = TapeSource(clock=lambda: MONDAY_1100,
+                                universe_path=universe,
+                                capture_dirs=(self.tmp,),
+                                archive_dir=self.tmp / "archive",
+                                eod_dir=self.tmp / "eod")
+            bars = source.history("OGDC", "1D", day=MONDAY)
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0].c, 214.0)
+        self.assertEqual(bars[0].v, 1234567.0)
+        self.assertEqual(bars[0].t, "2026-10-12T12:00:00+05:00")
+
     def test_the_default_daily_series_reaches_back_into_the_year(self):
         universe = self.tmp / "universe.json"
         universe.write_text(json.dumps(["OGDC"]), encoding="utf-8")

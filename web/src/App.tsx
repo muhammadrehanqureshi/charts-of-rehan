@@ -84,23 +84,17 @@ function spanFor(resolution: Resolution): number {
 
 /**
  * How much older, coarser-grained history a rung's chart asks for, in
- * whole sessions. The keeper's rule is that every minute rung carries the
- * whole decade the store holds behind its own sessions - the store keeps a
- * daily-grain row for every trading day since Oct 2016, and scrolling back
- * is how a chart is read. The decade's daily bars behind a merged span are
- * what a reader lands on after panning: the same answer the 1D rung serves.
- * The sub-second rungs stay at a year: their payload is already beaten by
- * their own tick bars, and a decade of ticks is not a screen.
+ * whole sessions.
+ *
+ * Intraday rungs ask for none. The store's decade of history is one row per
+ * trading day, and stamping those rows into an hourly series draws a
+ * whole-day candle beside real hourly ones - a chart that looks like a
+ * decade of hourly data and is not. The honest intraday chart starts where
+ * the tape's own recording starts, and the daily rungs (which are the same
+ * rows, drawn as days) carry the decade instead.
  */
-export function backfillFor(resolution: Resolution): number {
-  switch (resolution) {
-    case "1s": case "10s": return 260;   // a year of trading days
-    case "1m": case "5m": case "10m": case "15m":
-    case "30m": case "1h": case "4h":
-      return 2_600;                    // the whole decade the store holds
-    case "1D": case "1W": case "1M":
-    case "1d": case "session": return 0;
-  }
+export function backfillFor(_resolution: Resolution): number {
+  return 0;
 }
 
 /**

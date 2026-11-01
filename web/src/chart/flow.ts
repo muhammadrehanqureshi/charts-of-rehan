@@ -59,7 +59,11 @@ export function flowColumns(
   const length = times.length;
   const buy = filled(length);
   const sell = filled(length);
-  if (length === 0 || !(stepMs >= 60_000)) {
+  if (length === 0 || !(stepMs >= 60_000)
+      || stepMs >= 24 * 60 * 60 * 1000) {
+    // A daily (or weekly/monthly) bar cannot borrow a session minute's split:
+    // the bar is stamped at noon, so the morning's minutes would be credited
+    // to the previous day's candle. Those rungs use their own signed volume.
     return { buy, sell };
   }
   for (const minute of minutes) {
