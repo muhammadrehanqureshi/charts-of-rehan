@@ -226,6 +226,17 @@ const karachiDay = new Intl.DateTimeFormat("en-GB", {
   month: "short",
 });
 
+const karachiMonth = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  month: "short",
+  year: "numeric",
+});
+
+const karachiYear = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  year: "numeric",
+});
+
 export function ChartCanvas(props: ChartCanvasProps) {
   const {
     series,
@@ -299,9 +310,16 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (Number.isNaN(moment.getTime())) {
         return "";
       }
-      if (markType === TickMarkType.DayOfMonth
-        || markType === TickMarkType.Month
-        || markType === TickMarkType.Year) {
+      // Every calendar rank gets its own rank-appropriate label: a day reads
+      // as "23 Oct", a month as "Oct 2025" and a year as "2026", so a
+      // decade never shows three ambiguous "23 Oct" stamps at one rank.
+      if (markType === TickMarkType.Year) {
+        return karachiYear.format(moment);
+      }
+      if (markType === TickMarkType.Month) {
+        return karachiMonth.format(moment);
+      }
+      if (markType === TickMarkType.DayOfMonth) {
         return karachiDay.format(moment);
       }
       return showSeconds ? secondsFormat.format(moment)

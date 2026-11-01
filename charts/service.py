@@ -212,24 +212,26 @@ def _daily_backfill(source: BarSource, symbol: str, backfill: int,
             f"be read ({type(exc).__name__}: {exc}), so the chart carries "
             f"the intraday sessions only"]
     added = 0
-    first = None
-    last = ""
+    earliest = ""
     for bar in daily:
+        # The store answers oldest first, but the caller's order is not part
+        # of the contract: skip a day the span already holds instead of
+        # breaking, so an unordered feed cannot silently drop older years.
         if bar.t[:10] >= oldest:
-            break
+            continue
         if bar.t in seen:
             continue
         seen[bar.t] = bar
         added += 1
-        if first is None:
-            first = bar
-        last = bar.t[:10]
-    if added == 0 or first is None:
+        day_text = bar.t[:10]
+        if not earliest or day_text < earliest:
+            earliest = day_text
+    if added == 0 or not earliest:
         return []
     return [
         f"the daily backfill added {added} daily-grain bar(s) behind the "
-        f"intraday sessions, back to {last}, from the same feed a 1D chart "
-        f"reads; a candle from {first.t[:10]} covers a whole Karachi day, "
+        f"intraday sessions, back to {earliest}, from the same feed a 1D "
+        f"chart reads; a candle from {earliest} covers a whole Karachi day, "
         f"not {spec_of(resolution)}",
     ]
 
