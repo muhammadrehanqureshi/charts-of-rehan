@@ -466,10 +466,17 @@ export function breakPlan(
     if (item.first) {
       continue;
     }
-    const x = xOf(item.t);
-    // The engine spaces real dates, so the gap between two sessions can
-    // be a weekend or a holiday. The join is the first bar of the new
-    // session, not the middle of that empty calendar space.
+    let x = xOf(item.t);
+    // The engine now spaces bars uniformly, so the previous and new
+    // sessions' bars are adjacent even when the calendar between them
+    // contains a weekend. Put the rule at their midpoint: between the
+    // two candles, not through the first candle of the new session.
+    if (x !== null && item.previous !== undefined) {
+      const before = xOf(item.previous);
+      if (before !== null) {
+        x = (before + x) / 2;
+      }
+    }
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
