@@ -64,7 +64,7 @@ from charts.adapters.base import Capabilities  # noqa: E402
 from charts.contract import (  # noqa: E402
     RESOLUTION_MINUTE, SOURCE_TAPE, Bar, SourceInfo,
 )
-from charts.eod import EodStore  # noqa: E402
+from charts.eod import EodStore, decade_start  # noqa: E402
 from charts.ratelimit import UpstreamError  # noqa: E402
 
 #: The KMIALL universe, in the order it is looked for: this project's own copy
@@ -245,7 +245,8 @@ def symbols_in_capture(path: Path,
     return sorted(found)
 
 
-def eod_index_daily(store: EodStore, symbol: str) -> list[Bar]:
+def eod_index_daily(store: EodStore, symbol: str, *,
+                    start: date | None = None) -> list[Bar]:
     """A decade-length, transparent daily index proxy from the EOD rows.
 
     The exchange's daily table carries stocks, not index levels. The real
@@ -269,7 +270,9 @@ def eod_index_daily(store: EodStore, symbol: str) -> list[Bar]:
     wanted = symbol.strip().upper()
     if wanted not in INDEX_SYMBOLS:
         return []
-    days = sorted(store.days())
+    floor = start.isoformat() if start is not None else ""
+    days = [text for text in sorted(store.days())
+            if not floor or text >= floor]
     if not days:
         return []
     previous: dict[str, float] = {}
@@ -427,6 +430,10 @@ class TapeSource:
 
     def today(self) -> date:
         return self._clock().date()
+
+    def _window_start(self) -> date:
+        """The oldest calendar day a read may still serve."""
+        return decade_start(self.today())
 
     def capture_for(self, day: date | str) -> Path | None:
         """The capture file for a day, searched in the documented order."""
@@ -1320,7 +1327,11 @@ class TapeSource:
 
     def _calendar_days(self, session: date, resolution: str,
                        explicit: bool) -> list[date]:
-        available = self._available_days()
+        window_start = self._window_start()
+        if explicit and session < window_start:
+            return []
+        available = [day for day in self._available_days()
+                     if day >= window_start]
         # The exchange's own historical day table: every day the
         # service banked rows for can be drawn on a calendar rung even
         # though no recording holds intraday bars for it. A daily
@@ -1330,13 +1341,15 @@ class TapeSource:
                 banked = date.fromisoformat(day_text)
             except ValueError:
                 continue
+            if banked < window_start:
+                continue
             if banked > self.today():
                 break
             if banked not in available:
                 available.append(banked)
         available.sort()
-        if session not in available and self._archive.manifest(session) \
-                is not None:
+        if session not in available and session >= window_start \
+                and self._archive.manifest(session) is not None:
             available.append(session)
             available.sort()
         if resolution == "1D":
@@ -1658,13 +1671,16 @@ class TapeSource:
     def _exchange_index_calendar(self, symbol: str,
                                  resolution: str) -> list[Bar]:
         """Chain every capture's real index minute into calendar bars."""
+        window_start = self._window_start()
         days = {day for day in self._available_days()
-                if self.capture_for(day) is not None}
+                if day >= window_start and self.capture_for(day) is not None}
         for text in self._indices.days():
             try:
-                days.add(date.fromisoformat(text))
+                banked = date.fromisoformat(text)
             except ValueError:
                 continue
+            if banked >= window_start:
+                days.add(banked)
         parts: list[Bar] = []
         for day in sorted(days):
             minutes = self._exchange_index_minutes(day).get(symbol, [])
@@ -1759,16 +1775,18 @@ class TapeSource:
             return []
 
     def _eod_index_calendar(self, symbol: str) -> list[Bar]:
-        """The EOD decade, cached until the store's day set changes."""
-        days = self._eod.days()
+        """The EOD window, cached until the store or window changes."""
+        window_start = self._window_start()
+        floor = window_start.isoformat()
+        days = [text for text in self._eod.days() if text >= floor]
         if not days:
             return []
-        key = (len(days), days[0], days[-1])
+        key = (floor, len(days), days[0], days[-1])
         with self._cache_lock:
             found = self._eod_index_cache.get(symbol)
             if found is not None and found[0] == key:
                 return list(found[1])
-            bars = eod_index_daily(self._eod, symbol)
+            bars = eod_index_daily(self._eod, symbol, start=window_start)
             self._eod_index_cache[symbol] = (key, bars)
             return list(bars)
 
@@ -1822,7 +1840,8 @@ class TapeSource:
             return ladder.aggregate(daily, resolution)
         # No EOD store and no exchange chain: retain the old intraday-only
         # fallback for a deployment that still has captures but no daily rows.
-        days = self._available_days()
+        days = [day for day in self._available_days()
+                if day >= self._window_start()]
         if not days:
             return []
         level = 1000.0
