@@ -37,6 +37,7 @@ on a timer.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 from collections.abc import Sequence
@@ -244,6 +245,97 @@ def symbols_in_capture(path: Path,
     return sorted(found)
 
 
+def eod_index_daily(store: EodStore, symbol: str) -> list[Bar]:
+    """A decade-length, transparent daily index proxy from the EOD rows.
+
+    The exchange's daily table carries stocks, not index levels. The real
+    published KSE100 level is read from the EXS-FEED frames while a capture
+    still holds them; this function is the only honest way to extend the
+    calendar back before that recording began. It is an equal-weight return
+    series, not a back-calculation of the exchange's own weighting:
+
+    * KMIALLSHR uses every scrip with a previous close in the day's rows;
+    * KSE100 uses the ``INDEX_WEIGHT_LIMIT`` scrips with the largest traded
+      value that day, matching the intraday proxy's own rule;
+    * a scrip enters on the day after its first banked row, so a new listing
+      cannot contribute a return it never had;
+    * the first banked day sets the level to 1000, and each later day compounds
+      the selected members' equal-weight close-to-close return.
+
+    The caller splices the exchange's own banked chain over the recent end.
+    Nothing here labels the result official; the chart payload and the symbol
+    notes carry that distinction.
+    """
+    wanted = symbol.strip().upper()
+    if wanted not in INDEX_SYMBOLS:
+        return []
+    days = sorted(store.days())
+    if not days:
+        return []
+    previous: dict[str, float] = {}
+    level = 1000.0
+    out: list[Bar] = []
+    for text in days:
+        try:
+            rows = store.read(text)
+        except (OSError, ValueError):
+            continue
+        priced: list[tuple[str, dict[str, float]]] = []
+        for name, row in rows.items():
+            try:
+                opened = float(row.get("o"))
+                high = float(row.get("h"))
+                low = float(row.get("l"))
+                close = float(row.get("c"))
+                volume = max(0.0, float(row.get("v") or 0.0))
+            except (TypeError, ValueError):
+                continue
+            if min(opened, high, low, close) <= 0:
+                continue
+            priced.append((name, {
+                "o": opened, "h": high, "l": low, "c": close, "v": volume,
+            }))
+        if not priced:
+            continue
+        first = not previous
+        members: list[tuple[str, dict[str, float], float]] = []
+        for name, row in priced:
+            base = row["c"] if first else previous.get(name)
+            if base is None or base <= 0:
+                # A first banked row has no return today; it enters tomorrow.
+                previous[name] = row["c"]
+                continue
+            members.append((name, row, base))
+        if not members:
+            continue
+        if wanted == INDEX_KSE100:
+            members.sort(
+                key=lambda item: item[1]["c"] * item[1]["v"], reverse=True)
+            members = members[:INDEX_WEIGHT_LIMIT]
+        count = len(members)
+        open_ratio = sum(row["o"] / base for _, row, base in members) / count
+        high_ratio = sum(row["h"] / base for _, row, base in members) / count
+        low_ratio = sum(row["l"] / base for _, row, base in members) / count
+        close_ratio = sum(row["c"] / base for _, row, base in members) / count
+        opened = level * open_ratio
+        closed = level * close_ratio
+        high = max(level * high_ratio, opened, closed, level * low_ratio)
+        low = min(level * low_ratio, opened, closed, level * high_ratio)
+        if not all(math.isfinite(value) for value in
+                   (opened, high, low, closed)) or low <= 0:
+            continue
+        volume = sum(row["v"] for _, row, _ in members)
+        out.append(Bar.build(
+            t=f"{text}T12:00:00+05:00",
+            o=round(opened, 4), h=round(high, 4),
+            l=round(low, 4), c=round(closed, 4),
+            v=round(volume, 4)))
+        for name, row in priced:
+            previous[name] = row["c"]
+        level = closed
+    return out
+
+
 class TapeSource:
     """One session's broker tape, exposed as minute bars, by day."""
 
@@ -273,6 +365,10 @@ class TapeSource:
         #: Concurrent API workers can ask for the same newly appended file at
         #: once; only one of them should pay the full parse cost.
         self._cache_lock = threading.RLock()
+        #: The index-only decade build reads every EOD day. Keep it per
+        #: symbol, keyed by the store's day identity, so opening KSE100 and
+        #: then KMIALLSHR does not re-read the same files.
+        self._eod_index_cache: dict[str, tuple[tuple, list[Bar]]] = {}
         #: Rolling book-only observations from the current snapshot cycle.
         #: Kept separate from the full OHLCV day build: refreshing one order
         #: book must not rebuild every symbol's minute bars from a 50 MB file.
@@ -1110,14 +1206,9 @@ class TapeSource:
             real = self._exchange_index(symbol, session, canonical)
             if real is not None and (not spec.calendar or day is not None):
                 return self._cal_tail(real, limit)
-            # On a calendar rung with no day asked for, the exchange's own
-            # chain is the whole daily series, like the symbols' own
-            # calendar path: a default daily chart is the history of every
-            # capture this service holds, not today's one bar amputated.
-            if spec.calendar:
-                chain = self._exchange_index_calendar(symbol, canonical)
-                if chain:
-                    return self._cal_tail(chain, limit)
+            # On a calendar rung with no day asked for, the EOD decade and
+            # the banked exchange chain are one continuous series. A named
+            # day still filters that series to its own calendar key.
             if spec.calendar:
                 rows = self._index_calendar(symbol, canonical)
                 if day is not None:
@@ -1126,7 +1217,12 @@ class TapeSource:
                                  tzinfo=ladder.law.KARACHI), canonical)
                     rows = [bar for bar in rows if ladder.calendar_key(
                         datetime.fromisoformat(bar.t), canonical) == wanted]
-                return self._cal_tail(rows, limit)
+                if rows:
+                    return self._cal_tail(rows, limit)
+                chain = self._exchange_index_calendar(symbol, canonical)
+                if chain:
+                    return self._cal_tail(chain, limit)
+                return []
             return self._cal_tail(
                 self._index_intraday(symbol, session, canonical), limit)
         if spec.calendar:
@@ -1662,13 +1758,75 @@ class TapeSource:
         except UpstreamError:
             return []
 
+    def _eod_index_calendar(self, symbol: str) -> list[Bar]:
+        """The EOD decade, cached until the store's day set changes."""
+        days = self._eod.days()
+        if not days:
+            return []
+        key = (len(days), days[0], days[-1])
+        with self._cache_lock:
+            found = self._eod_index_cache.get(symbol)
+            if found is not None and found[0] == key:
+                return list(found[1])
+            bars = eod_index_daily(self._eod, symbol)
+            self._eod_index_cache[symbol] = (key, bars)
+            return list(bars)
+
     def _index_calendar(self, symbol: str, resolution: str) -> list[Bar]:
-        """A chained daily index across every session this service can draw."""
+        """A calendar index: the EOD decade, with the real recent chain on top.
+
+        The exchange's own EXS-FEED frames only exist for the sessions the
+        recorder captured. The daily EOD store reaches back a decade, so its
+        equal-weight proxy is the only continuous history available; the
+        recent official chain is spliced at its first open, which keeps the
+        reader from seeing a jump between the proxy and the real level.
+        """
+        daily = self._eod_index_calendar(symbol)
+        official = self._exchange_index_calendar(symbol, "1D")
+        if official:
+            # The exchange's minute frames are stamped at the minute they
+            # arrived, not at calendar noon. A daily rung with a 09:17 stamp
+            # is not a close, so normalise the official chain before it can
+            # replace any EOD row.
+            official = [self._at_noon(bar) for bar in official]
+            if daily:
+                first_day = official[0].t[:10]
+                anchor_bar = next(
+                    (bar for bar in daily if bar.t[:10] < first_day), None)
+                anchor = anchor_bar.c if anchor_bar is not None else 0.0
+                scale = (official[0].o / anchor
+                         if anchor > 0 and official[0].o > 0 else 1.0)
+
+                def scaled(bar: Bar) -> Bar:
+                    return Bar.build(
+                        t=bar.t, o=bar.o * scale, h=bar.h * scale,
+                        l=bar.l * scale, c=bar.c * scale, v=bar.v)
+
+                by_day: dict[str, Bar] = {
+                    bar.t[:10]: scaled(bar)
+                    for bar in daily if bar.t[:10] < first_day
+                }
+                # The exchange chain is authoritative on every day it has a
+                # bar. Some captured days have no index frame, though, and the
+                # EOD proxy does; keep that day instead of dropping it between
+                # two official sessions.
+                for bar in daily:
+                    if bar.t[:10] >= first_day:
+                        by_day.setdefault(bar.t[:10], scaled(bar))
+                for bar in official:
+                    by_day[bar.t[:10]] = bar
+                daily = [by_day[key] for key in sorted(by_day)]
+            else:
+                daily = official
+        if daily:
+            return ladder.aggregate(daily, resolution)
+        # No EOD store and no exchange chain: retain the old intraday-only
+        # fallback for a deployment that still has captures but no daily rows.
         days = self._available_days()
         if not days:
             return []
         level = 1000.0
-        daily: list[Bar] = []
+        fallback: list[Bar] = []
         for day in days:
             intraday = self._index_intraday(symbol, day, "1m")
             if not intraday:
@@ -1680,9 +1838,9 @@ class TapeSource:
             day_bar = ladder.aggregate(scaled, "1D")
             if not day_bar:
                 continue
-            daily.append(day_bar[0])
+            fallback.append(day_bar[0])
             level = day_bar[0].c
-        return ladder.aggregate(daily, resolution)
+        return ladder.aggregate(fallback, resolution)
 
     def latest(self, symbol: str, resolution: str = RESOLUTION_MINUTE, *,
                since: str | None = None, day: date | str | None = None,
@@ -1708,6 +1866,8 @@ class TapeSource:
                     "the level, the session high and low and the day's change "
                     "are the index frames' own numbers, at the minute each "
                     "frame arrived; frames stop when the recorder stopped",
+                    "older calendar history is an EOD-based equal-weight "
+                    "proxy, not the exchange's official history",
                 ]
             capture = self.capture_for(session)
             if capture is None and self._archive.manifest(session) is not None:
@@ -1721,7 +1881,12 @@ class TapeSource:
             members = len(self._index_universe(session))
             lines.append(
                 f"no exchange level is available, so {symbol} is a computed "
-                f"proxy from this session's tape")
+                f"proxy from this session's tape and the EOD store")
+            if self._eod.days():
+                lines.append(
+                    "the decade-long calendar history is an equal-weight "
+                    "proxy from the banked EOD rows, scaled to the first "
+                    "banked exchange level; it is not the official index")
             if symbol == INDEX_KSE100:
                 return lines + [
                     f"{INDEX_KSE100} is the equal-weight "
@@ -1733,7 +1898,7 @@ class TapeSource:
                     "a transparent breadth chart of the session's own tape, "
                     "with the level set to 1000 at its first bucket",
                 ]
-            return [
+            return lines + [
                 f"{INDEX_KMIALLSHR} is a computed proxy: the equal-weight "
                 f"return of every one of the {members} symbols the tape "
                 f"printed in this session",

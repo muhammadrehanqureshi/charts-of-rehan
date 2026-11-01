@@ -69,7 +69,9 @@ import {
   type ProfileBarSource,
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
-import { sessionBreaks, type SessionBreak } from "../chart/sessions";
+import {
+  intradayStamps, isDailyGrainStamp, sessionBreaks, type SessionBreak,
+} from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
 import type { ChartAppearance } from "../hooks/useAppearance";
@@ -574,6 +576,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
         return;
       }
       const first = state.barTimes[0];
+      const firstIntraday = state.barTimes.find(
+        (stamp) => !isDailyGrainStamp(stamp));
       const range = state.chart.timeScale().getVisibleLogicalRange();
       // An intraday tape is shorter than the calendar series behind it.
       // Keep its first recorded day visible as a calm caption, whatever
@@ -587,8 +591,18 @@ export function ChartCanvas(props: ChartCanvasProps) {
         el.textContent = "";
         return;
       }
-      el.textContent = `${resolution} recorded history begins ` +
-        karachiDay.format(new Date(first)) + " · older days are in 1D";
+      if (firstIntraday !== undefined && firstIntraday !== first) {
+        el.textContent = `${resolution} candles from ` +
+          karachiDay.format(new Date(firstIntraday)) +
+          " · older bars are daily from " +
+          karachiDay.format(new Date(first));
+      } else if (firstIntraday === undefined) {
+        el.textContent = "daily-grain history begins " +
+          karachiDay.format(new Date(first)) + " · whole-day bars";
+      } else {
+        el.textContent = `${resolution} recorded history begins ` +
+          karachiDay.format(new Date(first)) + " · older days are in 1D";
+      }
       el.hidden = false;
     };
     const rangeSub = () => {
@@ -735,8 +749,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The drawing anchors and the y-picks map from these; the whole
     // drawing path speaks milliseconds, so keep them ms here too.
     state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
+    // Daily backfill rows are calendar bars stamped at Karachi noon. They
+    // are deliberately outside the session-rule pass; the real recordings
+    // still get their own breaks below.
     state.breaks = SESSION_BREAK_RUNGS.has(resolution)
-      ? sessionBreaks(state.barTimes)
+      ? sessionBreaks(intradayStamps(state.barTimes))
       : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {

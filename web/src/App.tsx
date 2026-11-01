@@ -107,15 +107,23 @@ function spanFor(resolution: Resolution): number {
  * How much older, coarser-grained history a rung's chart asks for, in
  * whole sessions.
  *
- * Intraday rungs ask for none. The store's decade of history is one row per
- * trading day, and stamping those rows into an hourly series draws a
- * whole-day candle beside real hourly ones - a chart that looks like a
- * decade of hourly data and is not. The honest intraday chart starts where
- * the tape's own recording starts, and the daily rungs (which are the same
- * rows, drawn as days) carry the decade instead.
+ * The tape's own intraday recording starts in October 2026, but the EOD
+ * store holds the decade behind it. The coarse intraday rungs ask for that
+ * decade as daily-grain bars; the chart labels the older stretch as daily
+ * rather than pretending a whole-day candle is a ten-minute one. The fine
+ * second and minute rungs keep their recorded span: a decade of daily rows
+ * would not be a minute chart, and the daily rungs already carry that view.
  */
-export function backfillFor(_resolution: Resolution): number {
-  return 0;
+const DAILY_BACKFILL_DEPTH: Partial<Record<Resolution, number>> = {
+  "10m": 2_600,
+  "15m": 2_600,
+  "30m": 2_600,
+  "1h": 2_600,
+  "4h": 2_600,
+};
+
+export function backfillFor(resolution: Resolution): number {
+  return DAILY_BACKFILL_DEPTH[resolution] ?? 0;
 }
 
 /**
