@@ -2,8 +2,8 @@
  * The chart's appearance settings, persisted per browser.
  *
  * TradingView's settings dialog changes how the chart is drawn, not what is
- * drawn. This state is exactly that: the candle colours and whether the grid
- * lines show. Storage is untrusted, so every field is checked before it
+ * drawn. This state is exactly that: the candle colours and whether the
+ * watermark shows. Storage is untrusted, so every field is checked before it
  * reaches the chart, and a corrupt entry falls back to TV's own dark values.
  */
 
@@ -14,8 +14,6 @@ export interface ChartAppearance {
   readonly up: string;
   /** Bear candle body and wick. */
   readonly down: string;
-  /** The engine's background grid lines, on by default as TV draws it. */
-  readonly gridOn: boolean;
   /** The symbol/timeframe watermark behind the price pane. */
   readonly watermarkOn: boolean;
 }
@@ -23,7 +21,6 @@ export interface ChartAppearance {
 export const DEFAULT_APPEARANCE: ChartAppearance = {
   up: "#089981",
   down: "#f23645",
-  gridOn: true,
   watermarkOn: true,
 };
 
@@ -49,7 +46,6 @@ function readStored(): ChartAppearance {
     return {
       up: hexColor(record["up"], DEFAULT_APPEARANCE.up),
       down: hexColor(record["down"], DEFAULT_APPEARANCE.down),
-      gridOn: record["gridOn"] !== false,
       watermarkOn: record["watermarkOn"] !== false,
     };
   } catch {
@@ -81,7 +77,6 @@ export function useAppearance(): [
     setAppearance((current) => ({
       up: hexColor(patch.up, current.up),
       down: hexColor(patch.down, current.down),
-      gridOn: patch.gridOn ?? current.gridOn,
       watermarkOn: patch.watermarkOn ?? current.watermarkOn,
     }));
   }, []);
