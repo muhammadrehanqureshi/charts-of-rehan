@@ -43,6 +43,33 @@ function keyOf(ms: number): string {
   return dayKeyFormat.format(new Date(ms));
 }
 
+/**
+ * A daily EOD bar is stamped at Karachi noon, which is 07:00 UTC. It is a
+ * calendar row, not an intraday session bar: drawing a session rule around
+ * every one of them would turn a decade backfill into a forest of lines.
+ * The conversion is explicit because the exchange's clock has no DST.
+ */
+export function isDailyGrainStamp(ms: number): boolean {
+  if (!Number.isFinite(ms)) {
+    return false;
+  }
+  const at = new Date(ms);
+  return at.getUTCHours() === 7 && at.getUTCMinutes() === 0
+    && at.getUTCSeconds() === 0;
+}
+
+/** The stamps that belong to real intraday sessions, in their own order. */
+export function intradayStamps(times: ArrayLike<number>): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < times.length; i += 1) {
+    const t = times[i];
+    if (t !== undefined && !isDailyGrainStamp(t)) {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 export function sessionBreaks(times: ArrayLike<number>): SessionBreak[] {
   const out: SessionBreak[] = [];
   let last = "";
