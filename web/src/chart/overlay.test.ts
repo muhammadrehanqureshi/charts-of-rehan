@@ -6,7 +6,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { anchorAt, breakPlan, frameFor, makePositions, monthText } from "./overlay";
+import {
+  anchorAt, breakPlan, fibLevels, frameFor, makePositions,
+  monthText, volumeProfile,
+} from "./overlay";
 import type { SessionBreak } from "./sessions";
 
 type Chartish = Parameters<typeof frameFor>[0];
@@ -199,5 +202,60 @@ describe("anchor mapping", () => {
   it("a series of one bar pins every instant to that bar's pixel", () => {
     const single = makePositions(chart, candles, [0]);
     expect(single.xAt(40_000)).toBe(0);
+  });
+});
+
+describe("fib retracement", () => {
+  it("places the classic levels between the two anchors", () => {
+    const levels = fibLevels({ t: 0, price: 100 }, { t: 1000, price: 200 });
+    expect(levels.map((level) => level.ratio))
+      .toEqual([0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]);
+    expect(levels[0]?.price).toBe(100);
+    expect(levels[3]?.price).toBe(150);
+    expect(levels[6]?.price).toBe(200);
+  });
+
+  it("measures a down swing from its own first anchor", () => {
+    const levels = fibLevels({ t: 0, price: 200 }, { t: 10, price: 100 });
+    expect(levels[3]?.price).toBe(150);
+    expect(levels[6]?.price).toBe(100);
+  });
+});
+
+describe("fixed range volume profile", () => {
+  it("spreads a bar's volume across the prices it traded", () => {
+    const bars = {
+      time: [0, 60_000],
+      high: [110, 110],
+      low: [90, 90],
+      volume: [100, 100],
+    };
+    const profile = volumeProfile(bars,
+      { t: -1, price: 90 }, { t: 120_000, price: 110 }, 10);
+    expect(profile).not.toBeNull();
+    expect(profile?.total).toBeCloseTo(200, 5);
+    // A 20-point range in ten bins: each bin holds a tenth of the volume.
+    expect(profile?.bins[0]?.volume).toBeCloseTo(20, 5);
+    expect(profile?.poc).toBeCloseTo(91, 5);
+  });
+
+  it("counts only the bars inside the selected time range", () => {
+    const bars = {
+      time: [0, 600_000],
+      high: [105, 105],
+      low: [95, 95],
+      volume: [50, 50],
+    };
+    const profile = volumeProfile(bars,
+      { t: -1, price: 90 }, { t: 60_000, price: 110 }, 4);
+    expect(profile?.total).toBeCloseTo(50, 5);
+  });
+
+  it("is null when the range holds no bar or no price span", () => {
+    const bars = { time: [0], high: [100], low: [90], volume: [5] };
+    expect(volumeProfile(bars,
+      { t: 5_000, price: 90 }, { t: 9_000, price: 100 })).toBeNull();
+    expect(volumeProfile(bars,
+      { t: 0, price: 100 }, { t: 1_000, price: 100 })).toBeNull();
   });
 });

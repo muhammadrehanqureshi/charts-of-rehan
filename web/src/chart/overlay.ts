@@ -82,6 +82,167 @@ export function anchorAt(
   return { t: Number(time) * 1000, price };
 }
 
+
+/** The bar columns a fixed-range volume profile reads. */
+export interface ProfileBarSource {
+  readonly time: ArrayLike<number>;
+  readonly high: ArrayLike<number>;
+  readonly low: ArrayLike<number>;
+  readonly volume: ArrayLike<number>;
+}
+
+export interface ProfileBin {
+  readonly lo: number;
+  readonly hi: number;
+  readonly volume: number;
+}
+
+export interface VolumeProfile {
+  readonly bins: readonly ProfileBin[];
+  readonly max: number;
+  readonly total: number;
+  /** The price with the most volume traded through it. */
+  readonly poc: number;
+  /** Value area edges: the busiest 70% of the range's volume. */
+  readonly vah: number;
+  readonly val: number;
+}
+
+/** The ratios every retracement tool draws, low to high. */
+const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
+
+export interface FibLevel {
+  readonly ratio: number;
+  readonly price: number;
+}
+
+/**
+ * The levels between two anchors, measured from the first across the swing.
+ *
+ * The list is the classic one the terminal draws, and the price of each level
+ * is the swing's own arithmetic: no rounding, because a retracement that
+ * snapped its levels would sit off the swing it was drawn on.
+ */
+export function fibLevels(a: AnchoredPoint, b: AnchoredPoint): FibLevel[] {
+  return FIB_RATIOS.map((ratio) => ({
+    ratio,
+    price: a.price + (b.price - a.price) * ratio,
+  }));
+}
+
+/**
+ * Volume at price across the selected range: the FRVP tool's numbers.
+ *
+ * Each bar's own volume is spread evenly across the prices that bar traded
+ * (its high-low span), so a tall candle feeds every bin it crossed rather
+ * than dumping its whole volume on the close. Bins outside the range, and
+ * bars whose time sits outside it, contribute nothing. The value area is the
+ * busiest bins that together hold 70% of the range's volume.
+ */
+export function volumeProfile(
+  bars: ProfileBarSource | null | undefined,
+  a: AnchoredPoint,
+  b: AnchoredPoint,
+  bins = 24,
+): VolumeProfile | null {
+  if (bars === null || bars === undefined || bins < 1) {
+    return null;
+  }
+  const count = Math.min(bars.time.length, bars.high.length,
+    bars.low.length, bars.volume.length);
+  const priceLow = Math.min(a.price, b.price);
+  const priceHigh = Math.max(a.price, b.price);
+  const timeLow = Math.min(a.t, b.t);
+  const timeHigh = Math.max(a.t, b.t);
+  if (count === 0 || !(priceHigh > priceLow)) {
+    return null;
+  }
+  const step = (priceHigh - priceLow) / bins;
+  const filled = new Float64Array(bins);
+  for (let index = 0; index < count; index += 1) {
+    const time = bars.time[index];
+    const high = bars.high[index];
+    const low = bars.low[index];
+    const volume = bars.volume[index];
+    if (time === undefined || high === undefined || low === undefined
+      || volume === undefined) {
+      continue;
+    }
+    if (!Number.isFinite(time) || time < timeLow || time > timeHigh) {
+      continue;
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)
+      || !Number.isFinite(volume) || volume <= 0) {
+      continue;
+    }
+    const top = Math.min(high, priceHigh);
+    const bottom = Math.max(low, priceLow);
+    if (!(top > bottom)) {
+      continue;
+    }
+    const span = high - low;
+    const first = Math.max(0,
+      Math.min(bins - 1, Math.floor((bottom - priceLow) / step)));
+    const last = Math.max(0,
+      Math.min(bins - 1, Math.floor((top - priceLow) / step)));
+    for (let bin = first; bin <= last; bin += 1) {
+      const binLow = priceLow + bin * step;
+      const overlap = Math.min(top, binLow + step)
+        - Math.max(bottom, binLow);
+      if (overlap <= 0) {
+        continue;
+      }
+      filled[bin] = (filled[bin] ?? 0)
+        + (span > 0 ? volume * (overlap / span) : volume);
+    }
+  }
+  let total = 0;
+  let max = 0;
+  let pocIndex = -1;
+  for (let bin = 0; bin < bins; bin += 1) {
+    const value = filled[bin] ?? 0;
+    total += value;
+    if (value > max) {
+      max = value;
+      pocIndex = bin;
+    }
+  }
+  if (pocIndex < 0 || total <= 0) {
+    return null;
+  }
+  const order: number[] = [];
+  for (let bin = 0; bin < bins; bin += 1) {
+    order.push(bin);
+  }
+  order.sort((left, right) => (filled[right] ?? 0) - (filled[left] ?? 0));
+  let taken = 0;
+  let lowest = bins;
+  let highest = -1;
+  for (const bin of order) {
+    if (taken >= total * 0.7) {
+      break;
+    }
+    taken += filled[bin] ?? 0;
+    lowest = Math.min(lowest, bin);
+    highest = Math.max(highest, bin);
+  }
+  const binLow = (bin: number): number => priceLow + bin * step;
+  const rows: ProfileBin[] = [];
+  for (let bin = 0; bin < bins; bin += 1) {
+    rows.push({ lo: binLow(bin), hi: binLow(bin) + step,
+                volume: filled[bin] ?? 0 });
+  }
+  const pocBase = binLow(pocIndex);
+  return {
+    bins: rows,
+    max,
+    total,
+    poc: pocBase + step / 2,
+    vah: binLow(highest) + step,
+    val: binLow(lowest),
+  };
+}
+
 /**
  * A tape instant → x mapping that never drops a line.
  *
@@ -376,6 +537,8 @@ export interface OverlayShapeInput {
   readonly toolColor: string;
   readonly midDrag: MeasureResult | null;
   readonly positions: OverlayPositions;
+  /** Bars behind the profile tool, or null when the chart holds none. */
+  readonly bars?: ProfileBarSource | null;
 }
 
 /**
@@ -401,7 +564,7 @@ export function paintOverlay(
       continue;
     }
     paintDrawing(context, frame, drawing,
-      input.toolColor, lineWidth, input.positions);
+      input.toolColor, lineWidth, input.positions, input.bars ?? null);
   }
   if (input.midDrag !== null) {
     paintMeasure(context, input.midDrag, input.toolColor,
@@ -416,10 +579,25 @@ function paintDrawing(
   color: string,
   lineWidth: number,
   positions: OverlayPositions,
+  bars: ProfileBarSource | null,
 ): void {
   const a = drawing.points[0];
   const b = drawing.points[1];
   if (a === undefined) {
+    return;
+  }
+  if (drawing.kind === "fib") {
+    if (b === null) {
+      return;
+    }
+    paintFib(context, frame, a, b, positions);
+    return;
+  }
+  if (drawing.kind === "profile") {
+    if (b === null) {
+      return;
+    }
+    paintProfile(context, frame, a, b, positions, bars);
     return;
   }
   context.beginPath();
@@ -470,6 +648,154 @@ function paintDrawing(
   context.strokeStyle = color;
   context.lineWidth = lineWidth;
   context.stroke();
+}
+
+
+/** The ratio's own label: 0 and 1 stay whole, the rest keep their digits. */
+function ratioText(ratio: number): string {
+  if (ratio === 0 || ratio === 1) {
+    return String(ratio);
+  }
+  return ratio.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+/** A volume figure a chart label can hold: 2.4M, 780.1K, 512. */
+function compactVolume(value: number): string {
+  const size = Math.abs(value);
+  if (size >= 1e9) {
+    return `${(value / 1e9).toFixed(2)}B`;
+  }
+  if (size >= 1e6) {
+    return `${(value / 1e6).toFixed(2)}M`;
+  }
+  if (size >= 1e3) {
+    return `${(value / 1e3).toFixed(1)}K`;
+  }
+  return value.toFixed(0);
+}
+
+/**
+ * The retracement: the dashed swing, then each level across the panel.
+ *
+ * The levels run to the right edge of the plot rather than stopping at the
+ * second anchor, which is the terminal's own default: the reader uses them
+ * as a shelf for what happens after the swing, not as a box around it.
+ */
+function paintFib(
+  context: CanvasRenderingContext2D,
+  frame: OverlayFrame,
+  a: AnchoredPoint,
+  b: AnchoredPoint,
+  positions: OverlayPositions,
+): void {
+  const x1 = positions.xAt(a.t);
+  const x2 = positions.xAt(b.t);
+  if (x1 === null || x2 === null) {
+    return;
+  }
+  const left = Math.min(x1, x2);
+  const right = Math.max(frame.plotWidth, Math.max(x1, x2));
+  context.save();
+  context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  context.setLineDash([3, 4]);
+  context.strokeStyle = "rgba(41, 98, 255, 0.45)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(x1, positions.yAt(a.price));
+  context.lineTo(x2, positions.yAt(b.price));
+  context.stroke();
+  context.setLineDash([]);
+  for (const level of fibLevels(a, b)) {
+    const y = Math.round(positions.yAt(level.price)) + 0.5;
+    const edge = level.ratio === 0 || level.ratio === 1;
+    context.strokeStyle = edge ? "rgba(41, 98, 255, 0.8)"
+      : "rgba(41, 98, 255, 0.42)";
+    context.lineWidth = edge ? 1.3 : 1;
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(right, y);
+    context.stroke();
+    context.fillStyle = edge ? "#b9c6e8" : "#8f9bb3";
+    context.fillText(`${ratioText(level.ratio)}  ${level.price.toFixed(2)}`,
+      right - 6, Math.max(8, y - 8));
+  }
+  context.restore();
+}
+
+/**
+ * The fixed range volume profile: the selection box, then one bar per price
+ * bin, grown leftward from the right edge of the selection exactly like the
+ * terminal's own tool. The point of control is brightest and the value area
+ * is tinted, so the shape reads at a glance without a legend.
+ */
+function paintProfile(
+  context: CanvasRenderingContext2D,
+  frame: OverlayFrame,
+  a: AnchoredPoint,
+  b: AnchoredPoint,
+  positions: OverlayPositions,
+  bars: ProfileBarSource | null,
+): void {
+  void frame;
+  const x1 = positions.xAt(a.t);
+  const x2 = positions.xAt(b.t);
+  if (x1 === null || x2 === null) {
+    return;
+  }
+  const left = Math.min(x1, x2);
+  const right = Math.max(x1, x2);
+  const top = Math.min(positions.yAt(a.price), positions.yAt(b.price));
+  const bottom = Math.max(positions.yAt(a.price), positions.yAt(b.price));
+  const width = Math.max(1, right - left);
+  context.save();
+  context.setLineDash([4, 3]);
+  context.strokeStyle = "rgba(41, 98, 255, 0.55)";
+  context.lineWidth = 1;
+  context.strokeRect(left + 0.5, top + 0.5, width, Math.max(1, bottom - top));
+  context.setLineDash([]);
+  const profile = volumeProfile(bars, a, b, 24);
+  context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "bottom";
+  context.fillStyle = "#8f9bb3";
+  context.fillText(
+    profile === null
+      ? "no volume in this range"
+      : `POC ${profile.poc.toFixed(2)}   Vol ${compactVolume(profile.total)}`,
+    left + 6, Math.max(12, bottom - 6));
+  if (profile === null || profile.max <= 0) {
+    context.restore();
+    return;
+  }
+  const height = Math.max(1, bottom - top) / profile.bins.length;
+  for (let index = 0; index < profile.bins.length; index += 1) {
+    const bin = profile.bins[index];
+    if (bin === undefined || !(bin.volume > 0)) {
+      continue;
+    }
+    const y = bottom - (index + 1) * height;
+    const barWidth = (bin.volume / profile.max) * width * 0.92;
+    if (barWidth <= 0) {
+      continue;
+    }
+    const nearPoc = profile.poc >= bin.lo && profile.poc < bin.hi;
+    const inValue = bin.hi > profile.val && bin.lo < profile.vah;
+    context.fillStyle = nearPoc ? "rgba(41, 98, 255, 0.62)"
+      : inValue ? "rgba(41, 98, 255, 0.30)"
+      : "rgba(120, 123, 134, 0.20)";
+    context.fillRect(right - barWidth, y + 0.5, barWidth,
+      Math.max(1, height - 1));
+  }
+  const pocY = Math.round(positions.yAt(profile.poc)) + 0.5;
+  context.strokeStyle = "rgba(41, 98, 255, 0.9)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(left, pocY);
+  context.lineTo(right, pocY);
+  context.stroke();
+  context.restore();
 }
 
 /**
