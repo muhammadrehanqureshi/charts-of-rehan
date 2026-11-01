@@ -55,6 +55,13 @@ class EodIndexDailyTest(unittest.TestCase):
         # cannot contribute a return on the day it first appears.
         self.assertAlmostEqual(bars[2].c, 1050.0)
 
+    def test_a_start_boundary_drops_days_before_the_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = self.store(Path(directory))
+            bars = eod_index_daily(
+                store, "KMIALLSHR", start=date(2016, 11, 2))
+        self.assertEqual([bar.t[:10] for bar in bars], ["2016-11-02"])
+
     def test_an_unknown_symbol_has_no_series(self):
         with tempfile.TemporaryDirectory() as directory:
             store = self.store(Path(directory))

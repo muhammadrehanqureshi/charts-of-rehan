@@ -509,9 +509,14 @@ export function breakPlan(
       plan.push({ x: item.x, line: true, text: null });
       lastLine = item.x;
     }
-    const text = !dense && item.label !== ""
-      ? item.label
-      : monthStart ? monthText(item.day) : null;
+    // Intraday charts leave their dates to the time axis, as TradingView
+    // does; a label above every join only duplicates what is already under
+    // the chart. Calendar/dense plans may still carry a month anchor.
+    const text = !denseAllowed
+      ? null
+      : !dense && item.label !== ""
+        ? item.label
+        : monthStart ? monthText(item.day) : null;
     if (text === null || item.x - lastLabelEnd < LABEL_MIN_PX) {
       continue;
     }
