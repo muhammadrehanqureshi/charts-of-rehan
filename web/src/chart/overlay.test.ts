@@ -150,7 +150,7 @@ describe("break plan", () => {
       .filter((item) => item.line).length).toBeLessThan(5);
   });
 
-  it("paints a dotted rule and the day's name at every visible join", () => {
+  it("paints only the intraday rule; the axis owns the dates", () => {
     const { breaks } = mappedChart([
       ["2026-10-19", 100, true],
       ["2026-10-20", 300],
@@ -180,7 +180,7 @@ describe("break plan", () => {
       { line: "#2962ff", label: "#8f9bb3" }, false, 520);
     expect(ops).toContain("dash:2,4");
     expect(ops.filter((op) => op === "stroke")).toHaveLength(2);
-    expect(ops).toContain("text:20 Oct");
+    expect(ops).not.toContain("text:20 Oct");
     // The rule runs the full stack, not only the price pane.
     expect(ops).toContain("line:300.5,520");
   });

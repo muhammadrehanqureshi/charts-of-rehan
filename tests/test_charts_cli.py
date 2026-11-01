@@ -69,6 +69,10 @@ class DecadeWindowTest(unittest.TestCase):
         self.assertEqual(app.decade_start(date(2026, 11, 1)),
                          date(2016, 11, 1))
 
+    def test_two_november_reaches_back_to_two_november(self):
+        self.assertEqual(app.decade_start(date(2026, 11, 2)),
+                         date(2016, 11, 2))
+
     def test_a_leap_day_window_starts_on_the_28th(self):
         self.assertEqual(app.decade_start(date(2028, 2, 29)),
                          date(2018, 2, 28))

@@ -54,6 +54,22 @@ from charts.ratelimit import (  # noqa: E402
     CircuitBreaker, Ledger, TokenBucket, UpstreamError, retry_call,
 )
 
+
+def decade_start(today: date) -> date:
+    """The same calendar day ten years earlier, leap day included.
+
+    The window is an anniversary, not a fixed 3,653-day count: on 2 Nov
+    2026 it begins on 2 Nov 2016, so the oldest visible row moves forward
+    with the market's own clock instead of leaving a stale session behind.
+    """
+    try:
+        return today.replace(year=today.year - 10)
+    except ValueError:
+        # 29 February in a non-leap target year: the window starts on the
+        # 28th, the last day that exists in that month.
+        return today.replace(year=today.year - 10, day=28)
+
+
 COMPANY_URL = "https://dps.psx.com.pk/company/{symbol}"
 HISTORICAL_URL = "https://dps.psx.com.pk/historical"
 

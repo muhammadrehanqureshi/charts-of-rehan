@@ -931,13 +931,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // The dotted session rules: one blue line at every Karachi day change,
-    // through the price pane and every study pane beneath it. Only the seven
-    // rungs the owner named carry them; these are never "dense" in the
-    // calendar sense, so a packed hour window keeps every rule.
+    // The dotted session rules: one muted rule at every Karachi day
+    // change, through the price pane and every study pane beneath it. The
+    // x-axis supplies the date labels, TradingView style; only the lines
+    // belong on the plot. These are never "dense" in the calendar sense,
+    // so a packed hour window keeps every rule.
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        { line: "rgba(41, 98, 255, 0.6)", label: "#8f9bb3" },
+        { line: "rgba(181, 166, 129, 0.55)", label: "#8f9bb3" },
         false, cssHeight, dpr);
     }
     if (drag !== null) {
