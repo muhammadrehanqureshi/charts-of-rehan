@@ -120,6 +120,18 @@ describe("break plan", () => {
     expect(monthText("2026-01-05")).toBe("Jan '26");
   });
 
+  it("keeps every intraday rule even when two joins are pixels apart", () => {
+    const entries: [string, number, boolean?][] = [];
+    for (let i = 0; i < 6; i += 1) {
+      entries.push([
+        `2026-10-${String(12 + i).padStart(2, "0")}`, 100 + i * 10, i === 0,
+      ]);
+    }
+    const { breaks, xOf } = mappedChart(entries);
+    expect(breakPlan(breaks, xOf, 700, false)
+      .filter((item) => item.line)).toHaveLength(5);
+  });
+
   it("an intraday window keeps every session rule when days sit close", () => {
     const entries: [string, number, boolean?][] = [];
     for (let i = 0; i < 6; i += 1) {
