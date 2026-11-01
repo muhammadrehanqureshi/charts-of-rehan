@@ -79,7 +79,8 @@ class IndexFeedCase(unittest.TestCase):
         return TapeSource(clock=lambda: clock,
                           capture_dirs=(self.captures,),
                           archive_dir=self.tmp / "archive",
-                          eod_dir=self.tmp / "eod")
+                          eod_dir=self.tmp / "eod",
+                          indices_dir=self.tmp / "indices")
 
     @staticmethod
     def stamps(minutes: int) -> list[str]:
@@ -142,6 +143,45 @@ class ParseTest(IndexFeedCase):
         self.write_captures(row)
         self.assertEqual(index_feed.minute_bars(self.capture, MONDAY,
                                                 "KSE100"), [])
+
+
+class DurableIndexTest(IndexFeedCase):
+    """A finished session's index minutes outlive the capture they came from."""
+
+    def test_a_finished_session_is_banked_and_read_without_its_capture(self):
+        stamps = self.stamps(3)
+        levels = (166231.18, 166320.0, 166532.86)
+        self.write_captures(*[exs_frame(stamp, level)
+                              for stamp, level in zip(stamps, levels)])
+        later = datetime(2026, 10, 13, 11, 0, tzinfo=KARACHI)
+        source = self.source(clock=later)
+        with mock.patch("charts.adapters.tape.tape_bars.capture_path",
+                        return_value=self.capture):
+            first = source.history("KSE100", "1m", day=MONDAY)
+        self.assertEqual(len(first), 3)
+        self.assertTrue((self.tmp / "indices" / "2026-10-12.ndjson").is_file())
+        self.capture.unlink()
+        with mock.patch("charts.adapters.tape.tape_bars.capture_path",
+                        return_value=self.capture):
+            again = source.history("KSE100", "1m", day=MONDAY)
+        self.assertEqual([bar.c for bar in again], [bar.c for bar in first])
+
+    def test_the_calendar_chains_a_banked_day_after_the_capture_is_gone(self):
+        stamps = self.stamps(2)
+        levels = (166231.18, 166532.86)
+        self.write_captures(*[exs_frame(stamp, level)
+                              for stamp, level in zip(stamps, levels)])
+        later = datetime(2026, 10, 13, 11, 0, tzinfo=KARACHI)
+        source = self.source(clock=later)
+        with mock.patch("charts.adapters.tape.tape_bars.capture_path",
+                        return_value=self.capture):
+            source.history("KSE100", "1m", day=MONDAY)
+        self.capture.unlink()
+        with mock.patch("charts.adapters.tape.tape_bars.capture_path",
+                        return_value=self.capture):
+            daily = source.history("KSE100", "1D")
+        self.assertEqual(len(daily), 1)
+        self.assertEqual(daily[0].c, 166532.86)
 
 
 class ServedIndexTest(IndexFeedCase):

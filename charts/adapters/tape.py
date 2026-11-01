@@ -52,7 +52,8 @@ from src.data import tape_bars  # noqa: E402
 from src.data import tick_volume  # noqa: E402
 from src.data.sessions import now_karachi  # noqa: E402
 
-from charts import resolutions as ladder  # noqa: E402
+from charts import resolutions as ladder
+from charts.indices import IndexStore  # noqa: E402
 
 from charts.archive import (  # noqa: E402
     DEFAULT_ARCHIVE_DIR, DEFAULT_CAPTURE_DIRS, SessionArchive,
@@ -251,6 +252,7 @@ class TapeSource:
     def __init__(self, *, clock=now_karachi, universe_path: Path | None = None,
                  capture_dirs=None, archive_dir: Path | str | None = None,
                  eod_dir: Path | str | None = None,
+                 indices_dir: Path | str | None = None,
                  day: date | str | None = None) -> None:
         self._clock = clock
         self._universe_path = Path(universe_path) if universe_path else None
@@ -258,6 +260,7 @@ class TapeSource:
                                    (capture_dirs or DEFAULT_CAPTURE_DIRS))
         self._archive = SessionArchive(archive_dir or DEFAULT_ARCHIVE_DIR)
         self._eod = EodStore(eod_dir or EodStore().root)
+        self._indices = IndexStore(indices_dir)
         # A calendar rung reads every banked EOD day, and a decade's worth is
         # a few seconds of first-request file reads on the machine running
         # this. Warming the store as the service wakes costs one background
@@ -1044,7 +1047,45 @@ class TapeSource:
         summary = self._archive.write(
             tape, capture=facts, force=force,
             built_at=self._clock().isoformat(timespec="seconds"))
+        # An archived session carries its index frames too. Bank them in the
+        # index store, where they survive the capture this build read.
+        try:
+            if session != self.today():
+                self._exchange_index_minutes(session)
+        except Exception:  # noqa: BLE001 - a missing index may not fail an archive
+            pass
         return summary.as_dict()
+
+    def bank_index_days(self, days: int = 30, *,
+                        since: date | None = None) -> int:
+        """Bank the newest finished sessions' index minutes, once each.
+
+        The maintenance pass calls this every quarter hour; a day already in
+        the store costs one ``is_file`` check, so the sweep is cheap and a day
+        is never rewritten. ``since`` keeps the sweep inside the decade
+        window. Returns how many days were newly banked.
+        """
+        banked = 0
+        considered = 0
+        for day in sorted(self._available_days(), reverse=True):
+            if considered >= max(1, days):
+                break
+            if day >= self.today() or self._indices.has(day):
+                continue
+            if since is not None and day < since:
+                continue
+            considered += 1
+            try:
+                bars = self._exchange_index_minutes(day)
+            except Exception:  # noqa: BLE001 - one bad capture is not the sweep
+                continue
+            if bars and self._indices.has(day):
+                banked += 1
+        return banked
+
+    def prune_index_days(self, before: date) -> list[str]:
+        """Drop banked index days behind the rolling decade window."""
+        return self._indices.prune(before)
 
     # ------------------------------------------------------------- the wire
     def history(self, symbol: str, resolution: str = RESOLUTION_MINUTE, *,
@@ -1451,13 +1492,14 @@ class TapeSource:
         session reads once. There is no archive fallback for the index: the
         archive keeps symbols, and the index frames live only in a capture.
         """
+        stored = self._indices.read(session)
         path = self.capture_for(session)
         if path is None:
-            return {}
+            return stored
         try:
             stat = path.stat()
         except OSError:
-            return {}
+            return stored
         key = (session.isoformat(), str(path), stat.st_size, stat.st_mtime_ns)
         cached = self._index_cache.get(session.isoformat())
         if cached is not None and cached[0] == key:
@@ -1478,7 +1520,14 @@ class TapeSource:
             if bars:
                 built[name] = bars
         self._index_cache[session.isoformat()] = (key, built)
-        return built
+        # A finished session is banked whole, once. Today's file is still
+        # growing, so its partial day is never written.
+        if built and session != self.today():
+            try:
+                self._indices.write(session, built)
+            except OSError:
+                pass
+        return built or stored
 
     def _exchange_index(self, symbol: str, session: date,
                         resolution: str) -> list[Bar] | None:
@@ -1513,11 +1562,15 @@ class TapeSource:
     def _exchange_index_calendar(self, symbol: str,
                                  resolution: str) -> list[Bar]:
         """Chain every capture's real index minute into calendar bars."""
-        days = [day for day in self._available_days()
-                if self.capture_for(day) is not None]
-        days.sort()
+        days = {day for day in self._available_days()
+                if self.capture_for(day) is not None}
+        for text in self._indices.days():
+            try:
+                days.add(date.fromisoformat(text))
+            except ValueError:
+                continue
         parts: list[Bar] = []
-        for day in days:
+        for day in sorted(days):
             minutes = self._exchange_index_minutes(day).get(symbol, [])
             if minutes:
                 parts.extend(minutes)
@@ -1818,6 +1871,8 @@ class TapeSource:
             self._archive.write(
                 tape, capture=identify(capture) if capture else None,
                 built_at=self._clock().isoformat(timespec="seconds"))
+            if day != self.today():
+                self._exchange_index_minutes(day)
         except Exception:  # noqa: BLE001 - an archive write may not break a read
             return
 
