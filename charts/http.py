@@ -528,8 +528,13 @@ class ChartHandler(BaseHTTPRequestHandler):
         try:
             self._write_event("snapshot", initial)
             idle = 0.0
-            subminute = ladder.spec_for(resolution).subminute
-            cadence = 1.0 if subminute else 5.0
+            spec = ladder.spec_for(resolution)
+            # Every intraday rung is priced tick by tick, not once a minute:
+            # the tape's append-only tail is re-read each second, so the
+            # forming candle moves with the last print. Calendar rungs cannot
+            # change intraday and keep the slower cadence.
+            intraday = not spec.calendar
+            cadence = 1.0 if intraday else 5.0
             last_bars = initial["bars"]
             while True:
                 try:
@@ -537,11 +542,10 @@ class ChartHandler(BaseHTTPRequestHandler):
                 except queue.Empty:
                     event = None
                 if event is None:
-                    if subminute:
-                        # A seconds chart is priced frame by frame: the tick's
-                        # own clock, not the ingestor's minute grain, is the
-                        # cadence the reader is watching for. The build is
-                        # incremental (append-only parse of what grew), so a
+                    if intraday:
+                        # The tape's own clock, not the ingestor's interval,
+                        # is the cadence the reader is watching for. The build
+                        # is incremental (append-only parse of what grew), so a
                         # silent second costs one stat call - the computer is
                         # not being polled to death, and the browser a hidden
                         # tab owns closes its stream entirely.

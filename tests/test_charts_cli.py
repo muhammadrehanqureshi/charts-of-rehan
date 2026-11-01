@@ -62,6 +62,18 @@ def records(minutes: int = 3) -> list[dict]:
     return out
 
 
+class DecadeWindowTest(unittest.TestCase):
+    """The rolling store starts on the anniversary, not 3,653 days back."""
+
+    def test_one_november_reaches_back_exactly_ten_years(self):
+        self.assertEqual(app.decade_start(date(2026, 11, 1)),
+                         date(2016, 11, 1))
+
+    def test_a_leap_day_window_starts_on_the_28th(self):
+        self.assertEqual(app.decade_start(date(2028, 2, 29)),
+                         date(2018, 2, 28))
+
+
 class CommandCase(unittest.TestCase):
     """A temporary capture directory, archive and universe, plus a clock."""
 
