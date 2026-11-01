@@ -303,7 +303,19 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         held += 1
         for bar in payload.bars:
             seen[bar.t] = bar
-    daily_notes = _daily_backfill(source, symbol, backfill, seen, resolution)
+    daily_notes: list[str] = []
+    if backfill > 0 and payloads:
+        # A row from the daily store is one whole session. Stamping it into
+        # an hourly series draws a day-wide candle beside real hourly ones,
+        # which is not a chart of hourly history; the honest answer is to
+        # say where the intraday record starts instead.
+        oldest = payloads[0].session.day
+        label = spec_of(resolution)
+        daily_notes.append(
+            f"older {label} history is not drawn: this service records "
+            f"{label} candles from {oldest} onward, and the decade behind it "
+            f"is stored as whole-day rows, which would draw as one candle "
+            f"per day beside real {label} candles")
     bars = [seen[key] for key in sorted(seen)]
     if limit > 0 and len(bars) > limit:
         bars = bars[-limit:]

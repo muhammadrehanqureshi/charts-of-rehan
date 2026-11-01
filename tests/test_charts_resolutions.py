@@ -137,3 +137,25 @@ class TickRungTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class HalfDayCalendarFoldTest(unittest.TestCase):
+    """A session that closed before noon still owns its daily candle.
+
+    The exchange banks a half-day session's row like any other, stamped at
+    Karachi noon. The calendar fold must not re-filter that stamp through the
+    session band: on 30 Oct 2026 the band ended before noon, and filtering
+    silently deleted the day from every daily, weekly and monthly series.
+    """
+
+    def test_a_noon_stamped_row_survives_a_session_closed_before_noon(self):
+        rows = [
+            Bar.build(t=datetime(2026, 10, 29, 12, 0, tzinfo=KARACHI),
+                      o=93.94, h=101.89, l=92.8, c=100.81, v=40673997),
+            Bar.build(t=datetime(2026, 10, 30, 12, 0, tzinfo=KARACHI),
+                      o=101.29, h=102.65, l=96.01, c=96.96, v=25437791),
+        ]
+        folded = ladder.aggregate(rows, "1D")
+        self.assertEqual([item.t[:10] for item in folded],
+                         ["2026-10-29", "2026-10-30"])
+        self.assertEqual(folded[-1].c, 96.96)
+        self.assertEqual(folded[-1].v, 25437791)
