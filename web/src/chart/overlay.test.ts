@@ -88,17 +88,17 @@ describe("break plan", () => {
       .map((item) => item.text)).toEqual(["20 Oct", "21 Oct"]);
   });
 
-  it("puts the rule on the new session's first bar, not in the gap", () => {
+  it("puts the rule between the two sessions' candles, not through one", () => {
     const previous = Date.parse("2026-10-14T11:47:00+05:00");
     const first = Date.parse("2026-10-21T09:47:00+05:00");
     const breaks: SessionBreak[] = [{
       t: first, day: "2026-10-21", label: "21 Oct", first: false, previous,
     }];
-    // The time axis spaces the weekend and the missing sessions, so the
-    // old midpoint would put this rule in empty space before the 21st.
-    const x = new Map([[previous, 100], [first, 700]]);
+    // Uniform spacing makes the two sessions adjacent on screen; the rule
+    // belongs in the half-slot between their candles.
+    const x = new Map([[previous, 100], [first, 120]]);
     const plan = breakPlan(breaks, (t) => x.get(t) ?? null, 700);
-    expect(plan.find((item) => item.line)?.x).toBe(700);
+    expect(plan.find((item) => item.line)?.x).toBe(110);
   });
 
   it("a daily-grain dense chart says months, not one date per day", () => {
