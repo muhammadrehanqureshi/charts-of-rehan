@@ -24,6 +24,17 @@ export interface FlowColumns {
   readonly sell: Float64Array;
 }
 
+const dayKeyFormat = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Karachi",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function dayKey(ms: number): string {
+  return dayKeyFormat.format(new Date(ms));
+}
+
 function filled(length: number): Float64Array {
   const values = new Float64Array(length);
   values.fill(Number.NaN);
@@ -59,11 +70,39 @@ export function flowColumns(
   const length = times.length;
   const buy = filled(length);
   const sell = filled(length);
-  if (length === 0 || !(stepMs >= 60_000)
-      || stepMs >= 24 * 60 * 60 * 1000) {
-    // A daily (or weekly/monthly) bar cannot borrow a session minute's split:
-    // the bar is stamped at noon, so the morning's minutes would be credited
-    // to the previous day's candle. Those rungs use their own signed volume.
+  if (length === 0 || !(stepMs >= 60_000)) {
+    return { buy, sell };
+  }
+  // A daily bar is stamped at Karachi noon, so a minute cannot find its own
+  // candle by clock position: the morning would land on the previous day.
+  // The day key can, which is what makes a daily volume-delta pane a measured
+  // number instead of a candle-colour guess. Weekly and monthly bars are left
+  // alone: a minute belongs to one day, not to a week's own bucket.
+  if (stepMs >= 24 * 60 * 60 * 1000) {
+    const byDay = new Map<string, number>();
+    for (let index = 0; index < length; index += 1) {
+      const value = times[index];
+      if (value === undefined || !Number.isFinite(value)) {
+        continue;
+      }
+      byDay.set(dayKey(value), index);
+    }
+    for (const minute of minutes) {
+      const moment = Date.parse(minute.t);
+      if (!Number.isFinite(moment)) {
+        continue;
+      }
+      const index = byDay.get(dayKey(moment));
+      if (index === undefined) {
+        continue;
+      }
+      if (Number.isNaN(buy[index] ?? Number.NaN)) {
+        buy[index] = 0;
+        sell[index] = 0;
+      }
+      buy[index] = (buy[index] ?? 0) + Math.max(0, minute.buy);
+      sell[index] = (sell[index] ?? 0) + Math.max(0, minute.sell);
+    }
     return { buy, sell };
   }
   for (const minute of minutes) {

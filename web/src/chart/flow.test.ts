@@ -65,4 +65,20 @@ describe("flowColumns", () => {
     ], times, 60_000);
     expect(Number.isNaN(buy[0] ?? Number.NaN)).toBe(true);
   });
+
+  it("credits daily bars by Karachi day, not by clock position", () => {
+    const day1 = Date.parse("2026-10-28T12:00:00+05:00");
+    const day2 = Date.parse("2026-10-29T12:00:00+05:00");
+    const times = new Float64Array([day1, day2]);
+    const { buy, sell } = flowColumns([
+      { t: "2026-10-28T09:40:00+05:00", buy: 10, sell: 4 },
+      { t: "2026-10-28T14:10:00+05:00", buy: 5, sell: 1 },
+      { t: "2026-10-29T10:05:00+05:00", buy: 7, sell: 2 },
+    ], times, 24 * 60 * 60 * 1000);
+    // Both of 28 Oct's minutes land on 28 Oct's candle, morning included.
+    expect(buy[0]).toBe(15);
+    expect(sell[0]).toBe(5);
+    expect(buy[1]).toBe(7);
+    expect(sell[1]).toBe(2);
+  });
 });
