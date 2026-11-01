@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anchorAt, breakPlan, fibLevels, frameFor, makePositions,
-  monthText, volumeProfile,
+  monthText, paintSessionBreaks, profileLevels, volumeProfile,
 } from "./overlay";
 import type { SessionBreak } from "./sessions";
 
@@ -107,6 +107,57 @@ describe("break plan", () => {
   it("a month name carries its year only where it would be ambiguous", () => {
     expect(monthText("2025-07-21")).toBe("Jul");
     expect(monthText("2026-01-05")).toBe("Jan '26");
+  });
+
+  it("an intraday window keeps every session rule when days sit close", () => {
+    const entries: [string, number, boolean?][] = [];
+    for (let i = 0; i < 6; i += 1) {
+      entries.push([
+        `2026-10-${String(12 + i).padStart(2, "0")}`, 100 + i * 20, i === 0,
+      ]);
+    }
+    const { breaks, xOf } = mappedChart(entries);
+    // Twenty pixels per session is dense for a calendar chart and roomy
+    // enough for an intraday one: every join keeps its dotted rule.
+    expect(breakPlan(breaks, xOf, 700, false)
+      .filter((item) => item.line)).toHaveLength(5);
+    expect(breakPlan(breaks, xOf, 700)
+      .filter((item) => item.line).length).toBeLessThan(5);
+  });
+
+  it("paints a dotted rule and the day's name at every visible join", () => {
+    const { breaks } = mappedChart([
+      ["2026-10-19", 100, true],
+      ["2026-10-20", 300],
+      ["2026-10-21", 500],
+    ]);
+    const ops: string[] = [];
+    const context = {
+      save: () => ops.push("save"),
+      restore: () => ops.push("restore"),
+      setLineDash: (dash: number[]) => ops.push(`dash:${dash.join(",")}`),
+      beginPath: () => ops.push("begin"),
+      moveTo: (x: number, y: number) => ops.push(`move:${x},${y}`),
+      lineTo: (x: number, y: number) => ops.push(`line:${x},${y}`),
+      stroke: () => ops.push("stroke"),
+      fillText: (text: string) => ops.push(`text:${text}`),
+      font: "", textBaseline: "", strokeStyle: "", lineWidth: 1,
+      fillStyle: "",
+    } as unknown as CanvasRenderingContext2D;
+    const x = new Map(breaks.map((item, index) => [item.t, 100 + index * 200]));
+    const chart = {
+      timeScale: () => ({
+        timeToCoordinate: (t: number) => x.get(t * 1000) ?? null,
+      }),
+    } as unknown as Parameters<typeof paintSessionBreaks>[1];
+    paintSessionBreaks(context, chart,
+      { plotWidth: 700, plotHeight: 400 }, breaks,
+      { line: "#2962ff", label: "#8f9bb3" }, false, 520);
+    expect(ops).toContain("dash:2,4");
+    expect(ops.filter((op) => op === "stroke")).toHaveLength(2);
+    expect(ops).toContain("text:20 Oct");
+    // The rule runs the full stack, not only the price pane.
+    expect(ops).toContain("line:300.5,520");
   });
 
   it("a label never lands on its neighbour's words", () => {
@@ -249,6 +300,20 @@ describe("fixed range volume profile", () => {
     const profile = volumeProfile(bars,
       { t: -1, price: 90 }, { t: 60_000, price: 110 }, 4);
     expect(profile?.total).toBeCloseTo(50, 5);
+  });
+
+  it("names the value area's edges and the point of control", () => {
+    const bars = { time: [0], high: [110], low: [90], volume: [100] };
+    const profile = volumeProfile(bars,
+      { t: -1, price: 90 }, { t: 1, price: 110 }, 10);
+    expect(profile).not.toBeNull();
+    const levels = profileLevels(profile!);
+    expect(levels.map((level) => level.key)).toEqual(["VAH", "POC", "VAL"]);
+    const vah = levels[0]!.price;
+    const poc = levels[1]!.price;
+    const val = levels[2]!.price;
+    expect(vah).toBeGreaterThanOrEqual(poc);
+    expect(poc).toBeGreaterThanOrEqual(val);
   });
 
   it("is null when the range holds no bar or no price span", () => {

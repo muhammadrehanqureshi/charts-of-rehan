@@ -243,6 +243,30 @@ export function volumeProfile(
   };
 }
 
+/** One of the three prices a fixed-range profile is read by. */
+export interface ProfileLevel {
+  readonly key: "VAH" | "POC" | "VAL";
+  readonly price: number;
+  readonly color: string;
+  readonly dashed: boolean;
+  readonly bright: boolean;
+}
+
+/**
+ * The value area's edges and the point of control between them, in the order
+ * a reader scans them: the top of value, the busiest price, the bottom.
+ */
+export function profileLevels(profile: VolumeProfile): ProfileLevel[] {
+  return [
+    { key: "VAH", price: profile.vah, color: "rgba(41, 98, 255, 0.55)",
+      dashed: true, bright: false },
+    { key: "POC", price: profile.poc, color: "rgba(41, 98, 255, 0.95)",
+      dashed: false, bright: true },
+    { key: "VAL", price: profile.val, color: "rgba(41, 98, 255, 0.55)",
+      dashed: true, bright: false },
+  ];
+}
+
 /**
  * A tape instant → x mapping that never drops a line.
  *
@@ -434,6 +458,8 @@ export function breakPlan(
   breaks: readonly SessionBreak[],
   xOf: (t: number) => number | null,
   plotWidth: number,
+  /** Calendar charts fold a day into a few pixels; intraday charts do not. */
+  denseAllowed = true,
 ): BreakPlan[] {
   const visible: { x: number; day: string; label: string }[] = [];
   for (const item of breaks) {
@@ -453,7 +479,8 @@ export function breakPlan(
   for (let i = 1; i < visible.length; i += 1) {
     span += visible[i]!.x - visible[i - 1]!.x;
   }
-  const dense = visible.length > 1 && span / (visible.length - 1) < DENSE_PX;
+  const dense = denseAllowed && visible.length > 1
+    && span / (visible.length - 1) < DENSE_PX;
   const plan: BreakPlan[] = [];
   let lastLine = Number.NEGATIVE_INFINITY;
   let lastLabelEnd = Number.NEGATIVE_INFINITY;
@@ -497,6 +524,9 @@ export function paintSessionBreaks(
   frame: OverlayFrame,
   breaks: readonly SessionBreak[],
   colors: { line: string; label: string },
+  denseAllowed = true,
+  /** How far down the stack the rule runs: every pane, not only price. */
+  bottom = frame.plotHeight,
 ): void {
   if (breaks.length < 2) {
     return;
@@ -506,6 +536,7 @@ export function paintSessionBreaks(
     breaks,
     (t) => scale.timeToCoordinate((t / 1000) as never),
     frame.plotWidth,
+    denseAllowed,
   );
   if (plan.length === 0) {
     return;
@@ -520,7 +551,7 @@ export function paintSessionBreaks(
       context.lineWidth = 1;
       context.beginPath();
       context.moveTo(item.x + 0.5, 0);
-      context.lineTo(item.x + 0.5, frame.plotHeight);
+      context.lineTo(item.x + 0.5, bottom);
       context.stroke();
       context.setLineDash([]);
     } else if (item.text !== null) {
@@ -763,7 +794,7 @@ function paintProfile(
   context.fillText(
     profile === null
       ? "no volume in this range"
-      : `POC ${profile.poc.toFixed(2)}   Vol ${compactVolume(profile.total)}`,
+      : `Vol ${compactVolume(profile.total)}`,
     left + 6, Math.max(12, bottom - 6));
   if (profile === null || profile.max <= 0) {
     context.restore();
@@ -795,6 +826,40 @@ function paintProfile(
   context.moveTo(left, pocY);
   context.lineTo(right, pocY);
   context.stroke();
+  // The three levels, all named: VAH and VAL as dashed edges, POC as the
+  // solid centre, each rule reaching the pane's right edge so the labels can
+  // sit there without covering the distribution itself.
+  const levels = profileLevels(profile);
+  const labelRight = Math.max(left + 64, frame.plotWidth - 8);
+  let lastLabelY = Number.NEGATIVE_INFINITY;
+  context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  for (const level of levels) {
+    const levelY = Math.round(positions.yAt(level.price)) + 0.5;
+    if (level.key !== "POC") {
+      context.save();
+      context.setLineDash([4, 3]);
+      context.strokeStyle = level.color;
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(left, levelY);
+      context.lineTo(frame.plotWidth - 2, levelY);
+      context.stroke();
+      context.restore();
+    }
+    const text = `${level.key} ${level.price.toFixed(2)}`;
+    const textWidth = context.measureText(text).width;
+    // Keep the three labels apart when the value area is only pixels tall.
+    const boxY = Math.min(bottom - 8,
+      Math.max(top + 8, Math.max(levelY, lastLabelY + 13)));
+    lastLabelY = boxY;
+    context.fillStyle = "rgba(19, 23, 34, 0.92)";
+    context.fillRect(labelRight - textWidth - 10, boxY - 7,
+      textWidth + 10, 14);
+    context.fillStyle = level.bright ? "#d1d4dc" : "#8f9bb3";
+    context.fillText(text, labelRight - textWidth - 5, boxY);
+  }
   context.restore();
 }
 
