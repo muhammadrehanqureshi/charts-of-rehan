@@ -107,7 +107,8 @@ class TickRungTest(unittest.TestCase):
         return TapeSource(clock=lambda: clock, universe_path=self.universe,
                           capture_dirs=(self.tmp,),
                           archive_dir=self.tmp / "archive",
-                          eod_dir=self.tmp / "eod")
+                          eod_dir=self.tmp / "eod",
+                          indices_dir=self.tmp / "indices")
 
     def test_second_bars_are_built_from_tick_rows(self):
         source = self.source(datetime(2026, 10, 12, 10, 0, tzinfo=KARACHI))
