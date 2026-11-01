@@ -282,6 +282,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
   /** Shown when the reader pans past the oldest bar the tape holds. */
   const historyEdge = useRef<HTMLParagraphElement | null>(null);
   const engine = useRef<EngineState | null>(null);
+  const engineView = useRef(viewKey);
+  /** A view switch owes the next dataset one fit, whatever the old zoom. */
+  const fitPending = useRef(false);
   const fitKey = useRef("");
   const fitCount = useRef(0);
   /** Rides the last opening fit, so a late layout cannot undo it. */
@@ -360,6 +363,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const surfaceEl = surface.current;
     if (surfaceEl === null) {
       return;
+    }
+    const sameView = engineView.current === viewKey;
+    engineView.current = viewKey;
+    if (!sameView) {
+      fitPending.current = true;
     }
     const tokens = { ...TV_DARK_THEME };
     if (appearance !== undefined) {
@@ -547,7 +555,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       const first = state.barTimes[0];
       const range = state.chart.timeScale().getVisibleLogicalRange();
-      if (first === undefined || range === null || range.from >= -0.5) {
+      // A normal fit can leave whitespace on the left while every bar is
+      // still on screen. Only name the boundary when the viewport has
+      // actually run past the end of the tape and no bar is visible.
+      if (first === undefined || range === null || range.to >= -0.5) {
         el.hidden = true;
         el.textContent = "";
         return;
@@ -588,7 +599,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
     fitKey.current = "";
     fitCount.current = 0;
     zoomed.current = false;
-    paintData();
+    // A view switch still has the previous series in the feed for this
+    // task. Do not paint it into the new engine and fit its bar count:
+    // the incoming series would inherit that stale window. The version
+    // bump when the new bars arrive paints and fits them.
+    if (sameView) {
+      paintData();
+    }
     window.setTimeout(writeHistoryEdge, 0);
 
     return () => {
@@ -738,7 +755,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // the reader pans or zooms, nothing here moves their window again.
     const fit = candlesData.length > fitCount.current
       || candlesData.length < fitCount.current;
-    if (fitKey.current !== viewKey || (!zoomed.current && fit)) {
+    if (fitPending.current || fitKey.current !== viewKey
+        || (!zoomed.current && fit)) {
+      fitPending.current = false;
       fitKey.current = viewKey;
       fitCount.current = candlesData.length;
       // Open on the newest session's own width, not on five days squeezed
