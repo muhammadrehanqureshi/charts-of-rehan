@@ -107,6 +107,8 @@ export function useChartFeed(
       return;
     }
     let cancelled = false;
+    let historyReady = false;
+    let fullController: AbortController | null = null;
     const controller = new AbortController();
     series.clear();
     setMeta(EMPTY_META);
@@ -142,17 +144,51 @@ export function useChartFeed(
       bump();
     };
 
+    /**
+     * The decade backfill is a second, optional pass. The intraday sessions
+     * must reach the screen first: a stream snapshot carries only the live
+     * session, and a reader must never see that partial answer as the chart.
+     * If the optional pass fails, the real sessions stay drawn.
+     */
+    const loadBackfill = () => {
+      if (cancelled || !merged || backfill <= 0) {
+        return;
+      }
+      fullController = new AbortController();
+      void client
+        .bars(symbol, resolution, {
+          limit,
+          day,
+          days,
+          backfill,
+          signal: fullController.signal,
+          timeoutMs: 30_000,
+        })
+        .then((payload) => {
+          if (!cancelled) {
+            adopt(payload);
+          }
+        })
+        .catch(() => undefined);
+    };
+
     void client
       .bars(symbol, resolution, {
         limit,
         day,
         days: merged ? days : undefined,
-        backfill: backfill > 0 ? backfill : undefined,
+        // Load the recorded sessions first. The daily history is merged in a
+        // second request, so a slow decade never leaves the chart showing
+        // only the stream's two-bar live snapshot.
+        backfill: undefined,
         signal: controller.signal,
+        timeoutMs: 20_000,
       })
       .then((payload) => {
         if (!cancelled) {
           adopt(payload);
+          historyReady = true;
+          loadBackfill();
           // A live chart's status belongs to the stream, which reports it as
           // it happens. Only a named session states its own, because nothing
           // is going to update it.
@@ -163,7 +199,12 @@ export function useChartFeed(
       })
       .catch((failure: unknown) => {
         if (!cancelled) {
+          // A failed first pass must not leave the chart blank while the
+          // stream is alive: the full answer is still worth asking for, and
+          // the live snapshot is a true (if short) last resort.
+          historyReady = true;
           setError(categoryOf(failure));
+          loadBackfill();
           if (day.length > 0) {
             setStatus("snapshot");
           } else {
@@ -184,12 +225,15 @@ export function useChartFeed(
 
     const handle = client.stream(symbol, resolution, {
       onSnapshot: (payload) => {
-        if (!cancelled) {
+        // A live snapshot contains only the current session. Until the real
+        // merged sessions have arrived it is not the chart, and showing it
+        // would make the chart shrink to two bars.
+        if (!cancelled && (!merged || historyReady)) {
           adopt(payload, merged);
         }
       },
       onBars: (event) => {
-        if (cancelled) {
+        if (cancelled || (merged && !historyReady)) {
           return;
         }
         series.upsertMany(event.bars);
@@ -211,6 +255,7 @@ export function useChartFeed(
     return () => {
       cancelled = true;
       controller.abort();
+      fullController?.abort();
       handle.close();
       series.clear();
     };
