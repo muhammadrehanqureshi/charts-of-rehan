@@ -70,7 +70,12 @@ import {
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
 import {
-  hasSessionBreaks, isIntradayStamp, sessionBreaks, type SessionBreak,
+  calendarBreaks,
+  hasDailyBackfill,
+  hasSessionBreaks,
+  isIntradayStamp,
+  sessionBreaks,
+  type SessionBreak,
 } from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
@@ -183,8 +188,10 @@ interface EngineState {
   data: SeriesData | null;
   /** The candles' own epoch seconds, ascending: the drawing clip's bars. */
   barTimes: number[];
-  /** The session starts the overlay rules run between. */
+  /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
+  /** Month starts across the daily-grain history behind those sessions. */
+  calendarBreaks: readonly SessionBreak[];
 }
 
 /** A hex colour at an alpha, for the muted volume under the candles. */
@@ -616,6 +623,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       data: null,
       barTimes: [],
       breaks: [],
+      calendarBreaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -748,6 +756,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // session pass drops them on the rungs that receive that backfill.
     state.breaks = hasSessionBreaks(resolution)
       ? sessionBreaks(state.barTimes, resolution)
+      : [];
+    // A coarse rung carries a decade of daily rows behind its real sessions.
+    // They have no intraday session boundary to draw, so use one month rule
+    // per month instead of one per daily bar; the plan's dense mode spaces
+    // those rules and labels them when the viewport is crowded.
+    state.calendarBreaks = hasDailyBackfill(resolution)
+      ? calendarBreaks(state.barTimes)
       : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
@@ -925,15 +940,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // The dotted session rules: one muted rule at every exchange session
+    // The dotted session rules: one blue rule at every exchange session
     // change, through the price pane and every study pane beneath it. The
     // x-axis supplies the date labels, TradingView style; only the lines
-    // belong on the plot. These are never "dense" in the calendar sense,
-    // so a packed hour window keeps every rule.
+    // belong on the plot. Daily backfill gets month rules at its own cadence;
+    // real intraday sessions keep every rule even when the zoom packs them.
+    const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
+    if (state.calendarBreaks.length > 1) {
+      paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
+        ruleColors, true, cssHeight, dpr);
+    }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        { line: "rgba(181, 166, 129, 0.55)", label: "#8f9bb3" },
-        false, cssHeight, dpr);
+        ruleColors, false, cssHeight, dpr);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,

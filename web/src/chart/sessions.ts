@@ -28,6 +28,12 @@ const dayLabelFormat = new Intl.DateTimeFormat("en-GB", {
   month: "short",
 });
 
+const monthLabelFormat = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  month: "short",
+  year: "numeric",
+});
+
 /** A band is [open, close) in minutes after midnight, Karachi time. */
 type SessionBand = readonly [open: number, close: number];
 
@@ -209,6 +215,45 @@ export function sessionBreaks(
       ...(previous !== undefined ? { previous } : {}),
     });
     lastKey = slot.key;
+    previous = t;
+  }
+  return out;
+}
+
+/**
+ * Month boundaries across the daily-grain history behind a coarse rung.
+ *
+ * A 10m/15m/30m/1h/4h chart carries a decade of daily rows before its first
+ * real intraday session. Those rows are calendar bars, so there is no intraday
+ * session to draw between them; one rule per bar would be a wall of thousands
+ * of lines. Month starts are the same visual language at the only cadence
+ * those rows honestly support, and they keep a reader oriented when the
+ * viewport is panned back into 2024. Real intraday sessions still get every
+ * session rule from `sessionBreaks`.
+ */
+export function calendarBreaks(times: ArrayLike<number>): SessionBreak[] {
+  const out: SessionBreak[] = [];
+  let lastMonth = "";
+  let previous: number | undefined;
+  for (let i = 0; i < times.length; i += 1) {
+    const t = times[i];
+    if (t === undefined || !isDailyGrainStamp(t)) {
+      continue;
+    }
+    const slot = sessionSlot(t);
+    const month = slot.day.slice(0, 7);
+    if (month === lastMonth) {
+      previous = t;
+      continue;
+    }
+    out.push({
+      t,
+      day: slot.day,
+      label: monthLabelFormat.format(new Date(t)),
+      first: out.length === 0,
+      ...(previous !== undefined ? { previous } : {}),
+    });
+    lastMonth = month;
     previous = t;
   }
   return out;
