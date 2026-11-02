@@ -943,8 +943,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The dotted session rules: one blue rule at every exchange session
     // change, through the price pane and every study pane beneath it. The
     // x-axis supplies the date labels, TradingView style; only the lines
-    // belong on the plot. Daily backfill gets month rules at its own cadence;
-    // real intraday sessions keep every rule even when the zoom packs them.
+    // belong on the plot. Daily backfill month rules and real intraday
+    // session rules obey one crowding law, so a zoomed-out chart reads one
+    // cadence instead of a sparse calendar beside a dashed pile.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
     if (state.calendarBreaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
