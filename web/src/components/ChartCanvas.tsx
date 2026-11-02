@@ -70,7 +70,7 @@ import {
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
 import {
-  intradayStamps, isDailyGrainStamp, sessionBreaks, type SessionBreak,
+  hasSessionBreaks, isIntradayStamp, sessionBreaks, type SessionBreak,
 } from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
@@ -87,11 +87,6 @@ const MIN_HEIGHT = 220;
 const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
-
-/** The only rungs that carry session breaks, exactly as the owner listed. */
-const SESSION_BREAK_RUNGS: ReadonlySet<string> = new Set([
-  "1s", "10s", "1m", "5m", "15m", "30m", "1h",
-]);
 
 /** The chart's colour tokens: one theme, black, with TV's own candle hues. */
 export interface TvTheme {
@@ -188,7 +183,7 @@ interface EngineState {
   data: SeriesData | null;
   /** The candles' own epoch seconds, ascending: the drawing clip's bars. */
   barTimes: number[];
-  /** The Karachi day starts the overlay rules run between. */
+  /** The session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
 }
 
@@ -577,14 +572,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       const first = state.barTimes[0];
       const firstIntraday = state.barTimes.find(
-        (stamp) => !isDailyGrainStamp(stamp));
+        (stamp) => isIntradayStamp(stamp, resolution));
       const range = state.chart.timeScale().getVisibleLogicalRange();
       // An intraday tape is shorter than the calendar series behind it.
       // Keep its first recorded day visible as a calm caption, whatever
       // window the reader has chosen; a calendar chart needs no caption.
-      const intraday = resolution !== "1D" && resolution !== "1W"
-        && resolution !== "1M" && resolution !== "1d"
-        && resolution !== "session";
+      const intraday = hasSessionBreaks(resolution);
       const showBoundary = range !== null && intraday;
       if (first === undefined || range === null || !showBoundary) {
         el.hidden = true;
@@ -749,11 +742,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The drawing anchors and the y-picks map from these; the whole
     // drawing path speaks milliseconds, so keep them ms here too.
     state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
-    // Daily backfill rows are calendar bars stamped at Karachi noon. They
-    // are deliberately outside the session-rule pass; the real recordings
-    // still get their own breaks below.
-    state.breaks = SESSION_BREAK_RUNGS.has(resolution)
-      ? sessionBreaks(intradayStamps(state.barTimes))
+    // Session rules follow the exchange's bands, not a mere date change:
+    // Friday's two sessions need a rule at the lunch break too. Daily
+    // backfill rows are calendar bars stamped at Karachi noon, so the
+    // session pass drops them on the rungs that receive that backfill.
+    state.breaks = hasSessionBreaks(resolution)
+      ? sessionBreaks(state.barTimes, resolution)
       : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
@@ -931,7 +925,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // The dotted session rules: one muted rule at every Karachi day
+    // The dotted session rules: one muted rule at every exchange session
     // change, through the price pane and every study pane beneath it. The
     // x-axis supplies the date labels, TradingView style; only the lines
     // belong on the plot. These are never "dense" in the calendar sense,
