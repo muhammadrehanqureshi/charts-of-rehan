@@ -168,6 +168,8 @@ export class ChartClient {
       /** Fill older coarser-grained bars so the chart scrolls back years. */
       backfill?: number | undefined;
       signal?: AbortSignal;
+      /** Longer for a decade backfill; the ordinary 8s is for live polls. */
+      timeoutMs?: number;
     } = {},
   ): Promise<ChartPayload> {
     const query = new URLSearchParams({ symbol, resolution });
@@ -184,7 +186,7 @@ export class ChartClient {
       query.set("backfill", String(Math.round(options.backfill)));
     }
     const url = `${this.baseUrl}/api/bars?${query.toString()}`;
-    const raw = await this.request(url, options.signal);
+    const raw = await this.request(url, options.signal, options.timeoutMs);
     try {
       return parsePayload(raw);
     } catch (error) {
@@ -346,8 +348,11 @@ export class ChartClient {
     if (day !== undefined && day.length > 0) {
       query.set("day", day);
     }
+    // The first facts answer folds a whole session's capture, and a cold
+    // build can outlast the 8s live-poll budget. A blank watchlist is worse
+    // than a slower one, so this read gets its own, longer limit.
     const raw = await this.request(
-      `${this.baseUrl}/api/symbols?${query.toString()}`, signal);
+      `${this.baseUrl}/api/symbols?${query.toString()}`, signal, 20_000);
     try {
       return parseSymbolRows(raw);
     } catch (error) {
@@ -468,11 +473,15 @@ export class ChartClient {
   }
 
   /** One request with a timeout, a bounded retry loop and named failures. */
-  private async request(url: string, signal?: AbortSignal): Promise<unknown> {
+  private async request(
+    url: string,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+  ): Promise<unknown> {
     let lastError: ApiError | null = null;
     for (let attempt = 1; attempt <= this.attempts; attempt += 1) {
       try {
-        return await this.once(url, signal);
+        return await this.once(url, signal, timeoutMs);
       } catch (error) {
         const failure =
           error instanceof ApiError
@@ -497,9 +506,14 @@ export class ChartClient {
     throw lastError ?? new ApiError("INTERNAL", "no attempt was made");
   }
 
-  private async once(url: string, signal?: AbortSignal): Promise<unknown> {
+  private async once(
+    url: string,
+    signal?: AbortSignal,
+    requestedTimeoutMs?: number,
+  ): Promise<unknown> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutMs = requestedTimeoutMs ?? this.timeoutMs;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     if (signal !== undefined) {
       signal.addEventListener("abort", () => controller.abort(), {
         once: true,
@@ -510,7 +524,7 @@ export class ChartClient {
       response = await this.fetchImpl(url, { signal: controller.signal });
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new ApiError("TIMEOUT", `no answer within ${this.timeoutMs}ms`);
+        throw new ApiError("TIMEOUT", `no answer within ${timeoutMs}ms`);
       }
       throw new ApiError("NETWORK", describe(error));
     } finally {
