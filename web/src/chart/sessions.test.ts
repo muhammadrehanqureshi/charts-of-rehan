@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calendarBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
   intradayStamps,
@@ -102,6 +103,24 @@ describe("sessionBreaks", () => {
     expect(sessionBreaks(times, "1m").map((item) => item.day)).toEqual([
       "2016-11-01", "2016-11-02", "2026-10-12", "2026-10-13",
     ]);
+  });
+
+  it("marks month starts across daily-grain history, not every day", () => {
+    const times = [
+      pkt("2024-04-29", "12:00"),
+      pkt("2024-04-30", "12:00"),
+      pkt("2024-05-01", "12:00"),
+      pkt("2024-05-02", "12:00"),
+      pkt("2024-06-03", "12:00"),
+    ];
+    const breaks = calendarBreaks(times);
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2024-04-29", "2024-05-01", "2024-06-03",
+    ]);
+    expect(breaks[0]?.first).toBe(true);
+    expect(breaks[1]?.first).toBe(false);
+    expect(breaks[1]?.label).toBe("May 2024");
+    expect(breaks[2]?.previous).toBe(times[3]);
   });
 
   it("covers every intraday rung and no calendar rung", () => {
