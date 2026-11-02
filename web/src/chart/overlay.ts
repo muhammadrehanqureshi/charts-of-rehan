@@ -531,7 +531,7 @@ export function breakPlan(
 /**
  * The session breaks, painted from a pre-decided plan.
  *
- * The line is one dashed stroke where the Karachi trading day changes, and
+ * The line is one dashed stroke where the exchange's session changes, and
  * the label is the date of the day that just began at the top of the plot.
  * Which breaks earn a line and a label is the plan's own decision - the
  * geometry lives in `breakPlan`, so what a reader sees can be tested
