@@ -458,7 +458,7 @@ export function breakPlan(
   breaks: readonly SessionBreak[],
   xOf: (t: number) => number | null,
   plotWidth: number,
-  /** Calendar charts fold a day into a few pixels; intraday charts do not. */
+  /** Calendar charts paint their labels; intraday ones leave dates to the axis. */
   denseAllowed = true,
 ): BreakPlan[] {
   const visible: { x: number; day: string; label: string }[] = [];
@@ -489,7 +489,12 @@ export function breakPlan(
   for (let i = 1; i < visible.length; i += 1) {
     span += visible[i]!.x - visible[i - 1]!.x;
   }
-  const dense = denseAllowed && visible.length > 1
+  // Crowding is the viewport's property, not the rung's: a real session span
+  // packs as tight as a decade of daily rows the moment the reader zooms out.
+  // Both passes - calendar history and real sessions - obey the same law:
+  // roomy keeps every join's rule, crowded keeps the month's rule. One
+  // cadence per viewport, never a sparse calendar beside a dashed pile.
+  const dense = visible.length > 1
     && span / (visible.length - 1) < DENSE_PX;
   const plan: BreakPlan[] = [];
   let lastLine = Number.NEGATIVE_INFINITY;
@@ -501,10 +506,6 @@ export function breakPlan(
     // Lines keep a rhythm of their own: in the dense mode only the month's
     // first bar asks for one, and none crowds the previous within 18px.
     const asks = !dense || monthStart;
-    // The 18px rhythm exists to stop a daily-grain chart turning into a
-    // dashed forest. An intraday chart has one join per real session and
-    // the owner asked for every one of them, even when a zoom packs two
-    // joins within a few pixels.
     if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
       plan.push({ x: item.x, line: true, text: null });
       lastLine = item.x;
