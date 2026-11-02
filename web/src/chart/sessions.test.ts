@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  intradayStamps, isDailyGrainStamp, sessionBreaks,
+  hasDailyBackfill,
+  hasSessionBreaks,
+  intradayStamps,
+  isDailyGrainStamp,
+  isIntradayStamp,
+  sessionBreaks,
 } from "./sessions";
 
 /** A Karachi clock instant as epoch milliseconds. */
@@ -17,7 +22,7 @@ describe("sessionBreaks", () => {
       pkt("2026-10-23", "09:32"),
       pkt("2026-10-23", "11:59"),
     ];
-    const breaks = sessionBreaks(times);
+    const breaks = sessionBreaks(times, "1h");
     expect(breaks.map((item) => item.day)).toEqual([
       "2026-10-21", "2026-10-23",
     ]);
@@ -25,6 +30,35 @@ describe("sessionBreaks", () => {
     expect(breaks[1]?.label).toBe("23 Oct");
     expect(breaks[0]?.first).toBe(true);
     expect(breaks[1]?.first).toBe(false);
+  });
+
+  it("marks Friday's midday break as a second session on the same day", () => {
+    const times = [
+      pkt("2026-10-30", "09:17"),
+      pkt("2026-10-30", "10:17"),
+      pkt("2026-10-30", "11:17"),
+      pkt("2026-10-30", "14:32"),
+      pkt("2026-10-30", "15:32"),
+    ];
+    const breaks = sessionBreaks(times, "1h");
+    expect(breaks.map((item) => item.t)).toEqual([times[0], times[3]]);
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2026-10-30", "2026-10-30",
+    ]);
+    expect(breaks[0]?.first).toBe(true);
+    expect(breaks[1]?.first).toBe(false);
+    expect(breaks[1]?.previous).toBe(times[2]);
+  });
+
+  it("does not invent a midday break on Monday through Thursday", () => {
+    const times = [
+      pkt("2026-10-28", "09:32"),
+      pkt("2026-10-28", "13:32"),
+      pkt("2026-10-28", "15:29"),
+      pkt("2026-10-29", "09:32"),
+    ];
+    expect(sessionBreaks(times, "1h").map((item) => item.day))
+      .toEqual(["2026-10-28", "2026-10-29"]);
   });
 
   it("reads the day in Karachi, not in UTC: morning bars belong to the same day", () => {
@@ -35,21 +69,55 @@ describe("sessionBreaks", () => {
       pkt("2026-10-23", "04:00"),
       pkt("2026-10-23", "09:32"),
     ];
-    expect(sessionBreaks(times)).toHaveLength(1);
+    expect(sessionBreaks(times, "1h")).toHaveLength(1);
   });
 
-  it("does not draw a session rule through daily-grain backfill", () => {
+  it("keeps a real noon bar on a minute chart", () => {
+    const times = [
+      pkt("2026-10-21", "09:32"),
+      pkt("2026-10-21", "12:00"),
+      pkt("2026-10-21", "15:29"),
+    ];
+    expect(isDailyGrainStamp(times[1] ?? 0)).toBe(true);
+    expect(isIntradayStamp(times[1] ?? 0, "1m")).toBe(true);
+    expect(intradayStamps(times, "1m")).toEqual(times);
+    expect(sessionBreaks(times, "1m")).toHaveLength(1);
+  });
+
+  it("drops daily-grain backfill only on the rungs that receive it", () => {
     const times = [
       pkt("2016-11-01", "12:00"),
       pkt("2016-11-02", "12:00"),
       pkt("2026-10-12", "09:32"),
-      pkt("2026-10-12", "11:59"),
+      pkt("2026-10-12", "10:32"),
       pkt("2026-10-13", "09:32"),
     ];
     expect(isDailyGrainStamp(times[0] ?? 0)).toBe(true);
-    expect(isDailyGrainStamp(times[2] ?? 0)).toBe(false);
-    expect(sessionBreaks(intradayStamps(times)).map((item) => item.day))
-      .toEqual(["2026-10-12", "2026-10-13"]);
+    expect(isIntradayStamp(times[0] ?? 0, "1h")).toBe(false);
+    expect(isIntradayStamp(times[0] ?? 0, "1m")).toBe(true);
+    expect(intradayStamps(times, "1h")).toEqual(times.slice(2));
+    expect(sessionBreaks(times, "1h").map((item) => item.day)).toEqual([
+      "2026-10-12", "2026-10-13",
+    ]);
+    expect(sessionBreaks(times, "1m").map((item) => item.day)).toEqual([
+      "2016-11-01", "2016-11-02", "2026-10-12", "2026-10-13",
+    ]);
+  });
+
+  it("covers every intraday rung and no calendar rung", () => {
+    for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
+      "1h", "4h"] as const) {
+      expect(hasSessionBreaks(rung)).toBe(true);
+    }
+    for (const rung of ["1D", "1W", "1M", "1d", "session"] as const) {
+      expect(hasSessionBreaks(rung)).toBe(false);
+    }
+    for (const rung of ["10m", "15m", "30m", "1h", "4h"] as const) {
+      expect(hasDailyBackfill(rung)).toBe(true);
+    }
+    for (const rung of ["1s", "10s", "1m", "5m", "1D"] as const) {
+      expect(hasDailyBackfill(rung)).toBe(false);
+    }
   });
 
   it("ignores holes and unusable stamps instead of inventing sessions", () => {
@@ -58,7 +126,7 @@ describe("sessionBreaks", () => {
       Number.NaN,
       pkt("2026-10-23", "11:59"),
     ];
-    const breaks = sessionBreaks(times);
+    const breaks = sessionBreaks(times, "1h");
     expect(breaks).toHaveLength(1);
     expect(breaks[0]?.t).toBe(times[0]);
   });
