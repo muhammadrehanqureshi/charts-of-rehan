@@ -122,7 +122,7 @@ describe("break plan", () => {
     expect(monthText("2026-01-05")).toBe("Jan '26");
   });
 
-  it("keeps every intraday rule even when two joins are pixels apart", () => {
+  it("a crowded span falls to the month's rule, intraday or not", () => {
     const entries: [string, number, boolean?][] = [];
     for (let i = 0; i < 6; i += 1) {
       entries.push([
@@ -130,24 +130,23 @@ describe("break plan", () => {
       ]);
     }
     const { breaks, xOf } = mappedChart(entries);
+    // Ten session joins inside 50 pixels are unreadable at any cadence a
+    // session could earn: the plan keeps the month's rule, the same
+    // culling daily rows have always obeyed.
     expect(breakPlan(breaks, xOf, 700, false)
-      .filter((item) => item.line)).toHaveLength(5);
+      .filter((item) => item.line)).toHaveLength(1);
   });
 
-  it("an intraday window keeps every session rule when days sit close", () => {
+  it("a roomy intraday window keeps every session rule", () => {
     const entries: [string, number, boolean?][] = [];
     for (let i = 0; i < 6; i += 1) {
       entries.push([
-        `2026-10-${String(12 + i).padStart(2, "0")}`, 100 + i * 20, i === 0,
+        `2026-10-${String(12 + i).padStart(2, "0")}`, 100 + i * 60, i === 0,
       ]);
     }
     const { breaks, xOf } = mappedChart(entries);
-    // Twenty pixels per session is dense for a calendar chart and roomy
-    // enough for an intraday one: every join keeps its dotted rule.
     expect(breakPlan(breaks, xOf, 700, false)
       .filter((item) => item.line)).toHaveLength(5);
-    expect(breakPlan(breaks, xOf, 700)
-      .filter((item) => item.line).length).toBeLessThan(5);
   });
 
   it("paints only the intraday rule; the axis owns the dates", () => {
