@@ -42,6 +42,9 @@ export function usePrints(
   const [error, setError] = useState<string | null>(null);
   // The latest started poll wins: a slow answer never overwrites a newer one.
   const runRef = useRef(0);
+  // Keep the previous symbol's ledger off the new symbol's tape box.
+  const [loadedKey, setLoadedKey] = useState("");
+  const identity = `${symbol}|${day}`;
   // A hidden tab has nobody reading the tape, so it stops asking for it.
   const visible = useVisibility();
 
@@ -64,11 +67,13 @@ export function usePrints(
           return;
         }
         setReport(next);
+        setLoadedKey(identity);
         setError(null);
       } catch (caught) {
         if (cancelled || runRef.current !== run || controller.signal.aborted) {
           return;
         }
+        setLoadedKey(identity);
         setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
         // A hidden tab reads the ledger once (the chart it already drew
@@ -89,5 +94,8 @@ export function usePrints(
     };
   }, [client, symbol, day, enabled, intervalMs, visible, days]);
 
-  return { report, error };
+  return {
+    report: loadedKey === identity ? report : null,
+    error: loadedKey === identity ? error : null,
+  };
 }

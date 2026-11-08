@@ -37,6 +37,7 @@ function splicePastedText(
 import type { IndicatorController } from "../hooks/useIndicators";
 import type { ChartAppearance } from "../hooks/useAppearance";
 import { FormulaError, validateFormula } from "../indicators/expression";
+import { ScriptFileError, scriptFromText } from "../indicators/scriptFile";
 import type {
   IndicatorDefinition,
   IndicatorSpec,
@@ -156,6 +157,26 @@ function paramValue(spec: IndicatorSpec, param: ParamDef): string {
 export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
   const { spec, definition, controller, onClose } = props;
   const [tab, setTab] = useState<"inputs" | "styles">( definition?.params.length ? "inputs" : "styles");
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+
+  const loadFile = async (file: File | undefined): Promise<void> => {
+    if (file === undefined) {
+      return;
+    }
+    try {
+      const loaded = scriptFromText(await file.text(), file.name);
+      controller.setParam(spec.id, "expr", loaded.source);
+      const current = spec.params["name"];
+      if (typeof current !== "string" || current.trim().length === 0) {
+        controller.setParam(spec.id, "name", loaded.name);
+      }
+      setFileError(null);
+    } catch (error) {
+      setFileError(error instanceof ScriptFileError || error instanceof Error
+        ? error.message : String(error));
+    }
+  };
 
   const formulaError = (() => {
     if (!definition?.formula) {
@@ -202,11 +223,24 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
 
       <div className="settings-dialog__body">
         {tab === "inputs" && definition !== undefined ? (
-          definition.params.length === 0
-            ? <p className="settings-dialog__note">
-                this indicator has no inputs.
-              </p>
-            : definition.params.map((param) => (
+          <>
+            {definition.formula ? (
+              <label className="settings-row">
+                <span>name</span>
+                <input
+                  type="text"
+                  aria-label="script name"
+                  value={String(spec.params["name"] ?? "")}
+                  onChange={(event) =>
+                    controller.setParam(spec.id, "name", event.target.value)}
+                />
+              </label>
+            ) : null}
+            {definition.params.length === 0
+              ? <p className="settings-dialog__note">
+                  this indicator has no inputs.
+                </p>
+              : definition.params.map((param) => (
               <label key={param.key} className="settings-row">
                 <span>{param.label}</span>
                 {param.kind === "number" ? (
@@ -257,7 +291,33 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
                   />
                 )}
               </label>
-            ))
+              ))}
+            {definition.formula ? (
+              <div className="settings-file">
+                <span>load a Pine or text script</span>
+                <button
+                  type="button"
+                  className="settings-file__button"
+                  onClick={() => fileInput.current?.click()}
+                >
+                  choose file
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  hidden
+                  accept=".pine,.txt,.ps,text/plain"
+                  onChange={(event) => {
+                    void loadFile(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </div>
+            ) : null}
+            {fileError !== null ? (
+              <p className="indicator__error" role="status">{fileError}</p>
+            ) : null}
+          </>
         ) : (
           <>
             <label className="settings-row">
