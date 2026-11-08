@@ -116,11 +116,9 @@ function spanFor(resolution: Resolution): number {
  * which is not a longer history but a chart where the same looking candle
  * means a day in one stretch and an hour in another - and where a decade of
  * days squeezes the recorded sessions into the last two percent of the axis.
- * The daily rung already carries that decade. The panes are bounded for the
- * same reason: folding every capture on disk to fill a side panel is what
- * made opening a chart take twenty seconds.
+ * The daily rung already carries that decade; the panes read the whole chart
+ * span because their finished-session folds now live in a bounded disk cache.
  */
-const PANE_SESSIONS = 3;
 
 /**
  * How many bars a rung's merged span may draw, end to end.
@@ -524,12 +522,12 @@ export function App() {
   // its cadence is five seconds - the folds on the server are incremental
   // and always current, this only spaces out how often the browser redraws
   // a history the pane is not scrolling through.
-  // The panes wait for the chart's own first answer and then read only the
-  // newest sessions: a side panel must never be the reason the candles are
-  // late, and a fold of every capture on disk is a minute of the owner's PC.
+  // The panes wait for the chart's own first answer and then read the whole
+  // chart span: a side panel must never be the reason the candles are late,
+  // and finished sessions come from the bounded pane cache instead of being
+  // re-folded on every load.
   const panesReady = feed.meta.payload !== null;
-  const paneSpan = day.length === 0
-    ? Math.min(PANE_SESSIONS, spanFor(resolution)) : 0;
+  const paneSpan = day.length === 0 ? spanFor(resolution) : 0;
   const delta = useDelta(client, symbol,
     day.length === 0 ? "" : (feed.meta.session?.day ?? day),
     symbol.length > 0 && panesReady, AUXILIARY_POLL_MS, paneSpan);

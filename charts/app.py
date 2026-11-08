@@ -105,10 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="where the durable session archive lives "
                              "(default: data/archive)")
     parser.add_argument("--cache-dir", default="",
-                        help="where the disposable candle cache lives "
-                             "(default: data/cache/candles.sqlite3)")
+                        help="where the disposable candle and pane caches "
+                             "live (default: data/cache/candles.sqlite3)")
     parser.add_argument("--no-cache", action="store_true",
-                        help="neither read nor write the local candle cache")
+                        help="neither read nor write the local candle or "
+                             "pane caches")
     parser.add_argument("--day", default="",
                         help="serve this session (YYYY-MM-DD) instead of the "
                              "Karachi day of the clock")
@@ -179,10 +180,14 @@ def _source_for(args, clock=None):
     # was first imported.
     clock = clock or sessions.law.now_karachi
     if args.source == "tape":
-        return TapeSource(clock=clock, capture_dirs=_tape_dirs(args),
-                          archive_dir=args.archive_dir or None,
-                          cache_path=_cache_path(args),
-                          day=args.day or None)
+        cache_path = _cache_path(args)
+        return TapeSource(
+            clock=clock, capture_dirs=_tape_dirs(args),
+            archive_dir=args.archive_dir or None,
+            cache_path=cache_path,
+            pane_cache_path=(cache_path.parent / "panes.sqlite3"
+                             if cache_path is not None else None),
+            day=args.day or None)
     if args.source == "portal":
         return SOURCES["portal"](clock=clock)
     return ReplaySource(symbols=_symbols(args.symbols) or ["REPLAY1", "REPLAY2"],
