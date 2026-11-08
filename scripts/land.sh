@@ -4,9 +4,9 @@
 # is staged or published.
 #
 # The flow is deliberately the same as quant-of-rehan's: one path to master,
-# a hardcoded co-author line, a rebase onto the latest base branch, and a
-# publish phase that opens and merges a pull request with gh. It never writes
-# to master directly.
+# owner-only authorship, a rebase onto the latest base branch, and a publish
+# phase that opens and merges a pull request with gh. It never writes to
+# master directly.
 #
 # The guard that matters here is the first one: this checkout declares its
 # repository in .repo-identity, and origin must name the same repository.
@@ -46,11 +46,6 @@ DELETE_BRANCH=0
 OWNER_NAME="Mr. Rehan"
 OWNER_EMAIL="muhammadrehanqureshi@users.noreply.github.com"
 OWNER_EMAIL_ALT="111383512+muhammadrehanqureshi@users.noreply.github.com"
-
-# The agent is the owner's co-author on every commit, every PR body and every
-# merge. Written once here so the commit, the pull request and the merge commit
-# cannot drift apart.
-COAUTHOR="Co-Authored-By: Codebuff <noreply@codebuff.com>"
 
 now_pkt() { date -u -d "+5 hours" "+%Y-%m-%d %H:%M:%S PKT"; }
 step()    { printf "\n== %s ==\n" "$*"; }
@@ -136,7 +131,7 @@ if [[ "$got_name" != "$OWNER_NAME" ]] || { [[ "$got_email" != "$OWNER_EMAIL" ]] 
 fi
 note "author identity ok"
 
-[[ -n "$MESSAGE" ]] || die "a commit message is required: -m \"...\" (the flow appends the co-author line itself)"
+[[ -n "$MESSAGE" ]] || die "a commit message is required: -m \"...\" (the flow appends no attribution)"
 
 validate_message() {
     "$PYTHON" - "$1" <<'PY' || die "commit message rejected by the landing message validator"
@@ -155,21 +150,21 @@ for ch in msg:
         print(f"banned dash character U+{ord(ch):04X} in the message", file=sys.stderr)
         sys.exit(1)
 if "co-authored-by:" in msg.lower():
-    print("the co-author line is appended by land.sh itself; leave it out of -m",
+    print("co-author or tool attribution trailers are not allowed",
           file=sys.stderr)
     sys.exit(1)
 for trailer in ("generated with", "generated-by:", "signed-off-by:"):
     if trailer in msg.lower():
         print(f"banned trailer pattern {trailer!r} in the message", file=sys.stderr)
         sys.exit(1)
-print("   message passes the style rules; land.sh appends the co-author line")
+print("   message passes the style rules; no attribution is appended")
 PY
 }
 validate_message "$MESSAGE"
 
-# The message the commit, the pull request and the merge all carry. The
-# caller's words first, then the co-author line as the last line.
-FULL_MESSAGE=$(printf '%s\n\n%s\n' "$MESSAGE" "$COAUTHOR")
+# The message the commit, the pull request and the merge all carry. It is
+# the owner's words only; no tool or agent attribution is appended.
+FULL_MESSAGE="$MESSAGE"
 
 note "base commit: $(git rev-parse --short "origin/$BASE" 2>/dev/null || echo 'origin/'$BASE' not fetched yet')"
 
@@ -207,7 +202,6 @@ else
     fi
     git commit -m "$FULL_MESSAGE"
     note "commit: $(git log --oneline -1)"
-    note "co-author line: $COAUTHOR"
 fi
 if [[ "$UNTIL" == "commit" ]]; then
     printf "\nStopping after the commit phase (--until commit). Nothing was pushed.\n"
@@ -320,8 +314,8 @@ done
 
 merge_args=(--merge)
 (( DELETE_BRANCH )) && merge_args+=(--delete-branch)
-gh pr merge "$pr" "${merge_args[@]}" --body "$COAUTHOR"
-note "merged PR #$pr into $BASE (merge commit carries the co-author line)"
+gh pr merge "$pr" "${merge_args[@]}"
+note "merged PR #$pr into $BASE"
 
 merge_sha=$(gh pr view "$pr" --json mergeCommit --jq ".mergeCommit.oid" 2>/dev/null || true)
 [[ -n "$merge_sha" ]] && note "merge commit: ${merge_sha:0:10}"
