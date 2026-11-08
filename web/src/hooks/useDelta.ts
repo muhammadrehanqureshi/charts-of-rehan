@@ -31,6 +31,11 @@ export function useDelta(
 ): DeltaState {
   const [report, setReport] = useState<DeltaReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A report belongs to one symbol and session. Without this key a quick
+  // answer for the previous symbol would be shown under the new one while
+  // its own first request is still in flight.
+  const [loadedKey, setLoadedKey] = useState("");
+  const identity = `${symbol}|${day}`;
   const visible = useVisibility();
   const runRef = useRef(0);
 
@@ -51,11 +56,13 @@ export function useDelta(
           return;
         }
         setReport(next);
+        setLoadedKey(identity);
         setError(null);
       } catch (caught) {
         if (cancelled || runRef.current !== run || controller.signal.aborted) {
           return;
         }
+        setLoadedKey(identity);
         setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
         // One read on mount is what the chart already on screen needs; the
@@ -76,5 +83,8 @@ export function useDelta(
     };
   }, [client, symbol, day, enabled, intervalMs, visible, days]);
 
-  return { report, error };
+  return {
+    report: loadedKey === identity ? report : null,
+    error: loadedKey === identity ? error : null,
+  };
 }

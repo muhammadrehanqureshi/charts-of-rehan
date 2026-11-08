@@ -528,9 +528,16 @@ export function App() {
   // re-folded on every load.
   const panesReady = feed.meta.payload !== null;
   const paneSpan = day.length === 0 ? spanFor(resolution) : 0;
+  // One session first, the whole span immediately after. A symbol with no
+  // pane cache pays the capture folds once; the boxes are usable after the
+  // first quick answer instead of staying blank for the whole merge.
+  const paneIdentity = `${symbol}|${day}|${resolution}`;
+  const [paneFullKey, setPaneFullKey] = useState("");
+  const paneFull = paneFullKey === paneIdentity;
+  const paneDays = paneFull ? paneSpan : (paneSpan > 1 ? 1 : paneSpan);
   const delta = useDelta(client, symbol,
     day.length === 0 ? "" : (feed.meta.session?.day ?? day),
-    symbol.length > 0 && panesReady, AUXILIARY_POLL_MS, paneSpan);
+    symbol.length > 0 && panesReady, AUXILIARY_POLL_MS, paneDays);
 
   // The venue's own book, for the plate under the volume split: a cadence
   // read that stops with the stored session and with the hidden tab.
@@ -543,7 +550,19 @@ export function App() {
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
     symbol.length > 0 && panesReady
       && !(feed.meta.session?.archived ?? false),
-    AUXILIARY_POLL_MS, paneSpan);
+    AUXILIARY_POLL_MS, paneDays);
+
+  // Both quick answers decided the first paint; ask for the full span only
+  // after they have landed, so the two requests never overlap.
+  const printsApplicable = !(feed.meta.session?.archived ?? false);
+  useEffect(() => {
+    if (!paneFull && paneSpan > 1 && delta.report !== null
+        && (prints.report !== null || prints.error !== null
+          || !printsApplicable)) {
+      setPaneFullKey(paneIdentity);
+    }
+  }, [paneFull, paneSpan, delta.report, prints.report, prints.error,
+    printsApplicable, paneIdentity]);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);

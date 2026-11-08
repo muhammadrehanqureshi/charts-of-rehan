@@ -772,6 +772,7 @@ button:disabled {
 }
 
 .settings-row input[type="number"],
+.settings-row input[type="text"],
 .settings-row textarea,
 .settings-row select {
   width: 150px;
@@ -804,6 +805,30 @@ button:disabled {
   width: 15px;
   height: 15px;
   accent-color: var(--focus);
+}
+
+.settings-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-file__button {
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.settings-file__button:hover {
+  color: var(--focus);
+  border-color: var(--focus);
 }
 
 .settings-dialog__foot {
