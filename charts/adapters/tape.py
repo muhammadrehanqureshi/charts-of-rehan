@@ -62,6 +62,7 @@ from charts.archive import (  # noqa: E402
 )
 from charts.adapters.base import Capabilities  # noqa: E402
 from charts.candle_cache import CandleCache, CacheError  # noqa: E402
+from charts.pane_cache import PaneCache, PaneCacheError  # noqa: E402
 from charts.contract import (  # noqa: E402
     RESOLUTION_MINUTE, SOURCE_TAPE, Bar, ContractError, SourceInfo,
 )
@@ -350,6 +351,7 @@ class TapeSource:
                  eod_dir: Path | str | None = None,
                  indices_dir: Path | str | None = None,
                  cache_path: Path | str | None = None,
+                 pane_cache_path: Path | str | None = None,
                  day: date | str | None = None) -> None:
         self._clock = clock
         self._universe_path = Path(universe_path) if universe_path else None
@@ -365,6 +367,11 @@ class TapeSource:
         #: not re-walking a capture is the whole point.
         self._candle_cache = (CandleCache(cache_path)
                               if cache_path is not None else None)
+        #: The side panels' finished-session folds. Same off-by-default rule
+        #: as the candle cache: never discover a runtime file a caller did not
+        #: name. Only the long-running service turns it on.
+        self._pane_cache = (PaneCache(pane_cache_path)
+                            if pane_cache_path is not None else None)
         # A calendar rung reads every banked EOD day, and a decade's worth is
         # a few seconds of first-request file reads on the machine running
         # this. Warming the store as the service wakes costs one background
@@ -659,7 +666,7 @@ class TapeSource:
             if len(per_day) >= span:
                 break
             try:
-                one = self._prints_report(wanted, candidate, 1)
+                one = self._prints_day(wanted, candidate)
             except UpstreamError:
                 continue
             totals = one["totals"]
@@ -715,6 +722,46 @@ class TapeSource:
             fold["fold"].feed(rows, self._clock())
             fold["offset"] = max(end, fold["offset"])
         return fold["fold"].report(limit)
+
+    def _prints_day(self, wanted: str, session: date) -> dict:
+        """One finished session's daily totals, cached under its capture.
+
+        The tape box asks for a whole span of days on every load, and each day
+        used to cost a full capture fold just to read one number. Only the
+        totals are cached: the events belong to the one session the panel is
+        drawing, and a finished session's counters never move again.
+        """
+        path = self.capture_for(session)
+        if path is None:
+            raise UpstreamError(
+                UpstreamError.EMPTY_ACK,
+                f"no broker tape is banked for {session.isoformat()}, so "
+                f"there are no order prints to show")
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise UpstreamError(UpstreamError.CONNECTION,
+                                f"cannot stat {path.name}: {exc}") from exc
+        identity = f"capture:{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+        finished = session < self.today()
+        if self._pane_cache is not None and finished:
+            try:
+                cached = self._pane_cache.get_prints(wanted, session, identity)
+            except PaneCacheError:
+                cached = None
+            if cached is not None:
+                totals, events_total = cached
+                return {"day": session.isoformat(), "totals": totals,
+                        "events_total": events_total}
+        one = self._prints_report(wanted, session, 1)
+        if self._pane_cache is not None and finished:
+            try:
+                self._pane_cache.put_prints(
+                    wanted, session, identity, one["totals"],
+                    one["events_total"])
+            except PaneCacheError:
+                pass
+        return one
 
     # ------------------------------------------------------- session order flow
     def flow_day(self, day: date | str | None = None) -> date:
@@ -835,6 +882,16 @@ class TapeSource:
         except OSError:
             return {"symbol": wanted, "day": session.isoformat(),
                     "minutes": [], "note": "the capture could not be read"}
+        identity = f"capture:{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+        finished = session < self.today()
+        if self._pane_cache is not None and finished:
+            try:
+                cached = self._pane_cache.get_delta(wanted, session, identity)
+            except PaneCacheError:
+                cached = None
+            if cached is not None:
+                return {"symbol": wanted, "day": session.isoformat(),
+                        "minutes": cached, "note": ""}
         key = (session.isoformat(), wanted)
         fold = self._delta_state.get(key)
         if fold is not None and fold["path"] != str(path):
@@ -847,8 +904,14 @@ class TapeSource:
             rows, end = tick_volume.next_appended(path, fold["offset"])
             fold["fold"].feed(rows, self._clock())
             fold["offset"] = max(end, fold["offset"])
+        minutes = fold["fold"].minutes()
+        if self._pane_cache is not None and finished:
+            try:
+                self._pane_cache.put_delta(wanted, session, identity, minutes)
+            except PaneCacheError:
+                pass  # a cache that cannot store is never a failed read
         return {"symbol": wanted, "day": session.isoformat(),
-                "minutes": fold["fold"].minutes(), "note": ""}
+                "minutes": minutes, "note": ""}
 
     def book_for(self, symbol: str, day: date | str | None = None) -> dict:
         """One symbol's top of the venue's own book, as the tape last saw it.
