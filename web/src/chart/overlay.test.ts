@@ -98,6 +98,16 @@ describe("break plan", () => {
     expect(plan[0]?.x).toBe(110);
   });
 
+  it("names the day each session rule opens when labels are asked for", () => {
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", 100, true],
+      ["2026-10-20", 300],
+      ["2026-10-21", 500],
+    ]);
+    const plan = breakPlan(breaks, xOf, 800, true, true);
+    expect(plan.map((item) => item.label)).toEqual(["20 Oct", "21 Oct"]);
+  });
+
   it("a daily-grain dense chart says months, not one date per day", () => {
     // A year of month starts at one pixel each: the dashed forest.
     const entries: [string, number, boolean?][] = [];

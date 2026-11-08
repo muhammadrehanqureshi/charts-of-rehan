@@ -403,6 +403,8 @@ export function makePositions(
  */
 export interface BreakPlan {
   readonly x: number;
+  /** The date a rule opens, when the caller asked for labels. */
+  readonly label?: string;
 }
 
 const LINE_MIN_PX = 18;
@@ -414,8 +416,10 @@ export function breakPlan(
   plotWidth: number,
   /** Kept for callers: both plans obey the same rhythm. Dates are the axis's. */
   _denseAllowed = true,
+  /** Carry one date label per day when the caller paints it. */
+  withLabels = false,
 ): BreakPlan[] {
-  const visible: { x: number; day: string }[] = [];
+  const visible: { x: number; day: string; label: string }[] = [];
   for (const item of breaks) {
     if (item.first) {
       continue;
@@ -434,7 +438,7 @@ export function breakPlan(
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
-    visible.push({ x: Math.round(x), day: item.day });
+    visible.push({ x: Math.round(x), day: item.day, label: item.label });
   }
   if (visible.length === 0) {
     return [];
@@ -452,19 +456,26 @@ export function breakPlan(
     && span / (visible.length - 1) < DENSE_PX;
   const plan: BreakPlan[] = [];
   let lastLine = Number.NEGATIVE_INFINITY;
+  let lastLabelDay = "";
   for (let i = 0; i < visible.length; i += 1) {
     const item = visible[i]!;
     const monthStart = i === 0
       || item.day.slice(0, 7) !== visible[i - 1]!.day.slice(0, 7);
     // Rules keep a rhythm of their own: in the dense mode only the month's
     // first bar asks for one, and none crowds the previous within 18px.
-    // The axis owns every date, so a rule carries only its own x - a label
-    // strip above the joins duplicated what the axis already reads clearly.
     const asks = !dense || monthStart;
     if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
-      plan.push({ x: item.x });
+      // A packed axis has no calendar distance of its own, so the first
+      // rule of each session carries the date. A Friday lunch rule stays
+      // label-free because it names the same day as the morning rule.
+      plan.push({
+        x: item.x,
+        ...(withLabels && item.day !== lastLabelDay
+          ? { label: item.label } : {}),
+      });
       lastLine = item.x;
     }
+    lastLabelDay = item.day;
   }
   return plan;
 }
@@ -489,6 +500,8 @@ export function paintSessionBreaks(
   bottom = frame.plotHeight,
   /** The display's device-pixel ratio, so every rule has equal weight. */
   dpr = 1,
+  /** Name the day each session opens on the packed axis. */
+  showDates = false,
 ): void {
   const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   // A one-CSS-pixel rule at a fractional DPR lands on a different pixel
@@ -505,6 +518,7 @@ export function paintSessionBreaks(
     (t) => scale.timeToCoordinate((t / 1000) as never),
     frame.plotWidth,
     denseAllowed,
+    showDates,
   );
   if (plan.length === 0) {
     return;
@@ -520,6 +534,13 @@ export function paintSessionBreaks(
     context.lineTo(x, bottom);
     context.stroke();
     context.setLineDash([]);
+    if (item.label !== undefined) {
+      context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
+      context.fillStyle = colors.label;
+      context.textAlign = "left";
+      context.textBaseline = "top";
+      context.fillText(item.label, x + 4, 4);
+    }
   }
   context.restore();
 }
