@@ -176,11 +176,21 @@ interface PaneRef {
 }
 
 interface ChartTimeMap {
-  /** Presentation seconds, one per accepted bar, ascending by one. */
+  /** Presentation seconds, one spacing step per accepted bar, ascending. */
   readonly chartSec: readonly number[];
   /** The tape's real instants, parallel to `chartSec`. */
   readonly realMs: readonly number[];
 }
+
+/**
+ * How much presentation time one bar occupies.
+ *
+ * A one-second step packed the bars but left the engine's tick generator with
+ * a 49-second span, so it produced one label and its crosshair found nothing
+ * to name. A minute per bar still packs every bar next to its neighbour and
+ * gives the axis enough scope to place real date/time labels.
+ */
+const PRESENTATION_STEP_SEC = 60;
 
 interface EngineState {
   readonly chart: IChartApi;
@@ -225,10 +235,11 @@ function nearestIndex(values: readonly number[], value: number): number {
 
 /** A presentation instant back to the tape's own millisecond instant. */
 function realFromChartMs(state: EngineState, chartMs: number): number {
-  const firstSec = (state.barTimes[0] ?? 0) / 1000;
-  const index = Math.round(chartMs / 1000 - firstSec);
-  const bounded = Math.max(0, Math.min(state.realTimes.length - 1, index));
-  return state.realTimes[bounded] ?? chartMs;
+  const index = nearestIndex(state.barTimes, chartMs);
+  if (index < 0) {
+    return chartMs;
+  }
+  return state.realTimes[index] ?? chartMs;
 }
 
 /** A hex colour at an alpha, for the muted volume under the candles. */
@@ -285,6 +296,14 @@ const karachiYear = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Karachi",
   year: "numeric",
 });
+
+/** The real Karachi moment behind a presentation tick or crosshair instant. */
+function momentForChart(map: ChartTimeMap, sec: number): Date {
+  const index = nearestIndex(map.chartSec, sec);
+  const realMs = index >= 0 ? (map.realMs[index] ?? sec * 1000)
+    : sec * 1000;
+  return new Date(realMs);
+}
 
 export function ChartCanvas(props: ChartCanvasProps) {
   const {
@@ -369,9 +388,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const sec = Number(time);
       const map = timeMap.current;
       const index = nearestIndex(map.chartSec, sec);
-      const realMs = index >= 0 ? (map.realMs[index] ?? sec * 1000)
-        : sec * 1000;
-      const moment = new Date(realMs);
+      const moment = momentForChart(map, sec);
       if (Number.isNaN(moment.getTime())) {
         return "";
       }
@@ -493,6 +510,15 @@ export function ChartCanvas(props: ChartCanvasProps) {
       },
       localization: {
         priceFormatter: (price: number) => formatPrice(price, decimals),
+        // The axis ticks and the crosshair label are the engine's own
+        // formatting paths. Both must translate the packed presentation
+        // time back to Karachi; otherwise hover says the first bar's UTC
+        // time for every slot.
+        timeFormatter: (time: Time) => {
+          const moment = momentForChart(timeMap.current, Number(time));
+          return `${karachiDay.format(moment)} ` +
+            karachiClock.format(moment);
+        },
       },
     });
     // A dev-only handle: a broken pane only shows itself live, so the
@@ -566,7 +592,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
         writeLegend(state, last, legendEl, volumeAvailable);
         return;
       }
-      writeLegend(state, state.index.get(Number(param.time)),
+      const sec = Number(param.time);
+      // A crosshair in the sliver between bars has no exact index. Use the
+      // nearest bar now that presentation times are spaced, rather than
+      // leaving the legend on the previous reading.
+      const nearest = nearestIndex(state.barTimes, sec * 1000);
+      writeLegend(state, state.index.get(sec) ?? (nearest >= 0 ? nearest : undefined),
         legendEl, volumeAvailable);
     };
     chart.subscribeCrosshairMove(onCrosshair);
@@ -762,7 +793,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
 
     // The engine places bars by wall-clock time, so a merged session chart
     // would spend most of its width on nights and weekends. Pack the bars
-    // into consecutive presentation seconds, keeping the tape's real times
+    // into consecutive presentation steps, keeping the tape's real times
     // beside them for the axis, the rules, the drawings and the legend.
     const accepted: {
       sourceIndex: number;
@@ -804,7 +835,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
       return;
     }
     const baseSec = Math.floor(accepted[0]!.realMs / 1000);
-    const chartSec = accepted.map((_bar, index) => baseSec + index);
+    const chartSec = accepted.map((_bar, index) =>
+      baseSec + index * PRESENTATION_STEP_SEC);
     const realTimes = accepted.map((bar) => bar.realMs);
     timeMap.current = { chartSec, realMs: realTimes };
     const chartTimes = new Array<number>(length).fill(Number.NaN);
@@ -1048,11 +1080,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
     if (state.calendarBreaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
-        ruleColors, true, cssHeight, dpr);
+        ruleColors, true, cssHeight, dpr, true);
     }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        ruleColors, false, cssHeight, dpr);
+        ruleColors, false, cssHeight, dpr, true);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
