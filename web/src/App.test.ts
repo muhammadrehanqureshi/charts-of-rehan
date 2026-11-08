@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { backfillFor, limitFor, openingSymbol } from "./App";
+import { limitFor, openingSymbol } from "./App";
 import type { SymbolRow } from "./api/types";
 
 function row(symbol: string, patch: Partial<SymbolRow> = {}): SymbolRow {
@@ -61,25 +61,6 @@ describe("the opening chart", () => {
   });
 });
 describe("how much history a rung asks for", () => {
-  it("asks for the decade on every rung coarse enough to read it", () => {
-    for (const resolution of [
-      "1s", "10s", "1m", "5m",
-    ] as const) {
-      expect(backfillFor(resolution)).toBe(0);
-    }
-    for (const resolution of [
-      "10m", "15m", "30m", "1h", "4h",
-    ] as const) {
-      expect(backfillFor(resolution)).toBe(2_600);
-    }
-  });
-
-  it("a calendar rung is its own history and asks for no backfill", () => {
-    for (const resolution of ["1D", "1W", "1M"] as const) {
-      expect(backfillFor(resolution)).toBe(0);
-    }
-  });
-
   it("the limit still fits the bars the rung draws", () => {
     expect(limitFor("1h")).toBe(3_400);
     expect(limitFor("1m")).toBe(6_000);

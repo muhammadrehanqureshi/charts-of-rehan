@@ -413,55 +413,28 @@ export function makePositions(
  *
  * A merged chart full of daily-grain backfill packs a day into every few
  * pixels, and a line and a date for *each* day is the dashed forest and the
- * unreadable label strip that reads as noise. The plan is decided on pixel
- * geometry instead: day joins get their line while there is room for one,
- * and once they crowd below a forty-pixel rhythm only the month's first bar
- * keeps a line and a label - the months stay findable, the days are left to
- * the zoom that actually has space for them.
+ * unreadable strip that reads as noise. The plan is decided on pixel
+ * geometry instead: day joins get their rule while there is room for one,
+ * and once they crowd below a forty-pixel rhythm only the month's first
+ * bar keeps one - the months stay findable, the days are left to the
+ * zoom that actually has space for them. Rules carry no dates; the time
+ * axis owns every date label.
  */
 export interface BreakPlan {
   readonly x: number;
-  readonly line: boolean;
-  readonly text: string | null;
 }
 
 const LINE_MIN_PX = 18;
 const DENSE_PX = 40;
-const LABEL_MIN_PX = 30;
-
-const monthFormat = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Asia/Karachi",
-  month: "short",
-});
-const yearFormat = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Asia/Karachi",
-  year: "numeric",
-});
-
-/** The month's own name for a break, with the year only where it changes. */
-export function monthText(day: string): string {
-  const moment = Date.parse(`${day}T12:00:00+05:00`);
-  if (!Number.isFinite(moment)) {
-    return "";
-  }
-  // A January, or the first month the chart shows, carries its year, so a
-  // bare "Jan" never sits ambiguous against months from another year.
-  // The month's slice of the Karachi day, YYYY-MM-DD, is index 5..7.
-  const month = monthFormat.format(moment);
-  const year = yearFormat.format(moment);
-  return day.slice(5, 7) === "01"
-    ? `${month} '${year.slice(-2)}`
-    : month;
-}
 
 export function breakPlan(
   breaks: readonly SessionBreak[],
   xOf: (t: number) => number | null,
   plotWidth: number,
-  /** Calendar charts paint their labels; intraday ones leave dates to the axis. */
-  denseAllowed = true,
+  /** Kept for callers: both plans obey the same rhythm. Dates are the axis's. */
+  _denseAllowed = true,
 ): BreakPlan[] {
-  const visible: { x: number; day: string; label: string }[] = [];
+  const visible: { x: number; day: string }[] = [];
   for (const item of breaks) {
     if (item.first) {
       continue;
@@ -480,7 +453,7 @@ export function breakPlan(
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
-    visible.push({ x: Math.round(x), day: item.day, label: item.label });
+    visible.push({ x: Math.round(x), day: item.day });
   }
   if (visible.length === 0) {
     return [];
@@ -498,33 +471,19 @@ export function breakPlan(
     && span / (visible.length - 1) < DENSE_PX;
   const plan: BreakPlan[] = [];
   let lastLine = Number.NEGATIVE_INFINITY;
-  let lastLabelEnd = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < visible.length; i += 1) {
     const item = visible[i]!;
     const monthStart = i === 0
       || item.day.slice(0, 7) !== visible[i - 1]!.day.slice(0, 7);
-    // Lines keep a rhythm of their own: in the dense mode only the month's
+    // Rules keep a rhythm of their own: in the dense mode only the month's
     // first bar asks for one, and none crowds the previous within 18px.
+    // The axis owns every date, so a rule carries only its own x - a label
+    // strip above the joins duplicated what the axis already reads clearly.
     const asks = !dense || monthStart;
     if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
-      plan.push({ x: item.x, line: true, text: null });
+      plan.push({ x: item.x });
       lastLine = item.x;
     }
-    // Intraday charts leave their dates to the time axis, as TradingView
-    // does; a label above every join only duplicates what is already under
-    // the chart. Calendar/dense plans may still carry a month anchor.
-    const text = !denseAllowed
-      ? null
-      : !dense && item.label !== ""
-        ? item.label
-        : monthStart ? monthText(item.day) : null;
-    if (text === null || item.x - lastLabelEnd < LABEL_MIN_PX) {
-      continue;
-    }
-    plan.push({ x: item.x, line: false, text });
-    // The anchor paints at x + 5; the estimate makes room for the text
-    // without a canvas to measure in.
-    lastLabelEnd = item.x + 5 + text.length * 5.5 + 6;
   }
   return plan;
 }
@@ -570,23 +529,16 @@ export function paintSessionBreaks(
     return;
   }
   context.save();
-  context.font = "10px 'Trebuchet MS', 'Segoe UI', sans-serif";
-  context.textBaseline = "top";
   for (const item of plan) {
-    if (item.line) {
-      context.setLineDash([2, 4]);
-      context.strokeStyle = colors.line;
-      context.lineWidth = 1;
-      const x = deviceX(item.x);
-      context.beginPath();
-      context.moveTo(x, 0);
-      context.lineTo(x, bottom);
-      context.stroke();
-      context.setLineDash([]);
-    } else if (item.text !== null) {
-      context.fillStyle = colors.label;
-      context.fillText(item.text, item.x + 5, 3);
-    }
+    context.setLineDash([2, 4]);
+    context.strokeStyle = colors.line;
+    context.lineWidth = 1;
+    const x = deviceX(item.x);
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, bottom);
+    context.stroke();
+    context.setLineDash([]);
   }
   context.restore();
 }

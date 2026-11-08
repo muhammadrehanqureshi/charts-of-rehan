@@ -46,6 +46,7 @@ from charts.adapters import SOURCES
 from charts.adapters.replay import ReplaySource
 from charts.adapters.tape import TapeSource, read_universe
 from charts.archive import discover_capture_dirs
+from charts.candle_cache import DEFAULT_CACHE_PATH
 from charts.contract import RESOLUTION_MINUTE
 from charts.eod import decade_start
 from charts.lightweight import (
@@ -103,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--archive-dir", default="",
                         help="where the durable session archive lives "
                              "(default: data/archive)")
+    parser.add_argument("--cache-dir", default="",
+                        help="where the disposable candle cache lives "
+                             "(default: data/cache/candles.sqlite3)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="neither read nor write the local candle cache")
     parser.add_argument("--day", default="",
                         help="serve this session (YYYY-MM-DD) instead of the "
                              "Karachi day of the clock")
@@ -148,6 +154,24 @@ def _tape_dirs(args) -> tuple[Path, ...]:
     return explicit or discover_capture_dirs()
 
 
+def _serving(args) -> bool:
+    """True when this process will listen, rather than run one command."""
+    return not (args.sessions or args.build_archive or args.once)
+
+
+def _cache_path(args) -> Path | None:
+    """Where the disposable candle cache lives for this run, or None.
+
+    A one-shot command gains nothing from a persistent cache and must not
+    create runtime files it will never read again, so the cache is on only
+    for the long-running service. ``--no-cache`` exists for the day a chart
+    has to be explained without a stored answer in the way.
+    """
+    if not _serving(args) or getattr(args, "no_cache", False):
+        return None
+    return Path(getattr(args, "cache_dir", "") or DEFAULT_CACHE_PATH)
+
+
 def _source_for(args, clock=None):
     # The clock is resolved at call time, never captured at import: a caller
     # that patches the session law (a test, the offline demo) must get the
@@ -157,6 +181,7 @@ def _source_for(args, clock=None):
     if args.source == "tape":
         return TapeSource(clock=clock, capture_dirs=_tape_dirs(args),
                           archive_dir=args.archive_dir or None,
+                          cache_path=_cache_path(args),
                           day=args.day or None)
     if args.source == "portal":
         return SOURCES["portal"](clock=clock)
@@ -217,7 +242,7 @@ def check_environment(args) -> str | None:
     --build-archive, --once) answer from local files and exit, and CI has to
     run them to prove them.
     """
-    serving = not (args.sessions or args.build_archive or args.once)
+    serving = _serving(args)
     if serving and os.environ.get("GITHUB_ACTIONS"):
         return ("this is a foreground chart service and GitHub Actions "
                 "minutes belong to the market-hours scans; run it on the "
