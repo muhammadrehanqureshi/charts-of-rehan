@@ -73,13 +73,15 @@ export function anchorAt(
   candles: ISeriesApi<"Candlestick">,
   x: number,
   y: number,
+  /** Map the engine's presentation instant back to the tape's own instant. */
+  toRealMs: (chartMs: number) => number = (value) => value,
 ): AnchoredPoint | null {
   const time = chart.timeScale().coordinateToTime(x);
   const price = candles.coordinateToPrice(y);
   if (time === null || price === null) {
     return null;
   }
-  return { t: Number(time) * 1000, price };
+  return { t: toRealMs(Number(time) * 1000), price };
 }
 
 
@@ -288,12 +290,18 @@ export function makePositions(
   chart: IChartApi,
   candles: ISeriesApi<"Candlestick">,
   barTimesMs: readonly number[],
+  /** The tape's real instants, parallel to the presentation times. */
+  realTimesMs: readonly number[] = barTimesMs,
 ): OverlayPositions {
   const timeScale = chart.timeScale();
   // The drawing path speaks milliseconds (`anchorAt` multiplies the
   // engine's seconds by 1000), so the positions take milliseconds and
-  // drop back to seconds only for the engine's own calls.
+  // drop back to seconds only for the engine's own calls. Presentations
+  // are the engine's packed instants; anchors stay the tape's real ones.
   const barTimes = barTimesMs.map((t) => Math.floor(t / 1000));
+  const realTimes = realTimesMs.length === barTimesMs.length
+    ? realTimesMs.map((t) => Math.floor(t / 1000))
+    : barTimes;
   const cache = new Map<number, number | null>();
   const pxAt = (i: number): number | null => {
     const known = cache.get(i);
@@ -317,13 +325,14 @@ export function makePositions(
       }
       // The bar-index coordinate of this instant, in seconds: inside the
       // series it is the bracketing pair interpolated; outside either
-      // edge it is the edge extended at the series' own bar pace.
+      // edge it is the edge extended at the series' own bar pace. The
+      // interpolation uses real tape times, while the pixels come from
+      // the engine's packed ones.
       const tSec = Math.floor(tMs / 1000);
-      // Copied so the subscripts are their own number, not number | null◌.
-      const first = barTimes[0]!;
-      const second = barTimes[1] ?? first;
-      const last = barTimes[count - 1]!;
-      const beforeLast = barTimes[count - 2] ?? first;
+      const first = realTimes[0]!;
+      const second = realTimes[1] ?? first;
+      const last = realTimes[count - 1]!;
+      const beforeLast = realTimes[count - 2] ?? first;
       let indexFloat: number;
       if (tSec <= first) {
         indexFloat = second === first
@@ -337,14 +346,14 @@ export function makePositions(
         let hi = count - 1;
         while (hi - lo > 1) {
           const mid = (lo + hi) >> 1;
-          if (barTimes[mid]! <= tSec) {
+          if (realTimes[mid]! <= tSec) {
             lo = mid;
           } else {
             hi = mid;
           }
         }
-        const span = barTimes[hi]! - barTimes[lo]!;
-        indexFloat = lo + (span === 0 ? 0 : (tSec - barTimes[lo]!) / span);
+        const span = realTimes[hi]! - realTimes[lo]!;
+        indexFloat = lo + (span === 0 ? 0 : (tSec - realTimes[lo]!) / span);
       }
       // Before the first bar: extend at the first two bars' pixel pace.
       if (indexFloat < 0) {
@@ -355,52 +364,24 @@ export function makePositions(
         }
         return next === null ? edge : edge + (edge - next) * -indexFloat;
       }
-      // After the last bar: extend at the last two bars' pixel pace. This is
-      // the margin a trend line is drawn into when the window will not
-      // scroll further - the anchor must land where the click landed, not
-      // snap back onto the newest candle.
       if (indexFloat > count - 1) {
         const edge = pxAt(count - 1);
+        const before = pxAt(count - 2);
         if (edge === null) {
           return null;
         }
-        const prior = pxAt(count - 2);
-        const over = indexFloat - (count - 1);
-        return prior === null ? edge : edge + (edge - prior) * over;
+        return before === null
+          ? edge
+          : edge + (edge - before) * (indexFloat - (count - 1));
       }
-      // Two real bars to lean on: the nearest visible pixel at or under
-      // this index and the nearest at or above it. Bars the viewport left
-      // have no pixels; the lean goes to the visible bracket, so a segment
-      // that clips the screen edge still draws like the engine's own line.
-      const start = Math.max(0, Math.min(count - 1, Math.floor(indexFloat)));
-      let leftIdx: number | null = null;
-      let rightIdx: number | null = null;
-      for (let k = start; k >= 0 && leftIdx === null; k -= 1) {
-        if (pxAt(k) !== null) {
-          leftIdx = k;
-        }
+      const from = Math.floor(indexFloat);
+      const to = Math.min(count - 1, from + 1);
+      const left = pxAt(from);
+      const right = pxAt(to);
+      if (left === null || right === null) {
+        return left ?? right;
       }
-      for (let k = start + 1; k < count && rightIdx === null; k += 1) {
-        if (pxAt(k) !== null) {
-          rightIdx = k;
-        }
-      }
-      if (leftIdx === null && rightIdx === null) {
-        return null;
-      }
-      const a = leftIdx ?? rightIdx!;
-      const bIdx = rightIdx ?? a;
-      if (a === bIdx) {
-        const only = pxAt(a);
-        return only === null ? null : only;
-      }
-      const l = pxAt(a);
-      const r = pxAt(bIdx);
-      if (l === null || r === null) {
-        return null;
-      }
-      const frac = (indexFloat - a) / (bIdx - a);
-      return l + (r - l) * frac;
+      return left + (right - left) * (indexFloat - from);
     },
     yAt(price: number): number {
       return candles.priceToCoordinate(price) ?? 0;
