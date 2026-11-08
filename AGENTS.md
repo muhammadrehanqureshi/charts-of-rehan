@@ -11,9 +11,9 @@ it does not ship.
 1. Everything goes through a pull request. `scripts/land.sh` is the only path
    to master: feature branch, guarded repository identity, CI green, merge,
    branch deleted. Nobody writes to master directly, no exceptions.
-2. The agent is the contributor. The flow hardcodes
-   `Co-Authored-By: Codebuff <noreply@codebuff.com>` on every commit, every PR
-   body and every merge commit, so the record shows who did the work.
+2. The owner is the contributor. Do not add any AI, agent, tool or
+   co-author attribution to a commit, pull request body or merge commit.
+   The landing flow records only the owner's own message.
 3. Never idle and never sleep while working. A step that must wait (CI, a
    service boot) waits through the flow's own blocking mechanism
    (`gh pr checks --watch` or land.sh's internal wait) while useful work

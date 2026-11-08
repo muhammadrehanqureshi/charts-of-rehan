@@ -163,6 +163,9 @@ class LandingWorkflowTest(unittest.TestCase):
         self.assertTrue((self.state / "merged").is_file())
         log = self.git("-C", str(self.remote), "log", "--oneline", "master")
         self.assertIn("Sandbox: land through the stubbed publish phase", log)
+        body = self.git("-C", str(self.remote), "log", "-1", "--format=%B",
+                        "master")
+        self.assertNotIn("co-authored-by", body.lower())
         head = self.git("-C", str(self.work), "rev-parse",
                         "--abbrev-ref", "HEAD").strip()
         self.assertEqual(head, "master", "the checkout ends on the base branch")
