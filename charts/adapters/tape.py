@@ -61,8 +61,9 @@ from charts.archive import (  # noqa: E402
     capture_candidates, identify,
 )
 from charts.adapters.base import Capabilities  # noqa: E402
+from charts.candle_cache import CandleCache, CacheError  # noqa: E402
 from charts.contract import (  # noqa: E402
-    RESOLUTION_MINUTE, SOURCE_TAPE, Bar, SourceInfo,
+    RESOLUTION_MINUTE, SOURCE_TAPE, Bar, ContractError, SourceInfo,
 )
 from charts.eod import EodStore, decade_start  # noqa: E402
 from charts.ratelimit import UpstreamError  # noqa: E402
@@ -348,6 +349,7 @@ class TapeSource:
                  capture_dirs=None, archive_dir: Path | str | None = None,
                  eod_dir: Path | str | None = None,
                  indices_dir: Path | str | None = None,
+                 cache_path: Path | str | None = None,
                  day: date | str | None = None) -> None:
         self._clock = clock
         self._universe_path = Path(universe_path) if universe_path else None
@@ -356,6 +358,13 @@ class TapeSource:
         self._archive = SessionArchive(archive_dir or DEFAULT_ARCHIVE_DIR)
         self._eod = EodStore(eod_dir or EodStore().root)
         self._indices = IndexStore(indices_dir)
+        #: The disposable candle cache, or None when the caller did not ask
+        #: for one. Off is the library default on purpose: a test or an
+        #: embedder must never discover a cache file it did not name, and the
+        #: command line turns it on only for the long-running service, where
+        #: not re-walking a capture is the whole point.
+        self._candle_cache = (CandleCache(cache_path)
+                              if cache_path is not None else None)
         # A calendar rung reads every banked EOD day, and a decade's worth is
         # a few seconds of first-request file reads on the machine running
         # this. Warming the store as the service wakes costs one background
@@ -1238,13 +1247,82 @@ class TapeSource:
         if spec.subminute:
             return self._cal_tail(
                 self.filled_symbol_bars(session, canonical, symbol), limit)
+        if session != self.today():
+            # A finished session is immutable, so its folded rungs can be
+            # cached by identity. Today is still forming: caching it would
+            # serve a candle that has already moved, so it always takes the
+            # live path below.
+            return self._cached_intraday_history(symbol, canonical, session,
+                                                 limit)
         bars = self._minute_history(symbol, session)
-        folded = ladder.aggregate(bars, canonical)
-        return self._cal_tail(folded, limit)
+        return self._cal_tail(ladder.aggregate(bars, canonical), limit)
 
     @staticmethod
     def _cal_tail(bars: list[Bar], limit: int) -> list[Bar]:
         return bars[-limit:] if limit and limit > 0 else bars
+
+    def _session_identity(self, session: date) -> str | None:
+        """A stable identity for the bytes behind one finished session.
+
+        The archive's manifest wins: it records the capture's own SHA-256 at
+        the moment the day was built, which is the identity the archive
+        itself proves. A day that has not been archived yet falls back to the
+        capture file's (name, size, mtime) - the same cheap identity the
+        in-memory day cache uses, and one that changes exactly when the
+        recorder appends. None means nothing on disk identifies this session,
+        and the caller then neither reads nor writes a cache.
+        """
+        summary = self._archive.summary(session)
+        if summary is not None and summary.capture:
+            capture = summary.capture
+            digest = str(capture.get("sha256") or "")
+            if digest:
+                return f"archive:{digest}:{capture.get('bytes', 0)}"
+        path = self.capture_for(session)
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        return f"capture:{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+
+    def _cached_intraday_history(self, symbol: str, resolution: str,
+                                 session: date, limit: int) -> list[Bar]:
+        """One finished session's rung, from the cache when it still matches.
+
+        The cache is a convenience, never an authority: a missing entry, a
+        stale identity or a store that cannot be read all fall through to the
+        builder below, which is the path this adapter has always taken. A
+        cache failure is therefore never a chart failure.
+        """
+        cache = self._candle_cache
+        identity = (self._session_identity(session)
+                    if cache is not None else None)
+        if cache is not None and identity is not None:
+            try:
+                if cache.session_capture(symbol, resolution,
+                                         session) == identity:
+                    rows = cache.read(symbol, resolution, day=session)
+                    if rows:
+                        return self._cal_tail(rows, limit)
+            except CacheError:
+                pass  # a cache that cannot answer is a cache miss
+
+        bars = ladder.aggregate(self._minute_history(symbol, session),
+                                resolution)
+        if cache is not None and bars:
+            # The identity is taken *after* the build: building a finished
+            # day archives it best-effort, and the archive's own hash is the
+            # identity a later run will compare against.
+            final = self._session_identity(session)
+            if final is not None:
+                try:
+                    cache.put_session(symbol, resolution, bars, day=session,
+                                      capture=final)
+                except (CacheError, ContractError):
+                    pass  # refusing to store is never a reason to fail a read
+        return self._cal_tail(bars, limit)
 
     def _minute_history(self, symbol: str, session: date) -> list[Bar]:
         """One session's one-minute bars, from the archive or the capture."""

@@ -46,6 +46,10 @@ interface Token {
 
 type Node =
   | { kind: "number"; value: number }
+  // A string is a title, a tooltip or a colour name. Pine lets a script store
+  // one (`title = "Trend EMA"`), and the chart must read that line rather
+  // than refuse the whole study over a label it will not draw.
+  | { kind: "string"; value: string }
   | { kind: "ref"; name: string }
   | { kind: "unary"; op: string; operand: Node }
   | { kind: "binary"; op: string; left: Node; right: Node }
@@ -398,6 +402,11 @@ class Parser {
     if (token.kind === "number") {
       this.depth -= 1;
       return { kind: "number", value: Number(token.text) };
+    }
+    if (token.kind === "string") {
+      // Quotes included in `text`; the value keeps the inside only.
+      this.depth -= 1;
+      return { kind: "string", value: token.text.slice(1, -1) };
     }
     if (token.kind === "ident") {
       const name = token.text.toLowerCase();
@@ -854,6 +863,11 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
     switch (node.kind) {
       case "number":
         return node.value;
+      case "string":
+        // A string is never a price. It evaluates to `na`, which is what a
+        // setting already evaluates to, so a later numeric use is an honest
+        // NaN rather than a silent zero.
+        return Number.NaN;
       case "ref": {
         const held = env.get(node.name);
         if (held !== undefined) {

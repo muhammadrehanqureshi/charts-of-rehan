@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anchorAt, breakPlan, fibLevels, frameFor, makePositions,
-  monthText, paintSessionBreaks, profileLevels, volumeProfile,
+  paintSessionBreaks, profileLevels, volumeProfile,
 } from "./overlay";
 import type { SessionBreak } from "./sessions";
 
@@ -75,17 +75,14 @@ describe("break plan", () => {
     return { breaks, xOf: (t: number) => xByTime.get(t) ?? null };
   }
 
-  it("a roomy chart lines and labels every day join it can see", () => {
+  it("a roomy chart lines every day join it can see", () => {
     const { breaks, xOf } = mappedChart([
       ["2026-10-19", 100, true],
       ["2026-10-20", 300],
       ["2026-10-21", 500],
     ]);
     const plan = breakPlan(breaks, xOf, 800);
-    expect(plan.filter((item) => item.line)
-      .map((item) => item.x)).toEqual([300, 500]);
-    expect(plan.filter((item) => item.text !== null)
-      .map((item) => item.text)).toEqual(["20 Oct", "21 Oct"]);
+    expect(plan.map((item) => item.x)).toEqual([300, 500]);
   });
 
   it("puts the rule between the two sessions' candles, not through one", () => {
@@ -98,7 +95,7 @@ describe("break plan", () => {
     // belongs in the half-slot between their candles.
     const x = new Map([[previous, 100], [first, 120]]);
     const plan = breakPlan(breaks, (t) => x.get(t) ?? null, 700);
-    expect(plan.find((item) => item.line)?.x).toBe(110);
+    expect(plan[0]?.x).toBe(110);
   });
 
   it("a daily-grain dense chart says months, not one date per day", () => {
@@ -109,17 +106,9 @@ describe("break plan", () => {
     }
     const { breaks, xOf } = mappedChart(entries);
     const plan = breakPlan(breaks, xOf, 700);
-    const lines = plan.filter((item) => item.line);
-    const texts = plan.filter((item) => item.text !== null);
-    // One pixel a month: nothing after the first join earns a line, and
-    // the crowded month names collapse to the first one that fits.
-    expect(lines).toHaveLength(1);
-    expect(texts.map((item) => item.text)).toEqual(["Feb"]);
-  });
-
-  it("a month name carries its year only where it would be ambiguous", () => {
-    expect(monthText("2025-07-21")).toBe("Jul");
-    expect(monthText("2026-01-05")).toBe("Jan '26");
+    // One pixel a month: only the first join that has room earns a rule.
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.x).toBe(1);
   });
 
   it("a crowded span falls to the month's rule, intraday or not", () => {
@@ -133,8 +122,7 @@ describe("break plan", () => {
     // Ten session joins inside 50 pixels are unreadable at any cadence a
     // session could earn: the plan keeps the month's rule, the same
     // culling daily rows have always obeyed.
-    expect(breakPlan(breaks, xOf, 700, false)
-      .filter((item) => item.line)).toHaveLength(1);
+    expect(breakPlan(breaks, xOf, 700, false)).toHaveLength(1);
   });
 
   it("a roomy intraday window keeps every session rule", () => {
@@ -145,8 +133,7 @@ describe("break plan", () => {
       ]);
     }
     const { breaks, xOf } = mappedChart(entries);
-    expect(breakPlan(breaks, xOf, 700, false)
-      .filter((item) => item.line)).toHaveLength(5);
+    expect(breakPlan(breaks, xOf, 700, false)).toHaveLength(5);
   });
 
   it("paints only the intraday rule; the axis owns the dates", () => {
@@ -184,21 +171,6 @@ describe("break plan", () => {
     expect(ops).toContain("line:300.5,520");
   });
 
-  it("a label never lands on its neighbour's words", () => {
-    // Room for lines, not for two day names beside each other: only the
-    // joins with space to the previous label keep their text.
-    const { breaks, xOf } = mappedChart([
-      ["2026-10-19", 100, true],
-      ["2026-10-20", 110],
-      ["2026-10-21", 130],
-      ["2026-10-22", 660],
-      ["2026-10-23", 680],
-    ]);
-    const plan = breakPlan(breaks, xOf, 700);
-    const texts = plan.filter((item) => item.text !== null);
-    expect(texts.map((item) => item.text)).toEqual(["20 Oct", "22 Oct"]);
-  });
-
   it("breaks off the drawn panel are decided away entirely", () => {
     const { breaks, xOf } = mappedChart([
       ["2026-10-19", 50, true],
@@ -206,7 +178,7 @@ describe("break plan", () => {
       ["2026-10-21", 900],
     ]);
     const plan = breakPlan(breaks, xOf, 700);
-    expect(plan.filter((item) => item.line)).toHaveLength(1);
+    expect(plan).toHaveLength(1);
   });
 
   it("nothing visible is an empty plan", () => {

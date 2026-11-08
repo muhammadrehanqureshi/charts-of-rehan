@@ -1,5 +1,5 @@
 /**
- * Session boundaries inside one chart.
+ * Session boundaries inside one chart, decided once for every timeframe.
  *
  * A chart that merges several days packs the sessions edge to edge: Friday's
  * 11:59 is followed by Friday's 14:32 with nothing between them, and a
@@ -8,19 +8,34 @@
  * dashed rule wherever the exchange's session changes.
  *
  * PSX does not have one shape per date. Monday to Thursday trade one band;
- * Friday trades two, with the exchange's own midday break between them. This
- * module mirrors the schedule in `src/data/sessions.py`, the repository's
- * authority on market phase, and cites the exchange's published hours:
+ * Friday trades two, with the exchange's own midday break between them. The
+ * canonical statement of those hours is `src/data/sessions.py`, and the server
+ * already sends resolved session facts in every payload. This module therefore
+ * accepts a `SessionSchedule` built from the service's own session list, so a
+ * changed exchange hour reaches the drawing code as data rather than as a
+ * second copy of the table. The weekday constants below are the fallback for a
+ * payload from a service that does not send one, and they mirror the same
+ * schedule:
  * https://www.psx.com.pk/psx/exchange/general/trading-hours
  *
- * The functions are pure and timezone-explicit: every key is built from the
- * Karachi date and clock, never the viewer's own zone, so a laptop in another
- * timezone still finds the exchange's sessions.
+ * Two properties matter for visual consistency across the ladder:
+ *
+ *  - **One policy table.** Every rung declares whether it carries intraday
+ *    session rules and whether it may carry daily EOD rows. A `Record` over
+ *    the `Resolution` union means a new rung cannot compile without an
+ *    answer, so no rung silently renders with a different rule set.
+ *  - **One rule.** A rule is drawn wherever `(Karachi day, session band)`
+ *    changes, for every intraday rung. Band membership is computed from
+ *    integer day and minute arithmetic, so the pass allocates nothing per bar
+ *    while a long history is being replayed.
  */
 
 import type { Resolution } from "../api/types";
 
 const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
+const DAY_MS = 86_400_000;
+const MINUTE_MS = 60_000;
+const MINUTES_PER_DAY = 24 * 60;
 
 const dayLabelFormat = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Karachi",
@@ -35,7 +50,7 @@ const monthLabelFormat = new Intl.DateTimeFormat("en-GB", {
 });
 
 /** A band is [open, close) in minutes after midnight, Karachi time. */
-type SessionBand = readonly [open: number, close: number];
+export type SessionBand = readonly [open: number, close: number];
 
 const WEEKDAY_OPEN = 9 * 60 + 32;
 const WEEKDAY_CLOSE = 15 * 60 + 30;
@@ -50,34 +65,120 @@ const FRIDAY_BANDS: readonly SessionBand[] = [
   [FRIDAY_SECOND_OPEN, FRIDAY_CLOSE],
 ];
 
-/**
- * Intraday rungs that carry session rules. Calendar rungs are deliberately
- * absent: a daily, weekly or monthly candle already is a whole session, so an
- * intraday open/close rule through it would be a lie about its grain.
- */
-const SESSION_BREAK_RUNGS: ReadonlySet<Resolution> = new Set<Resolution>([
-  "1s", "10s", "1m", "5m", "10m", "15m", "30m", "1h", "4h",
-]);
+/** What the renderer must know about one rung before drawing it. */
+export interface RungPolicy {
+  /** Does a change of trading session draw a rule on this rung? */
+  readonly breaks: boolean;
+  /**
+   * May this rung carry daily EOD rows (stamped Karachi noon) behind its
+   * recorded sessions? Those rows are calendar history, not intraday bars, so
+   * on these rungs they are excluded from the session-rule pass. On the
+   * minute and second rungs the flag is false, which matters: noon is a real
+   * intraday bar there and must not be discarded.
+   */
+  readonly calendarGrain: boolean;
+}
 
 /**
- * Rungs that append daily EOD rows behind their recorded sessions. Those rows
- * are stamped at Karachi noon; they are calendar history, not intraday bars,
- * and must stay out of the session-rule pass or a decade of them turns the
- * chart into a dashed forest.
+ * Every rung's policy, in one exhaustive table.
  *
- * The minute and second rungs never request this backfill, which matters:
- * noon is a real intraday bar on a 1m chart and must not be discarded.
+ * Calendar rungs get no intraday rules: a daily, weekly or monthly candle
+ * already is a whole session, so an open/close rule through it would be a lie
+ * about its grain.
  */
-const DAILY_BACKFILL_RUNGS: ReadonlySet<Resolution> = new Set<Resolution>([
-  "10m", "15m", "30m", "1h", "4h",
-]);
+export const RUNG_POLICY: Readonly<Record<Resolution, RungPolicy>> = {
+  "1s": { breaks: true, calendarGrain: false },
+  "10s": { breaks: true, calendarGrain: false },
+  "1m": { breaks: true, calendarGrain: false },
+  "5m": { breaks: true, calendarGrain: false },
+  "10m": { breaks: true, calendarGrain: true },
+  "15m": { breaks: true, calendarGrain: true },
+  "30m": { breaks: true, calendarGrain: true },
+  "1h": { breaks: true, calendarGrain: true },
+  "4h": { breaks: true, calendarGrain: true },
+  "1D": { breaks: false, calendarGrain: false },
+  "1d": { breaks: false, calendarGrain: false },
+  session: { breaks: false, calendarGrain: false },
+  "1W": { breaks: false, calendarGrain: false },
+  "1M": { breaks: false, calendarGrain: false },
+};
 
 export function hasSessionBreaks(resolution: Resolution): boolean {
-  return SESSION_BREAK_RUNGS.has(resolution);
+  return RUNG_POLICY[resolution]?.breaks ?? false;
 }
 
 export function hasDailyBackfill(resolution: Resolution): boolean {
-  return DAILY_BACKFILL_RUNGS.has(resolution);
+  return RUNG_POLICY[resolution]?.calendarGrain ?? false;
+}
+
+/** One session day as the service states it: a date and its trading bands. */
+export interface ScheduledDay {
+  readonly day: string;
+  readonly bands: readonly { readonly open: string; readonly close: string }[];
+}
+
+/**
+ * The bands each day actually traded, converted once for cheap lookups.
+ *
+ * Keyed by Karachi day *number* rather than by date string, because the
+ * renderer asks this question once per bar and a string key would allocate a
+ * date per bar. A day absent from the table falls back to the weekday mirror,
+ * so a partial schedule degrades rather than deleting rules.
+ */
+export interface SessionSchedule {
+  readonly byDay: ReadonlyMap<number, readonly SessionBand[]>;
+}
+
+/** Parse "HH:MM" to minutes after midnight; NaN when it is not a clock. */
+function parseClock(text: string): number {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
+  if (match === null) {
+    return Number.NaN;
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)
+      || hour < 0 || hour > 24 || minute < 0 || minute > 59) {
+    return Number.NaN;
+  }
+  return hour * 60 + minute;
+}
+
+/**
+ * Build a schedule from the service's own session rows.
+ *
+ * A malformed day or band is skipped rather than guessed at: the fallback
+ * table then describes that day, which is the same answer a service with no
+ * schedule would give.
+ */
+export function scheduleFrom(
+  rows: readonly ScheduledDay[],
+): SessionSchedule {
+  const byDay = new Map<number, readonly SessionBand[]>();
+  for (const row of rows) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.day) || row.bands.length === 0) {
+      continue;
+    }
+    // `dayNumber` counts Karachi days, and a date's UTC midnight is the same
+    // integer: the schedule is keyed exactly the way a bar asks for it, with
+    // no offset arithmetic of its own to get wrong.
+    const dayStart = Date.parse(`${row.day}T00:00:00Z`);
+    if (!Number.isFinite(dayStart)) {
+      continue;
+    }
+    const bands: SessionBand[] = [];
+    for (const band of row.bands) {
+      const open = parseClock(band.open);
+      const close = parseClock(band.close);
+      if (Number.isFinite(open) && Number.isFinite(close) && close > open) {
+        bands.push([open, close]);
+      }
+    }
+    if (bands.length > 0) {
+      byDay.set(Math.floor(dayStart / DAY_MS), bands);
+    }
+  }
+  return { byDay };
 }
 
 export interface SessionBreak {
@@ -93,18 +194,38 @@ export interface SessionBreak {
   readonly previous?: number | undefined;
 }
 
+/** Whole Karachi days since the epoch; the identity of a session date. */
+function dayNumber(ms: number): number {
+  return Math.floor((ms + KARACHI_OFFSET_MS) / DAY_MS);
+}
+
+/** The `YYYY-MM-DD` Karachi date of a day number. */
+function dayText(day: number): string {
+  return new Date(day * DAY_MS).toISOString().slice(0, 10);
+}
+
+/** Minutes after Karachi midnight, 0 to 1439. */
+function minuteOfDay(ms: number): number {
+  return Math.floor(((ms + KARACHI_OFFSET_MS) % DAY_MS) / MINUTE_MS);
+}
+
+/** 0 = Sunday, matching `Date#getUTCDay`, without allocating a Date. */
+function weekdayOf(day: number): number {
+  return (((day % 7) + 4) % 7);
+}
+
 /**
  * A daily EOD bar is stamped at Karachi noon, which is 07:00 UTC. It is a
- * calendar row, not an intraday session bar. The conversion is explicit
- * because the exchange's clock has no DST.
+ * calendar row, not an intraday session bar. The exchange's clock has no DST,
+ * so the conversion is integer arithmetic and never touches a Date.
  */
 export function isDailyGrainStamp(ms: number): boolean {
   if (!Number.isFinite(ms)) {
     return false;
   }
-  const at = new Date(ms);
-  return at.getUTCHours() === 7 && at.getUTCMinutes() === 0
-    && at.getUTCSeconds() === 0;
+  const local = ms + KARACHI_OFFSET_MS;
+  return local % MINUTE_MS === 0
+    && Math.floor(local / MINUTE_MS) % MINUTES_PER_DAY === 12 * 60;
 }
 
 /**
@@ -137,14 +258,25 @@ export function intradayStamps(
   return out;
 }
 
-interface SessionSlot {
-  /** Karachi day plus the band index in that day's session shape. */
-  readonly key: string;
-  readonly day: string;
+/** The bands in force on one Karachi day, or undefined outside the week. */
+function bandsFor(
+  day: number,
+  schedule?: SessionSchedule,
+): readonly SessionBand[] | undefined {
+  const scheduled = schedule?.byDay.get(day);
+  if (scheduled !== undefined && scheduled.length > 0) {
+    return scheduled;
+  }
+  const weekday = weekdayOf(day);
+  if (weekday >= 1 && weekday <= 5) {
+    return weekday === 5 ? FRIDAY_BANDS : WEEKDAY_BANDS;
+  }
+  return undefined;
 }
 
 /**
- * The session shape a Karachi instant belongs to.
+ * The session slot a Karachi instant belongs to: day number plus band, packed
+ * into one integer so the hot loop compares numbers instead of strings.
  *
  * A real band owns its instant. Bars just outside a band (a pre-open print or
  * a post-close one) are attached to the nearest band of that day so they do
@@ -152,30 +284,31 @@ interface SessionSlot {
  * band: the break is then the move into the 14:32 band, not a second edge
  * inside the lunch.
  */
-function sessionSlot(ms: number): SessionSlot {
-  const at = new Date(ms + KARACHI_OFFSET_MS);
-  const day = at.toISOString().slice(0, 10);
-  const weekday = at.getUTCDay();
-  const minute = at.getUTCHours() * 60 + at.getUTCMinutes();
-
+function slotId(ms: number, schedule?: SessionSchedule): number {
+  const day = dayNumber(ms);
+  const bands = bandsFor(day, schedule);
+  const minute = minuteOfDay(ms);
   let band = -1;
-  if (weekday >= 1 && weekday <= 5) {
-    const bands = weekday === 5 ? FRIDAY_BANDS : WEEKDAY_BANDS;
-    band = bands.findIndex(([open, close]) =>
-      minute >= open && minute < close,
-    );
+  if (bands !== undefined) {
+    band = bands.findIndex(([open, close]) => minute >= open && minute < close);
     if (band < 0) {
-      if (minute < bands[0]![0]) {
-        band = 0;
-      } else if (weekday === 5 && minute < FRIDAY_SECOND_OPEN) {
-        // The Friday lunch: 12:00 up to the second open.
+      if (minute < (bands[0]?.[0] ?? 0)) {
         band = 0;
       } else {
+        // The nearest preceding band: the Friday lunch attaches to the
+        // morning, and an after-close print attaches to the last band.
         band = bands.length - 1;
+        for (let index = 0; index < bands.length; index += 1) {
+          if (minute >= (bands[index]?.[0] ?? 0)) {
+            band = index;
+          }
+        }
       }
     }
   }
-  return { day, key: `${day}:${band}` };
+  // 1024 leaves room for every band a session could plausibly have without
+  // the packed key colliding across days, and stays inside exact integers.
+  return day * 1024 + band + 1;
 }
 
 /**
@@ -187,34 +320,39 @@ function sessionSlot(ms: number): SessionSlot {
  * still returned (with `first: true`) so callers can anchor it, but the
  * renderer does not draw a rule before the series begins.
  *
- * The bar list is filtered by resolution first: coarse charts carry daily
- * backfill rows, and those rows must not earn rules of their own.
+ * The rung's own policy is applied here, not by the caller: a calendar rung
+ * yields no intraday rules even if a caller forgets to ask, which is the
+ * whole point of keeping the policy in one table.
  */
 export function sessionBreaks(
   times: ArrayLike<number>,
   resolution: Resolution,
+  schedule?: SessionSchedule,
 ): SessionBreak[] {
+  if (!hasSessionBreaks(resolution)) {
+    return [];
+  }
   const out: SessionBreak[] = [];
-  let lastKey = "";
+  let lastSlot = Number.NaN;
   let previous: number | undefined;
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
     if (t === undefined || !isIntradayStamp(t, resolution)) {
       continue;
     }
-    const slot = sessionSlot(t);
-    if (slot.key === lastKey) {
+    const slot = slotId(t, schedule);
+    if (slot === lastSlot) {
       previous = t;
       continue;
     }
     out.push({
       t,
-      day: slot.day,
+      day: dayText(dayNumber(t)),
       label: dayLabelFormat.format(new Date(t)),
       first: out.length === 0,
       ...(previous !== undefined ? { previous } : {}),
     });
-    lastKey = slot.key;
+    lastSlot = slot;
     previous = t;
   }
   return out;
@@ -240,15 +378,15 @@ export function calendarBreaks(times: ArrayLike<number>): SessionBreak[] {
     if (t === undefined || !isDailyGrainStamp(t)) {
       continue;
     }
-    const slot = sessionSlot(t);
-    const month = slot.day.slice(0, 7);
+    const day = dayText(dayNumber(t));
+    const month = day.slice(0, 7);
     if (month === lastMonth) {
       previous = t;
       continue;
     }
     out.push({
       t,
-      day: slot.day,
+      day,
       label: monthLabelFormat.format(new Date(t)),
       first: out.length === 0,
       ...(previous !== undefined ? { previous } : {}),
