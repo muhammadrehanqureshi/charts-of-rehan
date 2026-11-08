@@ -49,6 +49,15 @@ describe("multi-statement scripts", () => {
     expect(out[2]).toBeCloseTo(5);
   });
 
+  it("accepts a string assignment, which is a label and never a number", () => {
+    // The exact line a pasted study failed on: `G_TREND = "Trend EMA"`.
+    // A title is allowed to live in a variable; using it as a price is not.
+    expect(() => validateFormula('G_TREND = "Trend EMA"\nclose')).not.toThrow();
+    const out = compileFormula('G_TREND = "Trend EMA"\nG_TREND')
+      (dataFor([1, 2, 3]));
+    expect([...out].every(Number.isNaN)).toBe(true);
+  });
+
   it("accepts plot() and hline() as the drawing wrappers a script carries", () => {
     expect(() => validateFormula("plot(ema(close, 3))")).not.toThrow();
     const run = compileFormula("hline(100) + change(close)");
