@@ -40,7 +40,7 @@ def main() -> None:
     full.resize((128, 128), Image.LANCZOS).save(
         assets / "charts-of-rehan-128.png")
     full.resize((256, 256), Image.LANCZOS).save(
-        assets / "charts-of-rehan.ico", format="ICO",
+        assets / "charts-of-rehan-official.ico", format="ICO",
         sizes=[(size, size) for size in ICO_SIZES])
     full.resize((256, 256), Image.LANCZOS).save(
         public / "favicon.ico", format="ICO",
@@ -51,7 +51,7 @@ def main() -> None:
     print(f"source {SOURCE} {full.width}x{full.height}")
     for path in (SOURCE,
                  assets / "charts-of-rehan-128.png",
-                 assets / "charts-of-rehan.ico",
+                 assets / "charts-of-rehan-official.ico",
                  public / "logo.png",
                  public / "favicon.ico",
                  public / "apple-touch-icon.png"):
