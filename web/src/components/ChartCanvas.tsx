@@ -175,6 +175,13 @@ interface PaneRef {
   readonly pane?: number;
 }
 
+interface ChartTimeMap {
+  /** Presentation seconds, one per accepted bar, ascending by one. */
+  readonly chartSec: readonly number[];
+  /** The tape's real instants, parallel to `chartSec`. */
+  readonly realMs: readonly number[];
+}
+
 interface EngineState {
   readonly chart: IChartApi;
   readonly candles: ISeriesApi<"Candlestick", Time>;
@@ -186,12 +193,42 @@ interface EngineState {
   /** The plate under the candles is delta (buy - sell), not raw volume. */
   deltaShown: boolean;
   data: SeriesData | null;
-  /** The candles' own epoch seconds, ascending: the drawing clip's bars. */
+  /** The packed presentation instants, in ms: the drawing clip's bars. */
   barTimes: number[];
+  /** The tape's real instants in ms, parallel to `barTimes`. */
+  realTimes: number[];
+  /** Real ms by data index, NaN where the engine skipped a duplicate. */
+  chartTimes: number[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
   /** Month starts across the daily-grain history behind those sessions. */
   calendarBreaks: readonly SessionBreak[];
+}
+
+/** The nearest value at or below `value`, or -1 for an empty list. */
+function nearestIndex(values: readonly number[], value: number): number {
+  if (values.length === 0) {
+    return -1;
+  }
+  let lo = 0;
+  let hi = values.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if ((values[mid] ?? Number.POSITIVE_INFINITY) <= value) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+/** A presentation instant back to the tape's own millisecond instant. */
+function realFromChartMs(state: EngineState, chartMs: number): number {
+  const firstSec = (state.barTimes[0] ?? 0) / 1000;
+  const index = Math.round(chartMs / 1000 - firstSec);
+  const bounded = Math.max(0, Math.min(state.realTimes.length - 1, index));
+  return state.realTimes[bounded] ?? chartMs;
 }
 
 /** A hex colour at an alpha, for the muted volume under the candles. */
@@ -308,6 +345,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     b: AnchoredPoint | null;
   } | null>(null);
   const paintQueued = useRef(false);
+  const timeMap = useRef<ChartTimeMap>({ chartSec: [], realMs: [] });
 
   const showSeconds = resolution === "1s" || resolution === "10s";
 
@@ -328,7 +366,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       hour12: false,
     });
     return (time: Time, markType: TickMarkType): string => {
-      const moment = new Date(Number(time) * 1000);
+      const sec = Number(time);
+      const map = timeMap.current;
+      const index = nearestIndex(map.chartSec, sec);
+      const realMs = index >= 0 ? (map.realMs[index] ?? sec * 1000)
+        : sec * 1000;
+      const moment = new Date(realMs);
       if (Number.isNaN(moment.getTime())) {
         return "";
       }
@@ -341,8 +384,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (markType === TickMarkType.Month) {
         return karachiMonth.format(moment);
       }
+      // A packed axis has no calendar distance, so the day itself has to be
+      // named where a new session begins; otherwise 49 hourly bars have only
+      // a month label and every session rule reads the same.
+      const dayText = karachiDay.format(moment);
+      const before = index > 0 ? map.realMs[index - 1] : undefined;
+      if (before !== undefined
+          && karachiDay.format(new Date(before)) !== dayText) {
+        return dayText;
+      }
       if (markType === TickMarkType.DayOfMonth) {
-        return karachiDay.format(moment);
+        return dayText;
       }
       return showSeconds ? secondsFormat.format(moment)
         : karachiClock.format(moment);
@@ -577,8 +629,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (el === null || state === null) {
         return;
       }
-      const first = state.barTimes[0];
-      const firstIntraday = state.barTimes.find(
+      const first = state.realTimes[0];
+      const firstIntraday = state.realTimes.find(
         (stamp) => isIntradayStamp(stamp, resolution));
       const range = state.chart.timeScale().getVisibleLogicalRange();
       // An intraday tape is shorter than the calendar series behind it.
@@ -622,6 +674,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
       deltaShown: false,
       data: null,
       barTimes: [],
+      realTimes: [],
+      chartTimes: [],
       breaks: [],
       calendarBreaks: [],
     };
@@ -706,8 +760,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
     state.data = data;
     state.index.clear();
 
-    const candlesData: CandlestickData[] = [];
-    const volumeData: HistogramData[] = [];
+    // The engine places bars by wall-clock time, so a merged session chart
+    // would spend most of its width on nights and weekends. Pack the bars
+    // into consecutive presentation seconds, keeping the tape's real times
+    // beside them for the axis, the rules, the drawings and the legend.
+    const accepted: {
+      sourceIndex: number;
+      realMs: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }[] = [];
     let previous = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < length; i += 1) {
       const t = data.time[i];
@@ -723,46 +788,80 @@ export function ChartCanvas(props: ChartCanvasProps) {
         || !Number.isFinite(low) || !Number.isFinite(close)) {
         continue; // a bar the tape never priced is not a price of zero
       }
-      const seconds = Math.floor(t / 1000);
-      if (seconds <= previous) {
+      if (t <= previous) {
         continue;
       }
-      previous = seconds;
-      state.index.set(seconds, i);
-      candlesData.push({
-        time: seconds as UTCTimestamp, open, high, low, close,
+      previous = t;
+      accepted.push({
+        sourceIndex: i, realMs: t, open, high, low, close,
+        volume: data.volume[i] ?? Number.NaN,
       });
-      if (!wantsDelta) {
-        const value = data.volume[i];
-        if (value !== undefined && Number.isFinite(value)) {
-          volumeData.push({
-            time: seconds as UTCTimestamp,
-            value,
-            color: close >= open ? tokens.volumeUp : tokens.volumeDown,
-          });
-        }
-      }
     }
-    if (candlesData.length === 0) {
+    if (accepted.length === 0) {
       state.barTimes = [];
+      state.realTimes = [];
+      state.chartTimes = [];
       return;
     }
-    // The drawing anchors and the y-picks map from these; the whole
-    // drawing path speaks milliseconds, so keep them ms here too.
-    state.barTimes = candlesData.map((candle) => Number(candle.time) * 1000);
+    const baseSec = Math.floor(accepted[0]!.realMs / 1000);
+    const chartSec = accepted.map((_bar, index) => baseSec + index);
+    const realTimes = accepted.map((bar) => bar.realMs);
+    timeMap.current = { chartSec, realMs: realTimes };
+    const chartTimes = new Array<number>(length).fill(Number.NaN);
+    for (let index = 0; index < accepted.length; index += 1) {
+      chartTimes[accepted[index]!.sourceIndex] = (chartSec[index] ?? baseSec) * 1000;
+    }
+    state.realTimes = realTimes;
+    state.chartTimes = chartTimes;
+    state.barTimes = accepted.map((_bar, index) =>
+      (chartSec[index] ?? baseSec) * 1000);
+    state.index.clear();
+    const candlesData: CandlestickData[] = [];
+    const volumeData: HistogramData[] = [];
+    for (let index = 0; index < accepted.length; index += 1) {
+      const bar = accepted[index]!;
+      const time = (chartSec[index] ?? baseSec) as UTCTimestamp;
+      state.index.set(Number(time), bar.sourceIndex);
+      candlesData.push({
+        time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      });
+      if (!wantsDelta && Number.isFinite(bar.volume)) {
+        volumeData.push({
+          time,
+          value: bar.volume,
+          color: bar.close >= bar.open ? tokens.volumeUp : tokens.volumeDown,
+        });
+      }
+    }
+    const chartMsOf = (realMs: number): number => {
+      const index = nearestIndex(realTimes, realMs);
+      return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
+    };
     // Session rules follow the exchange's bands, not a mere date change:
     // Friday's two sessions need a rule at the lunch break too. Daily
     // backfill rows are calendar bars stamped at Karachi noon, so the
     // session pass drops them on the rungs that receive that backfill.
     state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(state.barTimes, resolution)
+      ? sessionBreaks(realTimes, resolution).map((item): SessionBreak => {
+          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
+          return item.previous === undefined ? moved
+            : { ...moved, previous: chartMsOf(item.previous) };
+        })
       : [];
     // A coarse rung carries a decade of daily rows behind its real sessions.
     // They have no intraday session boundary to draw, so use one month rule
     // per month instead of one per daily bar; the plan's dense mode spaces
     // those rules and labels them when the viewport is crowded.
     state.calendarBreaks = hasDailyBackfill(resolution)
-      ? calendarBreaks(state.barTimes)
+      ? calendarBreaks(realTimes).map((item): SessionBreak => {
+          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
+          return item.previous === undefined ? moved
+            : { ...moved, previous: chartMsOf(item.previous) };
+        })
       : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
@@ -917,7 +1016,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // drawing is mapped in bar-index space and never dropped for sitting
     // between bars.
     const positions = makePositions(state.chart, state.candles,
-      state.barTimes);
+      state.barTimes, state.realTimes);
     const drag = dragRef.current;
     const midDrag: MeasureResult | null = drag !== null
       && drag.kind === "measure" && drag.b !== null
@@ -1005,7 +1104,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
     x: number,
     y: number,
   ): AnchoredPoint | null => {
-    const direct = anchorAt(state.chart, state.candles, x, y);
+    const direct = anchorAt(state.chart, state.candles, x, y,
+      (chartMs) => realFromChartMs(state, chartMs));
     if (direct !== null) {
       return direct;
     }
@@ -1023,17 +1123,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const beforeLast = times[last - 1] ?? firstTime;
     if (index <= 0) {
       const pace = secondTime - firstTime;
-      return { t: firstTime + index * pace, price };
+      return { t: realFromChartMs(state, firstTime + index * pace), price };
     }
     if (index >= last) {
       const pace = beforeLast - lastTime;
-      return { t: lastTime + (index - last) * pace, price };
+      return { t: realFromChartMs(state, lastTime + (index - last) * pace), price };
     }
     const floorIndex = Math.floor(index);
     const t0 = times[floorIndex]!;
     const t1 = times[floorIndex + 1] ?? lastTime;
     return {
-      t: t0 + (t1 - t0) * (index - floorIndex),
+      t: realFromChartMs(state, t0 + (t1 - t0) * (index - floorIndex)),
       price,
     };
   };
@@ -1318,11 +1418,11 @@ function buildIndicators(
         const priorLine = existing.lines[li];
         const nextLine = output.lines[li];
         if (priorLine !== undefined && nextLine !== undefined) {
-          priorLine.setData(lineData(data, nextLine.values));
+          priorLine.setData(lineData(data, nextLine.values, state.chartTimes));
         }
       }
       if (existing.histogram !== undefined && output.histogram !== undefined) {
-        existing.histogram.setData(histData(data, output));
+        existing.histogram.setData(histData(data, output, state.chartTimes));
       }
       continue;
     }
@@ -1336,7 +1436,7 @@ function buildIndicators(
     }
     const lines: ISeriesApi<"Line", Time>[] = [];
     for (const line of output.lines) {
-      const points = lineData(data, line.values);
+      const points = lineData(data, line.values, state.chartTimes);
       if (points.length === 0) {
         continue;
       }
@@ -1352,7 +1452,7 @@ function buildIndicators(
     }
     let histogram: ISeriesApi<"Histogram", Time> | undefined;
     if (output.histogram !== undefined) {
-      const bars = histData(data, output);
+      const bars = histData(data, output, state.chartTimes);
       if (bars.length > 0) {
         histogram = state.chart.addSeries(HistogramSeries, {
           priceLineVisible: false,
@@ -1394,13 +1494,18 @@ function fixRange(
   });
 }
 
-function lineData(data: SeriesData, values: Float64Array): LineData[] {
+function lineData(
+  data: SeriesData,
+  values: Float64Array,
+  chartTimes: readonly number[],
+): LineData[] {
   const length = Math.min(data.time.length, values.length);
   const points: LineData[] = [];
   for (let i = 0; i < length; i += 1) {
     const value = values[i];
-    const t = data.time[i];
-    if (value === undefined || t === undefined || !Number.isFinite(value)) {
+    const t = chartTimes[i];
+    if (value === undefined || t === undefined || !Number.isFinite(value)
+        || !Number.isFinite(t)) {
       continue; // the warm-up bars an indicator does not have yet
     }
     points.push({ time: (t / 1000) as UTCTimestamp, value });
@@ -1411,6 +1516,7 @@ function lineData(data: SeriesData, values: Float64Array): LineData[] {
 function histData(
   data: SeriesData,
   output: IndicatorOutput,
+  chartTimes: readonly number[],
 ): HistogramData[] {
   const histogram = output.histogram;
   if (histogram === undefined) {
@@ -1420,8 +1526,9 @@ function histData(
   const points: HistogramData[] = [];
   for (let i = 0; i < length; i += 1) {
     const value = histogram.values[i];
-    const t = data.time[i];
-    if (value === undefined || t === undefined || !Number.isFinite(value)) {
+    const t = chartTimes[i];
+    if (value === undefined || t === undefined || !Number.isFinite(value)
+        || !Number.isFinite(t)) {
       continue;
     }
     points.push({

@@ -108,6 +108,10 @@ export function IndicatorsPanel(
                 </li>
               );
             }
+            const custom = spec.type === "formula"
+              && typeof spec.params["name"] === "string"
+              ? spec.params["name"].trim() : "";
+            const shown = custom.length > 0 ? custom : definition.label;
             const classes = ["indicator"];
             if (!spec.visible) {
               classes.push("indicator--off");
@@ -121,7 +125,7 @@ export function IndicatorsPanel(
                   type="color"
                   className="indicator__dot"
                   value={spec.color}
-                  aria-label={`${definition.label} colour`}
+                  aria-label={`${shown} colour`}
                   title="Line colour"
                   onChange={(event) => setColor(spec.id, event.target.value)}
                 />
@@ -131,7 +135,7 @@ export function IndicatorsPanel(
                   title={error ?? `${definition.description} - open the settings`}
                   onClick={() => onOpen?.(spec.id)}
                 >
-                  {definition.label}
+                  {shown}
                   {spec.placement === "pane" ? (
                     <span className="indicator__pane" aria-hidden="true">pane</span>
                   ) : null}
@@ -148,8 +152,8 @@ export function IndicatorsPanel(
                 <button
                   type="button"
                   className="indicator__icon"
-                  aria-label={`remove ${definition.label}`}
-                  title={`remove ${definition.label}`}
+                  aria-label={`remove ${shown}`}
+                  title={`remove ${shown}`}
                   onClick={() => remove(spec.id)}
                 >
                   ×

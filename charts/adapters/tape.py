@@ -838,7 +838,7 @@ class TapeSource:
         """
         wanted = symbol.strip().upper()
         span = max(0, int(days))
-        if span <= 1 or day:
+        if day:
             return self._delta_one(wanted, self.flow_day(day))
         # A merged chart's delta: the newest sessions that still have a
         # capture on disk, oldest first - the same days the chart itself
