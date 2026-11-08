@@ -84,12 +84,16 @@ export function StatusBar(props: StatusBarProps) {
   // and calling that fresh is the mistake this whole bar exists to avoid.
   const ageMinutes = ageInMinutes(lastBarAt, now);
   const stale = ageMinutes !== null && ageMinutes >= staleAfterMinutes;
+  // The chip describes the chart, not the socket: an open stream against a
+  // closed market is not live data, and saying LIVE beside MARKET CLOSED is
+  // the contradiction a reader notices first.
+  const chip = stateChip(status, market);
 
   return (
     <section className="status" aria-label="data status">
       <div className="status__row">
-        <span className={`status__state status__state--${status}`}>
-          {STATUS_TEXT[status]}
+        <span className={`status__state status__state--${chip.tone}`}>
+          {chip.text}
         </span>
         <span className="status__item">
           <span className="status__key">market</span>{" "}
@@ -212,6 +216,32 @@ export function StatusBar(props: StatusBarProps) {
       ) : null}
     </section>
   );
+}
+
+/**
+ * The state chip: a live stream is not a live market.
+ *
+ * The stream stays open after the exchange closes, so the chip used to read
+ * "live" while the next item on the same row read "market closed · not a
+ * trading day". The chip now follows the session law: a connected stream
+ * under a closed market reports the market, and only an open phase reports
+ * live. The socket's own states keep their names.
+ */
+export function stateChip(
+  status: FeedStatus,
+  market: MarketContext | null,
+): { text: string; tone: string } {
+  if (status !== "live" || market === null) {
+    return { text: STATUS_TEXT[status], tone: status };
+  }
+  const phase = market.phase.trim().toLowerCase().replace(/_/g, "-");
+  if (!market.trading_day || phase === "closed") {
+    return { text: "market closed", tone: "closed" };
+  }
+  if (phase === "open" || phase === "trading") {
+    return { text: "live", tone: "live" };
+  }
+  return { text: phase.length > 0 ? phase : "live", tone: status };
 }
 
 /** Minutes between a stamp and now, or null when the stamp is unusable. */

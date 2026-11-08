@@ -110,27 +110,17 @@ function spanFor(resolution: Resolution): number {
 }
 
 /**
- * How much older, coarser-grained history a rung's chart asks for, in
- * whole sessions.
+ * An intraday rung draws only its own grain.
  *
- * The tape's own intraday recording starts in October 2026, but the EOD
- * store holds the decade behind it. The coarse intraday rungs ask for that
- * decade as daily-grain bars; the chart labels the older stretch as daily
- * rather than pretending a whole-day candle is a ten-minute one. The fine
- * second and minute rungs keep their recorded span: a decade of daily rows
- * would not be a minute chart, and the daily rungs already carry that view.
+ * The coarse rungs used to append 2,600 daily candles behind their sessions,
+ * which is not a longer history but a chart where the same looking candle
+ * means a day in one stretch and an hour in another - and where a decade of
+ * days squeezes the recorded sessions into the last two percent of the axis.
+ * The daily rung already carries that decade. The panes are bounded for the
+ * same reason: folding every capture on disk to fill a side panel is what
+ * made opening a chart take twenty seconds.
  */
-const DAILY_BACKFILL_DEPTH: Partial<Record<Resolution, number>> = {
-  "10m": 2_600,
-  "15m": 2_600,
-  "30m": 2_600,
-  "1h": 2_600,
-  "4h": 2_600,
-};
-
-export function backfillFor(resolution: Resolution): number {
-  return DAILY_BACKFILL_DEPTH[resolution] ?? 0;
-}
+const PANE_SESSIONS = 3;
 
 /**
  * How many bars a rung's merged span may draw, end to end.
@@ -526,7 +516,6 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
-    backfillDays: day.length === 0 ? backfillFor(resolution) : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
   // live multi-day chart reads the merged span (days, unnamed), so every
@@ -535,10 +524,15 @@ export function App() {
   // its cadence is five seconds - the folds on the server are incremental
   // and always current, this only spaces out how often the browser redraws
   // a history the pane is not scrolling through.
-  const deltaSpan = day.length === 0 ? spanFor(resolution) : 0;
+  // The panes wait for the chart's own first answer and then read only the
+  // newest sessions: a side panel must never be the reason the candles are
+  // late, and a fold of every capture on disk is a minute of the owner's PC.
+  const panesReady = feed.meta.payload !== null;
+  const paneSpan = day.length === 0
+    ? Math.min(PANE_SESSIONS, spanFor(resolution)) : 0;
   const delta = useDelta(client, symbol,
     day.length === 0 ? "" : (feed.meta.session?.day ?? day),
-    symbol.length > 0, AUXILIARY_POLL_MS, deltaSpan);
+    symbol.length > 0 && panesReady, AUXILIARY_POLL_MS, paneSpan);
 
   // The venue's own book, for the plate under the volume split: a cadence
   // read that stops with the stored session and with the hidden tab.
@@ -549,8 +543,9 @@ export function App() {
   // machine budget. A stored drawn-from-archive session never grows, so
   // asking for its ledger would only read a file that is gone.
   const prints = usePrints(client, symbol, feed.meta.session?.day ?? day,
-    symbol.length > 0 && !(feed.meta.session?.archived ?? false),
-    AUXILIARY_POLL_MS, day.length === 0 ? spanFor(resolution) : 0);
+    symbol.length > 0 && panesReady
+      && !(feed.meta.session?.archived ?? false),
+    AUXILIARY_POLL_MS, paneSpan);
 
   const chooseSymbol = useCallback((next: string) => {
     setSymbol(next);
