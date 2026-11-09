@@ -44,13 +44,13 @@ export interface ToolbarProps {
 }
 
 /**
- * The daily-tail choices, in days.
+ * The daily-history choices, in days.
  *
- * Zero is a real choice: only recorded sessions, no daily stand-in candles. A
- * fortnight covers the gap this chart has produced (4-6 Nov); sixty days is
- * for reading a longer stretch of daily history beside the tape.
+ * Zero is a real choice: only recorded sessions, no daily context candles. A
+ * fortnight covers a gap the recorder may have missed; the full store is the
+ * decade behind the tape, which is what a reader pans back through.
  */
-const TAIL_CHOICES = [0, 5, 15, 30, 60] as const;
+const TAIL_CHOICES = [0, 15, 60, 2_600] as const;
 
 export function Toolbar(props: ToolbarProps) {
   const {
@@ -154,7 +154,8 @@ export function Toolbar(props: ToolbarProps) {
             >
               {TAIL_CHOICES.map((days) => (
                 <option key={days} value={days}>
-                  {days === 0 ? "no daily tail" : `tail ${days}d`}
+                  {days === 0 ? "no daily history"
+                    : days >= 2_600 ? "full history" : `tail ${days}d`}
                 </option>
               ))}
             </select>
