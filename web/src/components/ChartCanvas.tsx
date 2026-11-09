@@ -336,6 +336,13 @@ const karachiDay = new Intl.DateTimeFormat("en-GB", {
   month: "short",
 });
 
+const karachiDayYear = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Karachi",
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
+
 const karachiMonth = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Karachi",
   month: "short",
@@ -456,14 +463,22 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       // A packed axis has no calendar distance, so the day itself has to be
       // named where a new session begins; otherwise 49 hourly bars have only
-      // a month label and every session rule reads the same. The date is
-      // printed once, on the bar that opens it: a tick that lands mid-day,
-      // and a second tick that lands on the very same bar, print a clock
-      // instead, which is what stops two dates overlapping on the axis.
-      const opens = opensDay(map.realMs, index)
-        && index !== lastTickIndex.current;
+      // a month label and every session rule reads the same. One bar never
+      // prints twice: the engine can ask for two ticks that land on the same
+      // candle, and two labels on one candle is the overlap this replaces.
+      const repeated = index >= 0 && index === lastTickIndex.current;
       lastTickIndex.current = index;
-      if (opens) {
+      if (repeated) {
+        return "";
+      }
+      // The daily-grain history behind the tape is one candle per day, so a
+      // clock there would read "13:32" for a day that has no 13:32. Name the
+      // day instead: the axis then says what the bars are, at every zoom.
+      const stamp = index >= 0 ? map.realMs[index] : undefined;
+      if (stamp !== undefined && isDailyGrainStamp(stamp)) {
+        return karachiDay.format(moment);
+      }
+      if (opensDay(map.realMs, index)) {
         return karachiDay.format(moment);
       }
       return showSeconds ? secondsFormat.format(moment)
@@ -722,31 +737,29 @@ export function ChartCanvas(props: ChartCanvasProps) {
         return;
       }
       const first = state.realTimes[0];
-      const firstIntraday = state.realTimes.find(
+      const firstIntradayIndex = state.realTimes.findIndex(
         (stamp) => isIntradayStamp(stamp, resolution));
+      const firstIntraday = firstIntradayIndex >= 0
+        ? state.realTimes[firstIntradayIndex] : undefined;
       const range = state.chart.timeScale().getVisibleLogicalRange();
-      // An intraday tape is shorter than the calendar series behind it.
-      // Keep its first recorded day visible as a calm caption, whatever
-      // window the reader has chosen; a calendar chart needs no caption.
+      // An intraday tape is shorter than the daily series behind it, and that
+      // older stretch carries no session rules because none of those days was
+      // recorded as a session. Say so whenever any of it is on the plate, so
+      // panning back reads as history rather than as breaks that vanished.
       const intraday = hasSessionBreaks(resolution);
-      const showBoundary = range !== null && intraday;
-      if (first === undefined || range === null || !showBoundary) {
+      const dailyInView = range !== null
+        && (firstIntradayIndex < 0 || range.from < firstIntradayIndex - 1);
+      if (first === undefined || range === null || !intraday || !dailyInView) {
         el.hidden = true;
         el.textContent = "";
         return;
       }
-      if (firstIntraday !== undefined && firstIntraday !== first) {
-        el.textContent = `${resolution} candles from ` +
-          karachiDay.format(new Date(firstIntraday)) +
-          " · older bars are daily from " +
-          karachiDay.format(new Date(first));
-      } else if (firstIntraday === undefined) {
-        el.textContent = "daily-grain history begins " +
-          karachiDay.format(new Date(first)) + " · whole-day bars";
-      } else {
-        el.textContent = `${resolution} recorded history begins ` +
-          karachiDay.format(new Date(first)) + " · older days are in 1D";
-      }
+      const start = firstIntraday === undefined
+        ? "" : ` before ${karachiDayYear.format(new Date(firstIntraday))}`;
+      el.textContent = (firstIntraday === first
+        ? `${resolution} candles from ${karachiDayYear.format(new Date(first))}`
+        : `daily candles from ${karachiDayYear.format(new Date(first))}`) +
+        ` · no recorded sessions${start}`;
       el.hidden = false;
     };
     const rangeSub = () => {
@@ -1133,6 +1146,22 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // Only recorded sessions get a rule. A daily-grain bar is history, not a
     // session: marking every one of them drew 2,470 rules across a decade and
     // turned each daily candle into its own one-candle session.
+    // The daily-grain history has no recorded sessions, so it has no rules.
+    // A hint of shade from the plot's left edge to the first recorded bar
+    // marks that region for what it is instead of leaving an expanse that
+    // reads as a chart whose breaks went missing.
+    const firstIntraday = state.realTimes.findIndex(
+      (stamp) => isIntradayStamp(stamp, resolution));
+    if (firstIntraday > 0) {
+      const edgeX = state.chart.timeScale().timeToCoordinate(
+        (state.barTimes[firstIntraday]! / 1000) as never);
+      if (edgeX !== null && edgeX > 0) {
+        context.save();
+        context.fillStyle = "rgba(255, 255, 255, 0.03)";
+        context.fillRect(0, 0, Math.min(edgeX, frame.plotWidth), cssHeight);
+        context.restore();
+      }
+    }
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
