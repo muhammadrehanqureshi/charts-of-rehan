@@ -1182,7 +1182,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
         context.restore();
       }
     }
+    // Both regions are divided by date: the calendar days behind the tape
+    // first, then the recorded sessions, each under the same crowding law, so
+    // a decade of days reads as one cadence rather than a pile of rules.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
+    if (state.calendarBreaks.length > 1) {
+      paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
+        ruleColors, true, cssHeight, dpr, true);
+    }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
         ruleColors, false, cssHeight, dpr, true);
