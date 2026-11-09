@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/charts-of-rehan.png" alt="Charts of Rehan" width="340"/>
+  <img src="assets/charts-of-rehan.png" alt="Charts of Rehan" width="340" />
 </p>
 
 <h1 align="center">Charts of Rehan</h1>
