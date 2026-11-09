@@ -342,6 +342,10 @@ export function App() {
   // synthetic bucket is grey, carries zero volume and is counted in the
   // status bar, and this switch turns it off for a real-bars-only chart.
   const [fillFlat, setFillFlat] = useState(true);
+  // How many daily rows an intraday rung may attach behind its sessions. The
+  // reader chooses: none at all (only recorded sessions), a fortnight of tail
+  // for the missing days, or a longer lead-in for context.
+  const [tailDays, setTailDays] = useState(DAILY_TAIL_DAYS);
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
   const [appearance, setAppearance, resetAppearance] = useAppearance();
@@ -549,7 +553,7 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
-    backfillDays: hasDailyBackfill(resolution) ? DAILY_TAIL_DAYS : undefined,
+    backfillDays: hasDailyBackfill(resolution) ? tailDays : undefined,
     fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
@@ -684,6 +688,9 @@ export function App() {
         onToggleScreener={() => setScreenerOpen((open) => !open)}
         fillFlat={fillMode}
         onToggleFillFlat={() => setFillFlat((on) => !on)}
+        tailDays={tailDays}
+        onTailDays={setTailDays}
+        tailOn={hasDailyBackfill(resolution)}
       />
 
       {/* The studies sit in a strip above the chart, not in a side column:

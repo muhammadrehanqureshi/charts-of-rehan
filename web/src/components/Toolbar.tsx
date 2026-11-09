@@ -36,14 +36,28 @@ export interface ToolbarProps {
   /** Flat no-trade buckets for missing session buckets, visibly marked. */
   readonly fillFlat: boolean;
   readonly onToggleFillFlat: () => void;
+  /** Daily rows attached behind an intraday rung, in days. */
+  readonly tailDays: number;
+  readonly onTailDays: (days: number) => void;
+  /** True only on the rungs that can carry a daily tail at all. */
+  readonly tailOn: boolean;
 }
+
+/**
+ * The daily-tail choices, in days.
+ *
+ * Zero is a real choice: only recorded sessions, no daily stand-in candles. A
+ * fortnight covers the gap this chart has produced (4-6 Nov); sixty days is
+ * for reading a longer stretch of daily history beside the tape.
+ */
+const TAIL_CHOICES = [0, 5, 15, 30, 60] as const;
 
 export function Toolbar(props: ToolbarProps) {
   const {
     symbol, resolution, onResolution, resolutions, day, onDay, sessions,
     onRefresh, busy, indicatorsOpen, onToggleIndicators, onSearch,
     onOpenSettings, screenerOpen, onToggleScreener, fillFlat,
-    onToggleFillFlat,
+    onToggleFillFlat, tailDays, onTailDays, tailOn,
   } = props;
   const available = TIMEFRAMES.filter((item) => resolutions.includes(item.id));
 
@@ -127,6 +141,26 @@ export function Toolbar(props: ToolbarProps) {
           Flat fill
         </button>
       </div>
+
+      {tailOn ? (
+        <div className="toolbar__cell">
+          <label className="toolbar__session">
+            <span className="visually-hidden">daily tail</span>
+            <select
+              aria-label="daily tail"
+              value={tailDays}
+              title="Daily candles attached behind the recorded sessions for days with no tape"
+              onChange={(event) => onTailDays(Number(event.target.value))}
+            >
+              {TAIL_CHOICES.map((days) => (
+                <option key={days} value={days}>
+                  {days === 0 ? "no daily tail" : `tail ${days}d`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
 
       <div className="toolbar__cell">
         <button
