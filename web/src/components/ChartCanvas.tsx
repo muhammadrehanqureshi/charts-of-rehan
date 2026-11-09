@@ -70,7 +70,6 @@ import {
   type ProfileBarSource,
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
-import { opensDay } from "../chart/axis";
 import {
   dayBreaks,
   hasDailyBackfill,
@@ -444,13 +443,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
    * was being misread.
    */
   const tickLabel = useMemo(() => {
-    const secondsFormat = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Karachi",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
     return (time: Time, markType: TickMarkType): string => {
       const sec = Number(time);
       const map = timeMap.current;
@@ -478,18 +470,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (repeated) {
         return "";
       }
-      // The daily-grain history behind the tape is one candle per day, so a
-      // clock there would read "13:32" for a day that has no 13:32. Name the
-      // day instead: the axis then says what the bars are, at every zoom.
-      const stamp = index >= 0 ? map.realMs[index] : undefined;
-      if (stamp !== undefined && isDailyGrainStamp(stamp)) {
-        return karachiDay.format(moment);
-      }
-      if (opensDay(map.realMs, index)) {
-        return karachiDay.format(moment);
-      }
-      return showSeconds ? secondsFormat.format(moment)
-        : karachiClock.format(moment);
+      // Dates only, on every intraday rung. A packed tape has no calendar
+      // distance of its own, so a clock on this axis is a time from another
+      // bar: "13:32" printed under a decade of daily candles was exactly
+      // that. The date of the tick's own bar is the one label that is always
+      // true, and a bar that has already printed prints nothing.
+      return karachiDay.format(moment);
     };
   }, [showSeconds]);
 
