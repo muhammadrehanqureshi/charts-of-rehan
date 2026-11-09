@@ -836,6 +836,11 @@ class ChartServer(ThreadingHTTPServer):
                 return {"state": state,
                         "feed_connected": bool(status.get("running") and
                                                 frame_age is not None and frame_age <= 90),
+                        # Inside the owner's window the recorder is capturing;
+                        # outside it the believer waits, and the window's own
+                        # open and close are what the status bar names.
+                        "capturing": bool(status.get("capturing")),
+                        "window": sessions.capture_window(now),
                         "last_frame_age_seconds": (None if frame_age is None
                                                    else round(frame_age, 1)),
                         "heartbeat_age_seconds": round(age, 1),

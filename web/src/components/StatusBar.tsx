@@ -112,12 +112,12 @@ export function StatusBar(props: StatusBarProps) {
             : `${market.phase}${market.trading_day ? " · trading day" : " · not a trading day"}`}
         </span>
         {recorder !== undefined && recorder !== null ? (
-          <span className={recorder.feed_connected ? "status__item" : "status__item status__item--stale"}
-                title={recorder.last_error ?? "Broker recorder heartbeat"}>
-            <span className="status__key">broker feed</span>{" "}
-            {recorder.feed_connected
-              ? `connected · ${formatSeconds(recorder.last_frame_age_seconds)} ago`
-              : `stale · ${formatSeconds(recorder.last_frame_age_seconds)} ago`}
+          <span className={recorder.capturing && !recorder.feed_connected
+              ? "status__item status__item--stale"
+              : "status__item"}
+                title={recorderTitle(recorder)}>
+            <span className="status__key">recorder</span>{" "}
+            {recorderStateText(recorder)}
           </span>
         ) : null}
         {market?.band != null ? (
@@ -272,6 +272,42 @@ export function stateChip(
     return { text: "live", tone: "live" };
   }
   return { text: phase.length > 0 ? phase : "live", tone: status };
+}
+
+/**
+ * What the recorder is doing, in the reader's terms.
+ *
+ * Outside the owner's recording window the process is alive and idle, which is
+ * the correct state at 02:00 on a Sunday; calling that "stale" beside a live
+ * service read as a fault. Inside the window it is capturing, and a silence
+ * there is worth flagging.
+ */
+export function recorderStateText(
+  recorder: NonNullable<HealthReport["recorder"]>,
+): string {
+  if (!recorder.capturing) {
+    const window = recorder.window ?? null;
+    return window === null
+      ? "idle · no window scheduled"
+      : `idle · opens ${formatStamp(window.opens)}`;
+  }
+  return recorder.feed_connected
+    ? `capturing · last frame ${formatSeconds(recorder.last_frame_age_seconds)} ago`
+    : "capturing · no frame yet";
+}
+
+/** The recorder chip's tooltip: the window it is inside, or its last error. */
+function recorderTitle(
+  recorder: NonNullable<HealthReport["recorder"]>,
+): string {
+  if (recorder.last_error) {
+    return recorder.last_error;
+  }
+  const window = recorder.window ?? null;
+  if (window === null) {
+    return "the recorder has no recording window within the next week";
+  }
+  return `recording window ${formatStamp(window.opens)} to ${formatClock(window.closes)}`;
 }
 
 /** Minutes between a stamp and now, or null when the stamp is unusable. */

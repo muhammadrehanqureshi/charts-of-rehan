@@ -91,6 +91,21 @@ def session_window(moment: datetime | None = None) -> tuple[datetime, datetime] 
     return law.session_bounds(now.date())
 
 
+def capture_window(moment: datetime | None = None) -> dict | None:
+    """The recorder's window, in force or next, as the chart contract speaks it.
+
+    The browser must not guess when capture opens: the session law computes
+    it and this shapes the answer into the two stamps the status bar prints.
+    None means no window was found within the law's own look-ahead.
+    """
+    bounds = law.next_capture_window(moment)
+    if bounds is None:
+        return None
+    opened, closed = bounds
+    return {"opens": opened.isoformat(timespec="seconds"),
+            "closes": closed.isoformat(timespec="seconds")}
+
+
 def session_minutes(day: date) -> list[datetime]:
     """Every minute of that day's bands, first to last, breaks excluded.
 

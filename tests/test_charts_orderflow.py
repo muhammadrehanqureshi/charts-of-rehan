@@ -395,7 +395,7 @@ class BookHttpCase(unittest.TestCase):
         status.parent.mkdir()
         now = datetime.now(timezone(timedelta(hours=5)))
         status.write_text(json.dumps({
-            "pid": 123, "running": True,
+            "pid": 123, "running": True, "capturing": True,
             "updated_at": now.isoformat(),
             "last_frame_at": now.isoformat(),
             "last_error": None,
@@ -409,6 +409,11 @@ class BookHttpCase(unittest.TestCase):
         recorder = answer["body"]["recorder"]
         self.assertEqual(recorder["state"], "RUNNING")
         self.assertEqual(recorder["counters"]["ticks"], 12)
+        # The chip needs both facts: whether capture is open, and when the next
+        # window opens if it is not. A window always opens at 08:55.
+        self.assertIs(recorder["capturing"], True)
+        self.assertIsNotNone(recorder["window"])
+        self.assertTrue(recorder["window"]["opens"].endswith("T08:55:00+05:00"))
         self.assertEqual(answer["body"]["tape"]["symbols_with_bars"], 2)
 
 
