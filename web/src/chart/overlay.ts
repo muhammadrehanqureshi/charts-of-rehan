@@ -396,10 +396,12 @@ export function makePositions(
  * pixels, and a line and a date for *each* day is the dashed forest and the
  * unreadable strip that reads as noise. The plan is decided on pixel
  * geometry instead: day joins get their rule while there is room for one,
- * and once they crowd below a forty-pixel rhythm only the month's first
+ * and once they crowd below a thirty-pixel rhythm only the month's first
  * bar keeps one - the months stay findable, the days are left to the
- * zoom that actually has space for them. Rules carry no dates; the time
- * axis owns every date label.
+ * zoom that actually has space for them. A normal one-hour PSX day is six
+ * candles, about 36 px at the default window, so it keeps its five day
+ * joins; a packed decade still falls back to months. Rules carry no dates;
+ * the time axis owns every date label.
  */
 export interface BreakPlan {
   readonly x: number;
@@ -408,7 +410,9 @@ export interface BreakPlan {
 }
 
 const LINE_MIN_PX = 18;
-const DENSE_PX = 40;
+// A six-candle hour day needs a rule at roughly 36 px at the default 1h
+// window. Collapse only below that; otherwise every day becomes a month.
+const DENSE_PX = 30;
 
 export function breakPlan(
   breaks: readonly SessionBreak[],

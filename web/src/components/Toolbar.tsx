@@ -1,13 +1,15 @@
 /**
  * The top bar, in TradingView's shape.
  *
- * Left: the brand, the watchlist toggle, the symbol button that opens the
- * quick search, the timeframe chips, the labeled Indicators button and the
- * session picker. Right: reload and the theme. Group separators between the
- * clusters, as on the trading terminal. Everything offered here exists in
- * the service's own answer - the chips are only the resolutions it serves,
- * and the session menu only the days it can draw - so nothing on this bar
- * can silently fail.
+ * Left: the brand, the symbol button that opens the quick search, the
+ * timeframe chips, the labeled Indicators button and the session picker.
+ * Right: reload and the theme. Group separators between the clusters, as on
+ * the trading terminal. Everything offered here exists in the service's own
+ * answer - the chips are only the resolutions it serves, and the session menu
+ * only the days it can draw - so nothing on this bar can silently fail.
+ *
+ * The watchlist has no hide/show control here: the pane is part of the
+ * terminal, always on, and its layout gives the list real height.
  */
 
 import type { Resolution, SessionRow } from "../api/types";
@@ -25,22 +27,23 @@ export interface ToolbarProps {
   readonly sessions: readonly SessionRow[];
   readonly onRefresh: () => void;
   readonly busy: boolean;
-  readonly watchlistOpen: boolean;
-  readonly onToggleWatchlist: () => void;
   readonly indicatorsOpen: boolean;
   readonly onToggleIndicators: () => void;
   readonly onSearch: () => void;
   readonly onOpenSettings: () => void;
   readonly screenerOpen: boolean;
   readonly onToggleScreener: () => void;
+  /** Flat no-trade buckets for missing session buckets, visibly marked. */
+  readonly fillFlat: boolean;
+  readonly onToggleFillFlat: () => void;
 }
 
 export function Toolbar(props: ToolbarProps) {
   const {
     symbol, resolution, onResolution, resolutions, day, onDay, sessions,
-    onRefresh, busy, watchlistOpen, onToggleWatchlist,
-    indicatorsOpen, onToggleIndicators, onSearch,
-    onOpenSettings, screenerOpen, onToggleScreener,
+    onRefresh, busy, indicatorsOpen, onToggleIndicators, onSearch,
+    onOpenSettings, screenerOpen, onToggleScreener, fillFlat,
+    onToggleFillFlat,
   } = props;
   const available = TIMEFRAMES.filter((item) => resolutions.includes(item.id));
 
@@ -60,17 +63,6 @@ export function Toolbar(props: ToolbarProps) {
             draggable={false}
           />
         </span>
-
-        <button
-          type="button"
-          className="toolbar__icon"
-          aria-expanded={watchlistOpen}
-          aria-label={watchlistOpen ? "hide watchlist" : "show watchlist"}
-          onClick={onToggleWatchlist}
-          title="Show or hide the watchlist"
-        >
-          ▤
-        </button>
       </div>
 
       <div className="toolbar__sep" aria-hidden="true" />
@@ -118,6 +110,21 @@ export function Toolbar(props: ToolbarProps) {
           onClick={onToggleScreener}
         >
           Screener
+        </button>
+      </div>
+
+      <div className="toolbar__cell">
+        <button
+          type="button"
+          className={fillFlat ? "toolbar__menu toolbar__menu--on"
+            : "toolbar__menu"}
+          aria-pressed={fillFlat}
+          title={fillFlat
+            ? "Missing session buckets are flat, synthetic zero-volume bars; click to show real bars only"
+            : "Fill missing session buckets with explicitly marked flat zero-volume bars"}
+          onClick={onToggleFillFlat}
+        >
+          Flat fill
         </button>
       </div>
 

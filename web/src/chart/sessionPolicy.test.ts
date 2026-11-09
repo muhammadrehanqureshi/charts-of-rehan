@@ -13,6 +13,7 @@ import { RESOLUTIONS } from "../api/types";
 import {
   RUNG_POLICY,
   calendarBreaks,
+  dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
@@ -73,7 +74,7 @@ describe("sessionBreaks across the ladder", () => {
     }
   });
 
-  it("draws the Friday midday break as its own rule", () => {
+  it("draws the Friday midday break as its own band", () => {
     const times = [
       at("2026-10-16", 9, 17),
       at("2026-10-16", 11, 59),
@@ -83,6 +84,35 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks).toHaveLength(2);
     expect(breaks[1]?.t).toBe(times[2]);
     expect(breaks[1]?.day).toBe("2026-10-16");
+  });
+
+  it("keeps every date whole: Friday is one five-candle day, not 3+2", () => {
+    const times = [
+      at("2026-10-30", 9, 17),
+      at("2026-10-30", 10, 17),
+      at("2026-10-30", 11, 17),
+      at("2026-10-30", 14, 32),
+      at("2026-10-30", 15, 32),
+      at("2026-11-02", 9, 32),
+    ];
+    const breaks = dayBreaks(times, "1h");
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2026-10-30", "2026-11-02",
+    ]);
+    expect(breaks[1]?.previous).toBe(times[4]);
+  });
+
+  it("does not put a session rule on a daily-grain backfill row", () => {
+    const times = [
+      at("2026-10-30", 15, 32),
+      at("2026-11-04", 12, 0),
+      at("2026-11-06", 12, 0),
+    ];
+    // The one real session is anchored (first: true) but draws no rule of its
+    // own; the two noon rows are calendar bars and never open a date block.
+    const breaks = dayBreaks(times, "1h");
+    expect(breaks.map((item) => item.t)).toEqual([times[0]]);
+    expect(breaks[0]?.first).toBe(true);
   });
 
   it("anchors the first rule without drawing one before the series", () => {
@@ -150,15 +180,36 @@ describe("a schedule sent by the service", () => {
 });
 
 describe("calendarBreaks", () => {
-  it("groups daily-grain rows by Karachi month", () => {
+  it("keeps every daily-grain day as a candidate rule", () => {
     const times = [
       at("2026-09-30", 12, 0),
       at("2026-10-01", 12, 0),
       at("2026-10-02", 12, 0),
       at("2026-11-02", 12, 0),
+      at("2026-11-03", 12, 0),
+      at("2026-11-04", 12, 0),
+      at("2026-11-05", 12, 0),
+      at("2026-11-06", 12, 0),
+    ];
+    const breaks = calendarBreaks(times);
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2026-09-30", "2026-10-01", "2026-10-02", "2026-11-02",
+      "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06",
+    ]);
+    expect(breaks[5]?.previous).toBe(times[4]);
+  });
+
+  it("anchors the first backfill day after a real session to that session", () => {
+    const times = [
+      at("2026-11-03", 10, 32),
+      at("2026-11-03", 11, 32),
+      at("2026-11-04", 12, 0),
+      at("2026-11-05", 12, 0),
     ];
     const breaks = calendarBreaks(times);
     expect(breaks.map((item) => item.day))
-      .toEqual(["2026-09-30", "2026-10-01", "2026-11-02"]);
+      .toEqual(["2026-11-04", "2026-11-05"]);
+    expect(breaks[0]?.previous).toBe(times[1]);
+    expect(breaks[1]?.previous).toBe(times[2]);
   });
 });

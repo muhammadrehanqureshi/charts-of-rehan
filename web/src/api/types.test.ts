@@ -53,6 +53,7 @@ function payload(): Record<string, unknown> {
         l: 100,
         c: 101,
         v: 900,
+        synthetic: true,
       },
     ],
     bar_count: 2,
@@ -89,6 +90,8 @@ describe("parsePayload", () => {
     const parsed = parsePayload(payload());
     expect(parsed.symbol).toBe("OGDC");
     expect(parsed.bars.length).toBe(2);
+    expect(parsed.bars[0]?.synthetic).toBe(false);
+    expect(parsed.bars[1]?.synthetic).toBe(true);
     expect(parsed.market.trading_day).toBe(true);
     expect(parsed.ingest.watched).toEqual(["OGDC"]);
   });

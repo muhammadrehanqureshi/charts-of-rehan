@@ -51,7 +51,7 @@ if str(ROOT) not in sys.path:
 from src.data import index_feed  # noqa: E402
 from src.data import tape_bars  # noqa: E402
 from src.data import tick_volume  # noqa: E402
-from src.data.sessions import now_karachi  # noqa: E402
+from src.data.sessions import now_karachi, session_bands  # noqa: E402
 
 from charts import resolutions as ladder
 from charts.indices import IndexStore  # noqa: E402
@@ -764,18 +764,22 @@ class TapeSource:
         return one
 
     # ------------------------------------------------------- session order flow
-    def flow_day(self, day: date | str | None = None) -> date:
-        """Which session an unnamed flow question is about.
+    def flow_day(self, day: date | str | None = None, *,
+                 live: bool = False) -> date:
+        """Which session a flow question is about.
 
-        The same fallback the catalogue's facts use: today's capture when it
-        exists, otherwise the newest session that actually kept a tape. A
-        watchlist opened on a Sunday must describe the session the chart is
-        drawing, not an empty Sunday.
+        A **live** question is always about today. That is what the watchlist
+        asks, and a Sunday or a holiday must answer with an empty live tape,
+        never with Friday's buy/sell totals relabelled as today's. An
+        unnamed non-live question keeps the chart's historical fallback: the
+        newest session that actually kept a tape.
         """
         named = _as_date(day)
         if named is not None:
             return named
         today = self.session_day()
+        if live:
+            return today
         if self.capture_for(today) is not None:
             return today
         for row in self.sessions(hashes=False):
@@ -784,7 +788,8 @@ class TapeSource:
                 return candidate
         return today
 
-    def flow_for(self, day: date | str | None = None) -> list[dict]:
+    def flow_for(self, day: date | str | None = None, *,
+                 live: bool = False) -> list[dict]:
         """Every symbol's own buy/sell split for one session.
 
         One row per symbol the tape printed, measured from the venue's own
@@ -795,7 +800,7 @@ class TapeSource:
         never a re-read of the day. A replaced or truncated capture resets
         the fold.
         """
-        session = self.flow_day(day)
+        session = self.flow_day(day, live=live)
         path = self.capture_for(session)
         if path is None:
             return []
@@ -1197,6 +1202,16 @@ class TapeSource:
                 "sources": [str(path) for path in entry["captures"]] or
                            ([str(self._archive.day_dir(day))]
                             if entry.get("archived") else []),
+                # The browser draws a break at the exchange's actual band
+                # edges. Sending the bands with each session stops the client
+                # from having to carry a second copy of the hours (and from
+                # guessing, which is how an early start was anchored wrong).
+                "bands": [
+                    {"open": f"{opened[0]:02d}:{opened[1]:02d}",
+                     "close": f"{closed[0]:02d}:{closed[1]:02d}"}
+                    for opened, closed in session_bands(
+                        date.fromisoformat(day))
+                ],
             }
             if newest is not None:
                 facts = identify(newest, hash_file=hashes)

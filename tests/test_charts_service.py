@@ -198,10 +198,12 @@ class MergedBackfillTest(unittest.TestCase):
         self.assertEqual(source.asked, ("OGDC", "1D", 40))
         self.assertTrue(any("daily backfill added 2" in note for note in notes))
 
-    def test_the_note_names_the_oldest_added_day_whatever_the_feed_order(self):
+    def test_the_note_names_the_added_range_whatever_the_feed_order(self):
         # A coarse feed can hand back a newer day before an older one; the
-        # note must still name the decade's own first day, not whichever bar
-        # happened to be read last.
+        # note must still name both ends of the filled range, not whichever
+        # bar happened to be read last. A day with no intraday bar is filled
+        # even when it is newer than the span, so the chart does not look
+        # stale after a recorder outage.
         daily = [
             Bar.build(t="2026-10-09T12:00:00+05:00", o=97, h=99, l=96, c=98, v=7),
             Bar.build(t="2026-10-13T12:00:00+05:00", o=98, h=101, l=97, c=100, v=9),
@@ -210,9 +212,9 @@ class MergedBackfillTest(unittest.TestCase):
         seen = {"2026-10-12T09:35:00+05:00": None}
         notes = service._daily_backfill(
             self.daily_source(daily), "OGDC", 40, seen, "1h")
-        self.assertEqual(len(seen), 3)
-        self.assertTrue(any("back to 2016-10-31" in note for note in notes))
-        self.assertFalse(any("back to 2026-10-09" in note for note in notes))
+        self.assertEqual(len(seen), 4)
+        self.assertTrue(any("from 2016-10-31 to 2026-10-13" in note
+                            for note in notes))
 
     def test_a_zero_backfill_and_an_empty_span_add_nothing(self):
         source = self.daily_source([])

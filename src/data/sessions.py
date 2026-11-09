@@ -260,8 +260,33 @@ def close_time(d: date) -> tuple[int, int]:
                                        else FRIDAY_CLOSE)
 
 
+#: The owner's recording window. It deliberately starts before the first
+#: official band and ends after the last one, so pre-market and post-market
+#: prints are banked for analysis even though they are never official session
+#: bars. Friday closes at 17:00; Monday to Thursday at 16:00.
+CAPTURE_OPEN = (8, 55)
+CAPTURE_WEEKDAY_CLOSE = (16, 0)
+CAPTURE_FRIDAY_CLOSE = (17, 0)
+
+
+def capture_window(d: date) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """The recording window for a Karachi date, or None when closed."""
+    if not is_trading_day(d):
+        return None
+    close = CAPTURE_FRIDAY_CLOSE if d.weekday() == 4 else CAPTURE_WEEKDAY_CLOSE
+    return (CAPTURE_OPEN, close)
+
+
 def _at(d: date, hm: tuple[int, int]) -> datetime:
     return datetime(d.year, d.month, d.day, hm[0], hm[1], tzinfo=KARACHI)
+
+
+def capture_bounds(d: date) -> tuple[datetime, datetime] | None:
+    """The recording window as Karachi instants, or None when closed."""
+    window = capture_window(d)
+    if window is None:
+        return None
+    return _at(d, window[0]), _at(d, window[1])
 
 
 def band_bounds(d: date, band: Band) -> tuple[datetime, datetime]:

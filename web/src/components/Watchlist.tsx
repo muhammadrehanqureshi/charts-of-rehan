@@ -122,6 +122,7 @@ export function Watchlist(props: WatchlistProps) {
   const detail = bySymbol.get(symbol);
   const detailFlow = flow?.get(symbol);
   const detailChange = sessionChange(detail);
+  const live = (storedDay ?? "").length === 0;
 
   const remove = (name: string) => {
     onWatchChange(watch.filter((item) => item !== name));
@@ -187,9 +188,9 @@ export function Watchlist(props: WatchlistProps) {
                 </th>
                 <th scope="col" className="watchlist__th">Last</th>
                 <th scope="col" className="watchlist__th">Chg%</th>
-                <th scope="col" className="watchlist__th">Buy</th>
-                <th scope="col" className="watchlist__th">Sell</th>
-                <th scope="col" className="watchlist__th watchlist__th--total">Total</th>
+                <th scope="col" className="watchlist__th" title="buy volume on the live day">Live buy</th>
+                <th scope="col" className="watchlist__th" title="sell volume on the live day">Live sell</th>
+                <th scope="col" className="watchlist__th watchlist__th--total" title="classified buy + sell on the live day">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -274,9 +275,9 @@ export function Watchlist(props: WatchlistProps) {
 
         <p className="watchlist__note">
           {traded} of {rows.length} traded ·{" "}
-          {(storedDay ?? day).length > 0
-            ? `stored session ${storedDay ?? day}`
-            : "this live session"}{" "}
+          {live
+            ? `live day ${day || "(waiting for today's tape)"} · buy/sell from the venue's counters`
+            : `stored session ${storedDay ?? day}`}{" "}
           · change against the first print
         </p>
       </section>

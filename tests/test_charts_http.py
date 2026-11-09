@@ -176,6 +176,13 @@ class RouteTest(ServerCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(raw)["error"]["code"], "BAD_LIMIT")
 
+    def test_an_unknown_fill_mode_is_refused(self):
+        server = self.make_server()
+        status, _, raw = self.get(
+            server, "/api/bars?symbol=REPLAY1&fill=nearest")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(raw)["error"]["code"], "BAD_FILL")
+
     def test_an_unsupported_resolution_is_refused_with_the_offer(self):
         server = self.make_server()
         status, _, raw = self.get(server,

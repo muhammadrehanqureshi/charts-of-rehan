@@ -33,7 +33,10 @@ from typing import Any, Iterable, Mapping
 #: v3 (2026-10-20) added the full timeframe ladder (``1s`` through ``1M``) and
 #: the computed index proxies ``KSE100`` and ``KMIALLSHR``. The session block
 #: and the bar shape are unchanged; an old consumer keeps reading a v2 series.
-SCHEMA_VERSION = 3
+#: v4 (2026-11-09) added the optional ``synthetic`` flag on a bar. It is false
+#: for every real print and true only for a flat no-trade bucket added by the
+#: explicit ``fill=flat`` mode; an older bar without the field is real.
+SCHEMA_VERSION = 4
 
 #: The resolutions this service may serve, finest first. ``1m`` is the broker
 #: tape's own grain; sub-minute rungs are built from tick rows; coarser
@@ -101,6 +104,9 @@ class Bar:
     l: float  # noqa: E741 - the contract's own short names are the point
     c: float
     v: float = 0.0
+    #: True only for a bucket the fill mode created: no trade, no range, no
+    #: volume. Never true for a bar read from the tape or the archive.
+    synthetic: bool = False
 
     def __post_init__(self) -> None:
         if self.h < max(self.o, self.c, self.l):
@@ -112,7 +118,7 @@ class Bar:
 
     @classmethod
     def build(cls, *, t: datetime | str, o: Any, h: Any, l: Any,  # noqa: E741
-              c: Any, v: Any = 0.0) -> "Bar":
+              c: Any, v: Any = 0.0, synthetic: bool = False) -> "Bar":
         return cls(
             t=_iso(t),
             o=_number(o, field_name="open", positive=True),
@@ -120,11 +126,12 @@ class Bar:
             l=_number(l, field_name="low", positive=True),  # noqa: E741
             c=_number(c, field_name="close", positive=True),
             v=max(0.0, _number(v or 0, field_name="volume", positive=False)),
+            synthetic=bool(synthetic),
         )
 
     def as_dict(self) -> dict:
         return {"t": self.t, "o": self.o, "h": self.h, "l": self.l,
-                "c": self.c, "v": self.v}
+                "c": self.c, "v": self.v, "synthetic": self.synthetic}
 
 
 @dataclass(frozen=True)
@@ -275,7 +282,8 @@ class ChartPayload:
                 Bar(t=str(row["t"]),
                     o=float(row["o"]), h=float(row["h"]),
                     l=float(row["l"]), c=float(row["c"]),  # noqa: E741
-                    v=float(row.get("v", 0.0)))
+                    v=float(row.get("v", 0.0)),
+                    synthetic=bool(row.get("synthetic", False)))
                 for row in raw.get("bars", [])
             ]
             gaps = [
@@ -322,7 +330,8 @@ def bars_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Bar]:
     a malformed row is a chart that lies about the day.
     """
     built = [Bar.build(t=row["ts"], o=row["open"], h=row["high"],
-                       l=row["low"], c=row["close"], v=row.get("volume", 0.0))
+                       l=row["low"], c=row["close"], v=row.get("volume", 0.0),
+                       synthetic=bool(row.get("synthetic", False)))
              for row in rows]
     built.sort(key=lambda bar: bar.t)
     previous = None

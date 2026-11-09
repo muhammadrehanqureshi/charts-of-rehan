@@ -82,11 +82,14 @@ export function useChartFeed(
     days?: number | undefined;
     limit?: number;
     backfillDays?: number | undefined;
+    /** Marked flat buckets for missing no-trade session buckets. */
+    fill?: "flat" | undefined;
   } = {},
 ): FeedState {
   const day = options.day ?? "";
   const days = Math.max(0, Math.floor(options.days ?? 0));
   const backfill = Math.max(0, Math.floor(options.backfillDays ?? 0));
+  const fill = options.fill;
   // A merge of one day is no merge: that is the ordinary live chart.
   const merged = days > 1 && day.length === 0;
   const limit = options.limit ?? 2000;
@@ -161,6 +164,7 @@ export function useChartFeed(
           day,
           days,
           backfill,
+          fill,
           signal: fullController.signal,
           timeoutMs: 30_000,
         })
@@ -181,6 +185,7 @@ export function useChartFeed(
         // second request, so a slow decade never leaves the chart showing
         // only the stream's two-bar live snapshot.
         backfill: undefined,
+        fill,
         signal: controller.signal,
         timeoutMs: 20_000,
       })
@@ -250,7 +255,7 @@ export function useChartFeed(
             : null,
         );
       },
-    });
+    }, { fill });
 
     return () => {
       cancelled = true;
@@ -259,8 +264,8 @@ export function useChartFeed(
       handle.close();
       series.clear();
     };
-  }, [client, symbol, resolution, limit, day, days, backfill, series, bump, manual,
-    visible]);
+  }, [client, symbol, resolution, limit, day, days, backfill, fill, series, bump,
+    manual, visible]);
 
   const refresh = useCallback(() => setManual((value) => value + 1), []);
 

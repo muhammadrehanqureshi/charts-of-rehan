@@ -33,7 +33,6 @@ import { DrawToolRail } from "./components/DrawToolRail";
 import { IndicatorsPanel } from "./components/IndicatorsPanel";
 import { NotesPanel } from "./components/NotesPanel";
 import { StatusBar } from "./components/StatusBar";
-import { SymbolSearch } from "./components/SymbolSearch";
 import { Toolbar } from "./components/Toolbar";
 import { Watchlist } from "./components/Watchlist";
 import { useBook } from "./hooks/useBook";
@@ -50,6 +49,8 @@ import {
   FLOW_REFRESH_MS,
 } from "./lightweight";
 
+import { perDayCounts } from "./chart/dayCounts";
+import { hasDailyBackfill, scheduleFrom } from "./chart/sessions";
 import { timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
@@ -85,6 +86,20 @@ function isCalendarRung(resolution: Resolution): boolean {
 }
 
 /**
+ * Rungs where a missing bucket is a workable no-trade hole to mark.
+ *
+ * A minute chart already has a bucket for every expected minute, and filling
+ * it would replace a measured print gap with hundreds of synthetic bars. The
+ * 5m-and-coarser intraday rungs are where the six/twelve/twenty-four-bucket
+ * session grid is meaningful.
+ */
+function isFlatFillRung(resolution: Resolution): boolean {
+  return resolution === "5m" || resolution === "10m"
+    || resolution === "15m" || resolution === "30m"
+    || resolution === "1h" || resolution === "4h";
+}
+
+/**
  * Every intraday rung reads the same recorded session span.
  *
  * These used to shrink as the bar interval shrank, so switching from 15m to
@@ -93,6 +108,9 @@ function isCalendarRung(resolution: Resolution): boolean {
  * must be behind every rung. The service's own limit still caps the payload.
  */
 const INTRADAY_SESSIONS = 20;
+
+/** The rolling decade the daily store holds, requested behind coarse rungs. */
+const DAILY_BACKFILL_DAYS = 2_600;
 
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
@@ -306,11 +324,14 @@ export function App() {
   const [sessions, setSessions] = useState<readonly SessionRow[]>([]);
   const [bootError, setBootError] = useState<string | null>(null);
   const [catalogueLoading, setCatalogueLoading] = useState(true);
-  const [watchlistOpen, setWatchlistOpen] = useState(true);
   const [indicatorsOpen, setIndicatorsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [screenerOpen, setScreenerOpen] = useState(false);
+  // The flat grid is useful enough to open with, but never silently: every
+  // synthetic bucket is grey, carries zero volume and is counted in the
+  // status bar, and this switch turns it off for a real-bars-only chart.
+  const [fillFlat, setFillFlat] = useState(true);
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
   const [appearance, setAppearance, resetAppearance] = useAppearance();
@@ -509,11 +530,17 @@ export function App() {
     setFlowDay(report.day);
   }).then(() => undefined).catch(() => undefined), FLOW_REFRESH_MS);
 
+  const sessionSchedule = useMemo(() => scheduleFrom(
+    sessions.map((row) => ({ day: row.day, bands: row.bands ?? [] })),
+  ), [sessions]);
+
   const feed = useChartFeed(client, symbol, resolution, {
     day,
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
+    backfillDays: hasDailyBackfill(resolution) ? DAILY_BACKFILL_DAYS : undefined,
+    fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
   // live multi-day chart reads the merged span (days, unnamed), so every
@@ -592,6 +619,19 @@ export function App() {
   }, [symbol]);
 
   const bars = feed.meta.payload?.bar_count ?? feed.series.length;
+  const syntheticBars = useMemo(
+    () => feed.meta.payload?.bars.reduce(
+      (total, bar) => total + (bar.synthetic === true ? 1 : 0), 0) ?? 0,
+    [feed.meta.payload],
+  );
+  // What a reader checks a session break against: how many candles each date
+  // actually holds, oldest first. One backward pass over the payload's own
+  // bars, memoised on that payload.
+  const dayCounts = useMemo(
+    () => perDayCounts(feed.meta.payload?.bars ?? []),
+    [feed.meta.payload],
+  );
+  const fillMode = fillFlat && isFlatFillRung(resolution);
   const session = feed.meta.session;
   const missingMinutes = feed.meta.gaps.reduce(
     (total, gap) => total + Math.round(gap.minutes), 0);
@@ -615,8 +655,7 @@ export function App() {
     : `${session.day}${session.archived ? ", stored session" : ""}.`;
 
   return (
-    <div className={["app", watchlistOpen ? "app--with-watchlist" : ""]
-      .filter(Boolean).join(" ")}>
+    <div className="app app--with-watchlist">
       <Toolbar
         symbol={symbol}
         resolution={resolution}
@@ -627,14 +666,14 @@ export function App() {
         sessions={sessions}
         onRefresh={feed.refresh}
         busy={feed.status === "loading"}
-        watchlistOpen={watchlistOpen}
-        onToggleWatchlist={() => setWatchlistOpen((open) => !open)}
         indicatorsOpen={indicatorsOpen}
         onToggleIndicators={() => setIndicatorsOpen((open) => !open)}
         onSearch={() => setSearchOpen(true)}
         onOpenSettings={() => setChartSettingsOpen(true)}
         screenerOpen={screenerOpen}
         onToggleScreener={() => setScreenerOpen((open) => !open)}
+        fillFlat={fillMode}
+        onToggleFillFlat={() => setFillFlat((on) => !on)}
       />
 
       {/* The studies sit in a strip above the chart, not in a side column:
@@ -664,6 +703,7 @@ export function App() {
             volumeAvailable={session?.volume_available ?? false}
             sessionLabel={sessionLabel}
             emptyNote={emptyNote}
+            schedule={sessionSchedule}
             indicators={indicators.specs}
             delta={delta.report?.minutes ?? EMPTY_DELTA}
             heading={symbol.length > 0
@@ -687,6 +727,10 @@ export function App() {
             captureName={session?.source ?? ""}
             sha256={session?.capture?.sha256 ?? ""}
             bars={bars}
+            syntheticBars={syntheticBars}
+            dayCounts={dayCounts.days}
+            earlierDays={dayCounts.earlierDays}
+            fillMode={fillMode}
             gaps={feed.meta.gaps.length}
             missingMinutes={missingMinutes}
             sourceLabel={feed.meta.source?.label ?? ""}
@@ -726,36 +770,25 @@ export function App() {
           ) : null}
         </main>
 
-        {watchlistOpen ? (
-          <Watchlist
-            rows={rows}
-            watch={watch}
-            symbol={symbol}
-            day={day.length > 0 ? day : flowDay}
-            storedDay={day}
-            loading={catalogueLoading}
-            onSymbol={(next) => {
-              chooseSymbol(next);
-            }}
-            onAdd={addToWatch}
-            onWatchChange={setWatch}
-            flow={flow}
-            book={book}
-            tape={prints.report}
-            searchOpen={searchOpen}
-            onSearchOpen={() => setSearchOpen(true)}
-            onSearchClose={() => setSearchOpen(false)}
-          />
-        ) : (
-          <SymbolSearch
-            open={searchOpen}
-            rows={rows}
-            loading={catalogueLoading}
-            action="add"
-            onPick={chooseSymbol}
-            onClose={() => setSearchOpen(false)}
-          />
-        )}
+        <Watchlist
+          rows={rows}
+          watch={watch}
+          symbol={symbol}
+          day={day.length > 0 ? day : flowDay}
+          storedDay={day}
+          loading={catalogueLoading}
+          onSymbol={(next) => {
+            chooseSymbol(next);
+          }}
+          onAdd={addToWatch}
+          onWatchChange={setWatch}
+          flow={flow}
+          book={book}
+          tape={prints.report}
+          searchOpen={searchOpen}
+          onSearchOpen={() => setSearchOpen(true)}
+          onSearchClose={() => setSearchOpen(false)}
+        />
       </div>
 
       {chartSettingsOpen ? (

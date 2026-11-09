@@ -146,6 +146,18 @@ describe("break plan", () => {
     expect(breakPlan(breaks, xOf, 700, false)).toHaveLength(5);
   });
 
+  it("keeps a day rule at a six-candle 1h rhythm", () => {
+    // 36 px is a full 1h session at the default window: six candles, then
+    // the next day's rule. That is readable and must not fall to a month.
+    const { breaks, xOf } = mappedChart([
+      ["2026-10-19", 100, true],
+      ["2026-10-20", 136],
+      ["2026-10-21", 172],
+    ]);
+    expect(breakPlan(breaks, xOf, 800).map((item) => item.x))
+      .toEqual([136, 172]);
+  });
+
   it("paints only the intraday rule; the axis owns the dates", () => {
     const { breaks } = mappedChart([
       ["2026-10-19", 100, true],

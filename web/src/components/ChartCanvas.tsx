@@ -71,11 +71,13 @@ import {
 import { flowColumns } from "../chart/flow";
 import {
   calendarBreaks,
+  dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
+  isDailyGrainStamp,
   isIntradayStamp,
-  sessionBreaks,
   type SessionBreak,
+  type SessionSchedule,
 } from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
 import { type ColumnSeries } from "../chart/series";
@@ -92,6 +94,42 @@ const MIN_HEIGHT = 220;
 const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
+
+/**
+ * The opening window for a coarse rung.
+ *
+ * A 1h/30m/15m feed can carry a decade of one-per-day backfill before the
+ * real sessions. Counting the last 160 *merged* bars would fill most of the
+ * window with those daily rows and leave the newest session as one or two
+ * candles. Count 160 real intraday bars instead, and keep the daily tail
+ * (the 4-6 Nov gap, when it exists) attached at the right edge so the chart
+ * still reaches the newest exchange day.
+ */
+function openingRange(times: readonly number[]): { from: number; to: number } {
+  const total = times.length;
+  if (total === 0) {
+    return { from: 0, to: 0 };
+  }
+  let lastIntraday = total - 1;
+  while (lastIntraday >= 0 && isDailyGrainStamp(times[lastIntraday] ?? 0)) {
+    lastIntraday -= 1;
+  }
+  let first = Math.max(0, total - 1 - WINDOW_BARS);
+  if (lastIntraday >= 0) {
+    first = lastIntraday;
+    let seen = 0;
+    for (let i = lastIntraday; i >= 0 && seen < WINDOW_BARS; i -= 1) {
+      if (!isDailyGrainStamp(times[i] ?? 0)) {
+        first = i;
+        seen += 1;
+      }
+    }
+  }
+  return {
+    from: Math.max(0, first),
+    to: total - 1 + RIGHT_OFFSET_BARS,
+  };
+}
 
 /** The chart's colour tokens: one theme, black, with TV's own candle hues. */
 export interface TvTheme {
@@ -146,6 +184,8 @@ export interface ChartCanvasProps {
   readonly theme?: "dark" | "light";
   /** A sentence for the accessible description: which session is on screen. */
   readonly sessionLabel: string;
+  /** The service's own band schedule, so breaks use actual exchange hours. */
+  readonly schedule?: SessionSchedule;
   /** What to say when there is nothing to draw, and why. */
   readonly emptyNote: string;
   /** Configured indicators; unlimited overlays, up to eight panes. */
@@ -211,7 +251,7 @@ interface EngineState {
   chartTimes: number[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
-  /** Month starts across the daily-grain history behind those sessions. */
+  /** Day candidates across the daily-grain history behind those sessions. */
   calendarBreaks: readonly SessionBreak[];
 }
 
@@ -313,6 +353,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     version,
     volumeAvailable,
     sessionLabel,
+    schedule,
     emptyNote,
     indicators,
     delta,
@@ -615,8 +656,21 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // range at the new width, which is a pure rescale. A reader's own
       // zoom is never touched.
       if (!zoomed.current && fitCount.current > 0) {
-        const newest = Math.min(WINDOW_BARS, fitCount.current);
-        if (fitCount.current <= WINDOW_BARS) {
+        // Calendar rungs are the history: open them on the whole stored
+        // decade instead of the newest 160 sessions, which hid nine of the
+        // ten years the daily store actually holds. Coarse intraday rungs
+        // count real bars, not the daily backfill, so a 1h day keeps its
+        // six candles in the opening window.
+        const live = engine.current;
+        const open = hasDailyBackfill(resolution) && live !== null
+          ? openingRange(live.realTimes)
+          : {
+            from: Math.max(0, fitCount.current - WINDOW_BARS - 1),
+            to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
+          };
+        const showAll = !hasSessionBreaks(resolution)
+          || fitCount.current <= WINDOW_BARS;
+        if (showAll) {
           // Every loaded bar fits: fit the whole tape, then open one bar of
           // whitespace on each side. fitContent puts the first candle centre
           // exactly on the left edge, where half of it is clipped.
@@ -626,12 +680,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
             to: fitCount.current,
           });
         } else {
-          // One extra bar on the left keeps the oldest visible candle whole
-          // when a reader pans to the start of a longer series.
-          chart.timeScale().setVisibleLogicalRange({
-            from: Math.max(0, fitCount.current - newest - 1),
-            to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
-          });
+          chart.timeScale().setVisibleLogicalRange(open);
         }
       }
     };
@@ -741,7 +790,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     };
     // The full build is keyed to the chart's identity only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewKey, indicatorsKey, volumeAvailable, appearanceKey]);
+  }, [viewKey, indicatorsKey, volumeAvailable, appearanceKey, schedule]);
 
   /**
    * One pass of the tape into the engine: candles, the volume plate, the
@@ -803,6 +852,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       low: number;
       close: number;
       volume: number;
+      synthetic: boolean;
     }[] = [];
     let previous = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < length; i += 1) {
@@ -811,6 +861,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const high = data.high[i];
       const low = data.low[i];
       const close = data.close[i];
+      const synthetic = data.synthetic?.[i] === 1;
       if (t === undefined || open === undefined || high === undefined
         || low === undefined || close === undefined) {
         continue;
@@ -825,7 +876,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       previous = t;
       accepted.push({
         sourceIndex: i, realMs: t, open, high, low, close,
-        volume: data.volume[i] ?? Number.NaN,
+        volume: data.volume[i] ?? Number.NaN, synthetic,
       });
     }
     if (accepted.length === 0) {
@@ -860,6 +911,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
         high: bar.high,
         low: bar.low,
         close: bar.close,
+        ...(bar.synthetic
+          ? { color: "#787b86", borderColor: "#787b86" }
+          : {}),
       });
       if (!wantsDelta && Number.isFinite(bar.volume)) {
         volumeData.push({
@@ -873,21 +927,24 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const index = nearestIndex(realTimes, realMs);
       return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
     };
-    // Session rules follow the exchange's bands, not a mere date change:
-    // Friday's two sessions need a rule at the lunch break too. Daily
-    // backfill rows are calendar bars stamped at Karachi noon, so the
-    // session pass drops them on the rungs that receive that backfill.
+    // The chart's division is the Karachi date, not the exchange band. A
+    // Friday's lunch is a gap inside one day; splitting it would leave the
+    // date in two pieces of two or three candles. Daily backfill rows are
+    // calendar bars stamped at Karachi noon, so they never create these
+    // session rules.
     state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(realTimes, resolution).map((item): SessionBreak => {
+      ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
             : { ...moved, previous: chartMsOf(item.previous) };
         })
       : [];
-    // A coarse rung carries a decade of daily rows behind its real sessions.
-    // They have no intraday session boundary to draw, so use one month rule
-    // per month instead of one per daily bar; the plan's dense mode spaces
-    // those rules and labels them when the viewport is crowded.
+    // A coarse rung carries a decade of daily rows where it has no real
+    // intraday session. Keep one candidate rule per such day; the plan's
+    // dense mode collapses those candidates to month starts when the
+    // viewport is packed, and keeps every day when there is room for it.
+    // That gives 4-6 Nov their own candidate rules, which the plan keeps
+    // when the window has room and collapses only when it does not.
     state.calendarBreaks = hasDailyBackfill(resolution)
       ? calendarBreaks(realTimes).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
@@ -944,12 +1001,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // into a few hundred pixels: at 464 bars a full fit draws one-pixel
       // candles. The earlier sessions are a pan away, which is what a
       // continuous series is for.
-      const newest = Math.min(WINDOW_BARS, candlesData.length);
-      const showAll = candlesData.length <= WINDOW_BARS;
-      const range = {
-        from: Math.max(0, candlesData.length - newest - 1),
-        to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
-      };
+      const range = hasDailyBackfill(resolution)
+        ? openingRange(realTimes)
+        : {
+          from: Math.max(0, candlesData.length - WINDOW_BARS - 1),
+          to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
+        };
+      const showAll = !hasSessionBreaks(resolution)
+        || candlesData.length <= WINDOW_BARS;
       const token = fitToken.current + 1;
       fitToken.current = token;
       const apply = () => {
@@ -1074,7 +1133,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The dotted session rules: one blue rule at every exchange session
     // change, through the price pane and every study pane beneath it. The
     // x-axis supplies the date labels, TradingView style; only the lines
-    // belong on the plot. Daily backfill month rules and real intraday
+    // belong on the plot. Daily backfill day candidates and real intraday
     // session rules obey one crowding law, so a zoomed-out chart reads one
     // cadence instead of a sparse calendar beside a dashed pile.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };

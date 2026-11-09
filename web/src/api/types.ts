@@ -75,6 +75,8 @@ export interface Bar {
   readonly l: number;
   readonly c: number;
   readonly v: number;
+  /** True only for a flat no-trade bucket added by fill=flat. */
+  readonly synthetic?: boolean;
 }
 
 export interface Gap {
@@ -172,6 +174,14 @@ export interface SessionRow {
   readonly capture: CaptureIdentity | null;
   readonly archive: ArchiveSummary | null;
   readonly sources: readonly string[];
+  /** The exchange's own bands for this day, when the service states them. */
+  readonly bands?: readonly SessionBand[];
+}
+
+/** One official trading band as "HH:MM" Karachi clock strings. */
+export interface SessionBand {
+  readonly open: string;
+  readonly close: string;
 }
 
 export interface ArchiveSummary {
@@ -314,6 +324,7 @@ function parseBar(raw: unknown, path: string): Bar {
     l: num(value["l"], `${path}.l`),
     c: num(value["c"], `${path}.c`),
     v: num(value["v"], `${path}.v`),
+    synthetic: value["synthetic"] === true,
   };
   if (bar.h < Math.max(bar.o, bar.c, bar.l)) {
     throw new ContractViolation(path, "high is below another price");
@@ -965,6 +976,15 @@ export function parseSessions(raw: unknown): SessionsReport {
           archive,
           sources: array(row["sources"] ?? [], `${path}.sources`).map(
             (entry, at) => str(entry, `${path}.sources[${at}]`),
+          ),
+          bands: array(row["bands"] ?? [], `${path}.bands`).map(
+            (entry, at) => {
+              const band = record(entry, `${path}.bands[${at}]`);
+              return {
+                open: str(band["open"], `${path}.bands[${at}].open`),
+                close: str(band["close"], `${path}.bands[${at}].close`),
+              };
+            },
           ),
         };
       },

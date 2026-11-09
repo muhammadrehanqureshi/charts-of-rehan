@@ -51,8 +51,9 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from charts.contract import Bar
 
@@ -315,6 +316,69 @@ class SessionArchive:
         return problems
 
     # -------------------------------------------------------------- writing
+    def write_import(self, day: date | str, symbol: str, bars: list[Bar],
+                     *, source: str = "manual import",
+                     notes: list[str] | None = None) -> ArchivedSession:
+        """Merge imported minute bars into one archived day.
+
+        The importer is deliberately narrow: it accepts the archive's own
+        minute grain, keeps every other symbol already stored for that day,
+        and writes through the same manifest/hash path as a recorder build.
+        An imported day has no capture identity, because the bytes came from
+        the caller's export rather than the broker's recording file.
+        """
+        day_date = date.fromisoformat(_day_text(day))
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise ValueError("symbol is required")
+        if not bars:
+            raise ValueError(f"no bars supplied for {symbol} on {day_date}")
+        ordered = sorted(bars, key=lambda bar: bar.t)
+        previous = None
+        for bar in ordered:
+            moment = datetime.fromisoformat(bar.t)
+            if moment.date() != day_date:
+                raise ValueError(
+                    f"bar {bar.t} is not on {day_date.isoformat()}")
+            if bar.t == previous:
+                raise ValueError(f"two bars share one timestamp: {bar.t}")
+            previous = bar.t
+
+        merged: dict[str, list[Bar]] = {}
+        for name in self.symbols(day_date):
+            if name != symbol:
+                merged[name] = self.read(day_date, name)
+        merged[symbol] = ordered
+
+        rows = {
+            name: [
+                SimpleNamespace(
+                    timestamp=datetime.fromisoformat(bar.t),
+                    open=bar.o, high=bar.h, low=bar.l, close=bar.c,
+                    volume=bar.v, prints=0, carried=False)
+                for bar in session_bars
+            ]
+            for name, session_bars in merged.items()
+        }
+        existing = self.manifest(day_date) or {}
+        all_notes = list(existing.get("notes") or [])
+        all_notes.extend(str(note) for note in (notes or []))
+        tape = SimpleNamespace(
+            day=day_date,
+            bars=rows,
+            source=source,
+            capture=None,
+            volume_available=any(bar.v > 0 for bar in ordered),
+            notes=all_notes,
+            first_observation=min(datetime.fromisoformat(bar.t)
+                                  for bar in ordered),
+            as_dict=lambda: {"day": day_date.isoformat(),
+                             "source": source, "imported": True},
+        )
+        return self.write(
+            tape, capture=None, force=True,
+            built_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+
     def write(self, tape, *, capture: dict | None = None,
               force: bool = False, built_at: str = "") -> ArchivedSession:
         """Archive one built session, symbol by symbol.
