@@ -157,7 +157,11 @@ function spanFor(resolution: Resolution): number {
  */
 export function limitFor(resolution: Resolution): number {
   switch (resolution) {
-    case "1s": case "10s": case "1m": case "5m": return 6_000;
+    // The minute and five-minute rungs carry the decade too (some 2,460
+    // daily rows behind 4,700 recorded minutes), so their cap has to hold
+    // both or the oldest years are cut off the left of the chart.
+    case "1s": case "10s": case "1m": return 8_000;
+    case "5m": return 4_800;
     case "10m": case "15m": case "30m": return 4_200;
     case "1h": case "4h": return 3_400;
     case "1D": return 2_800;

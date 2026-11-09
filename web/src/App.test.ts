@@ -63,6 +63,10 @@ describe("the opening chart", () => {
 describe("how much history a rung asks for", () => {
   it("the limit still fits the bars the rung draws", () => {
     expect(limitFor("1h")).toBe(3_400);
-    expect(limitFor("1m")).toBe(6_000);
+    // Every intraday rung carries the decade of daily rows behind its recorded
+    // sessions: 2,600 of those plus the span's own bars has to fit the cap, or
+    // the oldest years are cut off the left of the chart.
+    expect(limitFor("1m")).toBe(8_000);
+    expect(limitFor("5m")).toBe(4_800);
   });
 });

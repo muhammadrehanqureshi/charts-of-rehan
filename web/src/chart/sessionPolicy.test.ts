@@ -50,11 +50,12 @@ describe("RUNG_POLICY", () => {
     }
   });
 
-  it("says which rungs can carry daily EOD rows", () => {
-    expect(hasDailyBackfill("1m")).toBe(false);
-    expect(hasDailyBackfill("1s")).toBe(false);
-    for (const rung of ["10m", "15m", "30m", "1h", "4h"] as const) {
+  it("gives every intraday rung the daily history behind the tape", () => {
+    for (const rung of INTRADAY) {
       expect(hasDailyBackfill(rung)).toBe(true);
+    }
+    for (const rung of ["1D", "1W", "1M"] as const) {
+      expect(hasDailyBackfill(rung)).toBe(false);
     }
   });
 });
@@ -147,11 +148,12 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[1]?.previous).toBe(times[0]);
   });
 
-  it("keeps a noon bar on a minute chart but drops it from a coarse one", () => {
+  it("never opens a session on a lone noon row, whatever the rung", () => {
     const noon = at("2026-10-15", 12, 0);
     expect(isDailyGrainStamp(noon)).toBe(true);
-    expect(sessionBreaks([noon], "1m")).toHaveLength(1);
-    expect(sessionBreaks([noon], "1h")).toHaveLength(0);
+    for (const rung of INTRADAY) {
+      expect(sessionBreaks([noon], rung)).toHaveLength(0);
+    }
   });
 });
 
