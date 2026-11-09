@@ -73,19 +73,24 @@ describe("sessionBreaks", () => {
     expect(sessionBreaks(times, "1h")).toHaveLength(1);
   });
 
-  it("keeps a real noon bar on a minute chart", () => {
+  it("reads a noon stamp as the daily row on every rung", () => {
     const times = [
       pkt("2026-10-21", "09:32"),
       pkt("2026-10-21", "12:00"),
       pkt("2026-10-21", "15:29"),
     ];
+    // A daily backfill row is stamped at noon. On a minute chart a real
+    // minute can share that stamp, so the row is read as history and never
+    // opens a session; the day's own first bar still does, exactly once.
     expect(isDailyGrainStamp(times[1] ?? 0)).toBe(true);
-    expect(isIntradayStamp(times[1] ?? 0, "1m")).toBe(true);
-    expect(intradayStamps(times, "1m")).toEqual(times);
-    expect(sessionBreaks(times, "1m")).toHaveLength(1);
+    for (const rung of ["1m", "5m", "1h"] as const) {
+      expect(isIntradayStamp(times[1] ?? 0, rung)).toBe(false);
+      expect(intradayStamps(times, rung)).toEqual([times[0], times[2]]);
+      expect(sessionBreaks(times, rung)).toHaveLength(1);
+    }
   });
 
-  it("drops daily-grain backfill only on the rungs that receive it", () => {
+  it("drops the daily-grain rows on every intraday rung", () => {
     const times = [
       pkt("2016-11-01", "12:00"),
       pkt("2016-11-02", "12:00"),
@@ -94,15 +99,16 @@ describe("sessionBreaks", () => {
       pkt("2026-10-13", "09:32"),
     ];
     expect(isDailyGrainStamp(times[0] ?? 0)).toBe(true);
-    expect(isIntradayStamp(times[0] ?? 0, "1h")).toBe(false);
-    expect(isIntradayStamp(times[0] ?? 0, "1m")).toBe(true);
-    expect(intradayStamps(times, "1h")).toEqual(times.slice(2));
-    expect(sessionBreaks(times, "1h").map((item) => item.day)).toEqual([
-      "2026-10-12", "2026-10-13",
-    ]);
-    expect(sessionBreaks(times, "1m").map((item) => item.day)).toEqual([
-      "2016-11-01", "2016-11-02", "2026-10-12", "2026-10-13",
-    ]);
+    // Every intraday rung now carries the decade, so a lone noon row is the
+    // daily bar on the minute chart too - and it never opens a session.
+    for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
+      "1h", "4h"] as const) {
+      expect(isIntradayStamp(times[0] ?? 0, rung)).toBe(false);
+      expect(intradayStamps(times, rung)).toEqual(times.slice(2));
+      expect(sessionBreaks(times, rung).map((item) => item.day)).toEqual([
+        "2026-10-12", "2026-10-13",
+      ]);
+    }
   });
 
   it("keeps a candidate rule for every daily-grain day", () => {
@@ -131,10 +137,11 @@ describe("sessionBreaks", () => {
     for (const rung of ["1D", "1W", "1M", "1d", "session"] as const) {
       expect(hasSessionBreaks(rung)).toBe(false);
     }
-    for (const rung of ["10m", "15m", "30m", "1h", "4h"] as const) {
+    for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
+      "1h", "4h"] as const) {
       expect(hasDailyBackfill(rung)).toBe(true);
     }
-    for (const rung of ["1s", "10s", "1m", "5m", "1D"] as const) {
+    for (const rung of ["1D", "1d", "1W", "1M", "session"] as const) {
       expect(hasDailyBackfill(rung)).toBe(false);
     }
   });

@@ -81,10 +81,14 @@ export interface RungPolicy {
  * about its grain.
  */
 export const RUNG_POLICY: Readonly<Record<Resolution, RungPolicy>> = {
-  "1s": { breaks: true, calendarGrain: false },
-  "10s": { breaks: true, calendarGrain: false },
-  "1m": { breaks: true, calendarGrain: false },
-  "5m": { breaks: true, calendarGrain: false },
+  // Every intraday rung carries the daily history behind its recorded
+  // sessions. The purpose of this chart is ten years at any timeframe, and a
+  // one-minute or five-minute view that stopped at the first recorded session
+  // while the hourly view carried the decade was the hole in that promise.
+  "1s": { breaks: true, calendarGrain: true },
+  "10s": { breaks: true, calendarGrain: true },
+  "1m": { breaks: true, calendarGrain: true },
+  "5m": { breaks: true, calendarGrain: true },
   "10m": { breaks: true, calendarGrain: true },
   "15m": { breaks: true, calendarGrain: true },
   "30m": { breaks: true, calendarGrain: true },
