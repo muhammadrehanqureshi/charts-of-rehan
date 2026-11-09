@@ -72,6 +72,7 @@ import {
 import { flowColumns } from "../chart/flow";
 import { opensDay } from "../chart/axis";
 import {
+  calendarBreaks,
   dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
@@ -264,6 +265,8 @@ interface EngineState {
   chartTimes: number[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
+  /** The daily-grain days behind the tape: one candle per day, one rule each. */
+  calendarBreaks: readonly SessionBreak[];
 }
 
 /** The nearest value at or below `value`, or -1 for an empty list. */
@@ -761,12 +764,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
         setEdgeNote(null);
         return;
       }
-      const start = firstIntraday === undefined
-        ? "" : ` before ${karachiDayYear.format(new Date(firstIntraday))}`;
-      const text = (firstIntraday === first
-        ? `${resolution} candles from ${karachiDayYear.format(new Date(first))}`
-        : `daily candles from ${karachiDayYear.format(new Date(first))}`) +
-        ` · no recorded sessions${start}`;
+      const text = firstIntraday === undefined
+        ? `daily candles from ${karachiDayYear.format(new Date(first))}` +
+          " · one candle per day"
+        : `daily candles from ${karachiDayYear.format(new Date(first))}` +
+          " · one candle per day until " +
+          karachiDayYear.format(new Date(firstIntraday));
       setEdgeNote((current) => (current === text ? current : text));
     };
     const rangeSub = () => {
@@ -789,6 +792,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       realTimes: [],
       chartTimes: [],
       breaks: [],
+      calendarBreaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -965,6 +969,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // session rules.
     state.breaks = hasSessionBreaks(resolution)
       ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
+          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
+          return item.previous === undefined ? moved
+            : { ...moved, previous: chartMsOf(item.previous) };
+        })
+      : [];
+    // Behind the tape the store holds one candle per day, and those days are
+    // divided too: every date is its own block. They are calendar days, not
+    // recorded sessions, so the plan collapses them to month starts when the
+    // axis cannot give each day a rule of its own.
+    state.calendarBreaks = hasDailyBackfill(resolution)
+      ? calendarBreaks(realTimes).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
             : { ...moved, previous: chartMsOf(item.previous) };
@@ -1153,10 +1168,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // Only recorded sessions get a rule. A daily-grain bar is history, not a
     // session: marking every one of them drew 2,470 rules across a decade and
     // turned each daily candle into its own one-candle session.
-    // The daily-grain history has no recorded sessions, so it has no rules.
-    // A hint of shade from the plot's left edge to the first recorded bar
-    // marks that region for what it is instead of leaving an expanse that
-    // reads as a chart whose breaks went missing.
+    // The daily-grain history is tinted so the calendar days behind the tape
+    // read as history rather than as recorded sessions of their own kind.
     const firstIntraday = state.realTimes.findIndex(
       (stamp) => isIntradayStamp(stamp, resolution));
     if (firstIntraday > 0) {
