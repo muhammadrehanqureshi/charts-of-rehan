@@ -44,6 +44,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import type {
@@ -397,8 +398,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const wrapper = useRef<HTMLDivElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const legend = useRef<HTMLDivElement | null>(null);
-  /** Shown when the reader pans past the oldest bar the tape holds. */
-  const historyEdge = useRef<HTMLParagraphElement | null>(null);
+  /**
+   * The caption under the plate: which stretch is daily history and where
+   * recorded sessions begin, or null when the whole view is recorded.
+   *
+   * React state, not a DOM write: the paragraph is remounted when the first
+   * data lands, and an imperative `hidden = false` died with the old node.
+   */
+  const [edgeNote, setEdgeNote] = useState<string | null>(null);
   /** Re-run the boundary caption after a data paint, not only on range events. */
   const refreshHistoryEdge = useRef<(() => void) | null>(null);
   const engine = useRef<EngineState | null>(null);
@@ -731,9 +738,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // The same callback names the tape's first bar when the viewport is
     // panned into the blank before it, so nothing here has a reason.
     const writeHistoryEdge = () => {
-      const el = historyEdge.current;
       const state = engine.current;
-      if (el === null || state === null) {
+      if (state === null) {
         return;
       }
       const first = state.realTimes[0];
@@ -750,17 +756,16 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const dailyInView = range !== null
         && (firstIntradayIndex < 0 || range.from < firstIntradayIndex - 1);
       if (first === undefined || range === null || !intraday || !dailyInView) {
-        el.hidden = true;
-        el.textContent = "";
+        setEdgeNote(null);
         return;
       }
       const start = firstIntraday === undefined
         ? "" : ` before ${karachiDayYear.format(new Date(firstIntraday))}`;
-      el.textContent = (firstIntraday === first
+      const text = (firstIntraday === first
         ? `${resolution} candles from ${karachiDayYear.format(new Date(first))}`
         : `daily candles from ${karachiDayYear.format(new Date(first))}`) +
         ` · no recorded sessions${start}`;
-      el.hidden = false;
+      setEdgeNote((current) => (current === text ? current : text));
     };
     const rangeSub = () => {
       scheduleOverlayPaint();
@@ -1347,13 +1352,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
           "Drag to pan, wheel to zoom."}
         data-bars={series.length}
       />
-      {!hasBars ? (
+      {hasBars ? null : (
         <p className="chart__empty" role="status">
           {emptyNote}
         </p>
-      ) : (
-        <p className="chart__edge" ref={historyEdge} hidden />
       )}
+      <p className="chart__edge" hidden={edgeNote === null}>
+        {edgeNote ?? ""}
+      </p>
       {/* The TV legend: OHLC + change, live under the pointer. */}
       <div className="tv-legend" ref={legend} aria-live="off" />
       {/* The drawing overlay: interactive only while a tool is picked, so
