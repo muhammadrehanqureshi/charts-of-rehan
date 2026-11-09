@@ -12,7 +12,6 @@ import { describe, expect, it } from "vitest";
 import { RESOLUTIONS } from "../api/types";
 import {
   RUNG_POLICY,
-  calendarBreaks,
   dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
@@ -103,7 +102,7 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[1]?.previous).toBe(times[4]);
   });
 
-  it("draws the join where the daily rows end and the tape begins", () => {
+  it("divides every date, daily rows and sessions alike", () => {
     const times = [
       at("2026-11-04", 12, 0),
       at("2026-11-05", 12, 0),
@@ -113,26 +112,28 @@ describe("sessionBreaks across the ladder", () => {
       at("2026-11-11", 9, 32),
     ];
     const breaks = dayBreaks(times, "1h");
-    // The daily block is calendar history, not a session; 10 Nov is where the
-    // intraday tape starts, so its rule has a bar before it and is drawn.
+    // One division per date, whatever grain the candles carry: 4-6 Nov are
+    // daily rows and 10-11 Nov are recorded sessions, and all five are dates.
     expect(breaks.map((item) => item.day)).toEqual([
-      "2026-11-10", "2026-11-11",
+      "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-10",
+      "2026-11-11",
     ]);
-    expect(breaks[0]?.first).toBe(false);
-    expect(breaks[0]?.previous).toBe(times[2]);
+    expect(breaks[0]?.first).toBe(true);
+    expect(breaks[1]?.previous).toBe(times[0]);
+    expect(breaks[3]?.previous).toBe(times[2]);
   });
 
-  it("does not put a session rule on a daily-grain backfill row", () => {
+  it("puts the division between the last daily row and the session after it", () => {
     const times = [
       at("2026-10-30", 15, 32),
       at("2026-11-04", 12, 0),
       at("2026-11-06", 12, 0),
     ];
-    // The one real session is anchored (first: true) but draws no rule of its
-    // own; the two noon rows are calendar bars and never open a date block.
     const breaks = dayBreaks(times, "1h");
-    expect(breaks.map((item) => item.t)).toEqual([times[0]]);
+    expect(breaks.map((item) => item.t)).toEqual(times);
     expect(breaks[0]?.first).toBe(true);
+    expect(breaks[1]?.previous).toBe(times[0]);
+    expect(breaks[2]?.previous).toBe(times[1]);
   });
 
   it("anchors the first rule without drawing one before the series", () => {
@@ -197,40 +198,5 @@ describe("a schedule sent by the service", () => {
     // The mirror still answers, so a broken schedule never deletes rules.
     expect(sessionBreaks([at("2026-10-16", 14, 32)], "1m", schedule))
       .toHaveLength(1);
-  });
-});
-
-describe("calendarBreaks", () => {
-  it("keeps every daily-grain day as a candidate rule", () => {
-    const times = [
-      at("2026-09-30", 12, 0),
-      at("2026-10-01", 12, 0),
-      at("2026-10-02", 12, 0),
-      at("2026-11-02", 12, 0),
-      at("2026-11-03", 12, 0),
-      at("2026-11-04", 12, 0),
-      at("2026-11-05", 12, 0),
-      at("2026-11-06", 12, 0),
-    ];
-    const breaks = calendarBreaks(times);
-    expect(breaks.map((item) => item.day)).toEqual([
-      "2026-09-30", "2026-10-01", "2026-10-02", "2026-11-02",
-      "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06",
-    ]);
-    expect(breaks[5]?.previous).toBe(times[4]);
-  });
-
-  it("anchors the first backfill day after a real session to that session", () => {
-    const times = [
-      at("2026-11-03", 10, 32),
-      at("2026-11-03", 11, 32),
-      at("2026-11-04", 12, 0),
-      at("2026-11-05", 12, 0),
-    ];
-    const breaks = calendarBreaks(times);
-    expect(breaks.map((item) => item.day))
-      .toEqual(["2026-11-04", "2026-11-05"]);
-    expect(breaks[0]?.previous).toBe(times[1]);
-    expect(breaks[1]?.previous).toBe(times[2]);
   });
 });

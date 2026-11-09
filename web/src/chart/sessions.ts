@@ -317,12 +317,12 @@ function slotId(ms: number, schedule?: SessionSchedule): number {
  * A band change is a time gap inside the day, not a new day, and must never
  * leave one date in two pieces of two or three candles.
  *
- * Daily-grain backfill rows are skipped as boundaries but still advance
- * `previous`, so the rule before a real session sits after the last backfill
- * row rather than halfway across it. `first: true` means there is no bar at
- * all before this date; when calendar rows precede the tape, the first real
- * date still earns its rule, because the daily block before it is a different
- * grain and the join must be visible.
+ * Every bar is divided by its Karachi date, whatever its grain: a daily
+ * backfill row is one candle for that date, so it opens the date exactly as a
+ * session's first candle does. There is no second pass and no grain rule, so
+ * one timeframe cannot divide a chart differently from another. `first: true`
+ * means there is no bar at all before this date, and the renderer draws no
+ * rule there.
  */
 export function dayBreaks(
   times: ArrayLike<number>,
@@ -337,12 +337,6 @@ export function dayBreaks(
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
     if (t === undefined || !Number.isFinite(t)) {
-      continue;
-    }
-    // A backfill row belongs to the previous date's edge, but it is not a
-    // candle in the new date's session and must not create a rule itself.
-    if (!isIntradayStamp(t, resolution)) {
-      previous = t;
       continue;
     }
     const day = dayNumber(t);
@@ -406,52 +400,6 @@ export function sessionBreaks(
       ...(previous !== undefined ? { previous } : {}),
     });
     lastSlot = slot;
-    previous = t;
-  }
-  return out;
-}
-
-/**
- * Day boundaries across the daily-grain history behind a coarse rung.
- *
- * A 10m/15m/30m/1h/4h chart carries daily rows where the recorder has no
- * intraday session. Those rows are whole-day bars, so their only honest
- * break is at the day they open. Keep every day as a candidate: the paint
- * plan collapses crowded candidates to the first day of each month, and
- * keeps every day when the reader has zoomed in far enough to read them.
- * This is what puts a rule between 4, 5 and 6 Nov when those days are daily
- * backfill rather than real sessions. Real intraday sessions still get every
- * session rule from `sessionBreaks`.
- */
-export function calendarBreaks(times: ArrayLike<number>): SessionBreak[] {
-  const out: SessionBreak[] = [];
-  let lastDay = "";
-  let previous: number | undefined;
-  for (let i = 0; i < times.length; i += 1) {
-    const t = times[i];
-    if (t === undefined) {
-      continue;
-    }
-    if (!isDailyGrainStamp(t)) {
-      // A real intraday bar is the candle immediately before the next
-      // backfill day. The rule belongs between those two candles, not
-      // between the new day and the last daily row before the session.
-      previous = t;
-      continue;
-    }
-    const day = dayText(dayNumber(t));
-    if (day === lastDay) {
-      previous = t;
-      continue;
-    }
-    out.push({
-      t,
-      day,
-      label: dayLabelFormat.format(new Date(t)),
-      first: out.length === 0,
-      ...(previous !== undefined ? { previous } : {}),
-    });
-    lastDay = day;
     previous = t;
   }
   return out;

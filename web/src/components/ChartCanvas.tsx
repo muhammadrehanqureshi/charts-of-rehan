@@ -72,7 +72,6 @@ import {
 import { flowColumns } from "../chart/flow";
 import { opensDay } from "../chart/axis";
 import {
-  calendarBreaks,
   dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
@@ -265,8 +264,6 @@ interface EngineState {
   chartTimes: number[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
-  /** The daily-grain days behind the tape: one candle per day, one rule each. */
-  calendarBreaks: readonly SessionBreak[];
 }
 
 /** The nearest value at or below `value`, or -1 for an empty list. */
@@ -792,7 +789,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
       realTimes: [],
       chartTimes: [],
       breaks: [],
-      calendarBreaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -969,17 +965,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // session rules.
     state.breaks = hasSessionBreaks(resolution)
       ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
-          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
-          return item.previous === undefined ? moved
-            : { ...moved, previous: chartMsOf(item.previous) };
-        })
-      : [];
-    // Behind the tape the store holds one candle per day, and those days are
-    // divided too: every date is its own block. They are calendar days, not
-    // recorded sessions, so the plan collapses them to month starts when the
-    // axis cannot give each day a rule of its own.
-    state.calendarBreaks = hasDailyBackfill(resolution)
-      ? calendarBreaks(realTimes).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
             : { ...moved, previous: chartMsOf(item.previous) };
@@ -1169,13 +1154,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // used to land on top of the candles and the legend. The axis carries the
     // dates, so going back in time changes the candles and nothing else.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
-    if (state.calendarBreaks.length > 1) {
-      paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
-        ruleColors, true, cssHeight, dpr, false);
-    }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        ruleColors, false, cssHeight, dpr, false);
+        ruleColors, true, cssHeight, dpr, false);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
