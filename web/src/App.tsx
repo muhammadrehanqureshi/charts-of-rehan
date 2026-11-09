@@ -109,8 +109,18 @@ function isFlatFillRung(resolution: Resolution): boolean {
  */
 const INTRADAY_SESSIONS = 20;
 
-/** The rolling decade the daily store holds, requested behind coarse rungs. */
-const DAILY_BACKFILL_DAYS = 2_600;
+/**
+ * How many daily rows an intraday rung may attach: a tail, not a decade.
+ *
+ * Those rows only stand in for sessions the recorder holds no tape for (the
+ * 4-6 Nov gap, a holiday week), so a fortnight covers every gap this chart
+ * has produced. Requesting the store's whole decade was the earlier shape:
+ * it squeezed five recorded sessions into the last two percent of the axis
+ * and gave every daily candle a session rule of its own, which is what made
+ * the 1h chart read as if every candle were a session. The 1D rung carries
+ * the decade; an intraday rung draws its own grain plus the missing tail.
+ */
+const DAILY_TAIL_DAYS = 15;
 
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
@@ -539,7 +549,7 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
-    backfillDays: hasDailyBackfill(resolution) ? DAILY_BACKFILL_DAYS : undefined,
+    backfillDays: hasDailyBackfill(resolution) ? DAILY_TAIL_DAYS : undefined,
     fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A

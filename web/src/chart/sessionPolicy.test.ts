@@ -102,6 +102,25 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[1]?.previous).toBe(times[4]);
   });
 
+  it("draws the join where the daily rows end and the tape begins", () => {
+    const times = [
+      at("2026-11-04", 12, 0),
+      at("2026-11-05", 12, 0),
+      at("2026-11-06", 12, 0),
+      at("2026-11-10", 9, 32),
+      at("2026-11-10", 10, 32),
+      at("2026-11-11", 9, 32),
+    ];
+    const breaks = dayBreaks(times, "1h");
+    // The daily block is calendar history, not a session; 10 Nov is where the
+    // intraday tape starts, so its rule has a bar before it and is drawn.
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2026-11-10", "2026-11-11",
+    ]);
+    expect(breaks[0]?.first).toBe(false);
+    expect(breaks[0]?.previous).toBe(times[2]);
+  });
+
   it("does not put a session rule on a daily-grain backfill row", () => {
     const times = [
       at("2026-10-30", 15, 32),
