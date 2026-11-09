@@ -402,8 +402,13 @@ button:disabled {
 
 .watchpane {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  /* The list and the detail card share the pane. With an auto second row the
+     tall tape card consumed the whole height and the watchlist collapsed to
+     zero, so the user could only see "PRL PSX" and never the rows. Two
+     bounded, independently scrolling rows keep the list visible. */
+  grid-template-rows: minmax(250px, 1fr) minmax(220px, 1fr);
   min-height: 0;
+  overflow: hidden;
   border-left: 1px solid var(--line);
   background: var(--bg);
 }
@@ -415,7 +420,10 @@ button:disabled {
  * row being charted sits in a lighter plate with a teal edge on its left. */
 .watchlist {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* Head, scrolling body, note: three children. The old four-row template
+     gave the body an auto row and left the note with the flexible one, which
+     made the table grow past the pane instead of scrolling inside it. */
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -882,12 +890,16 @@ button:disabled {
 .detail {
   display: grid;
   gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
   margin: 0;
   padding: 10px;
   border: 0;
   border-top: 1px solid var(--line);
   border-radius: 0;
   background: var(--bg);
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a transparent;
 }
 
 .detail__quiet {
@@ -1509,6 +1521,11 @@ button:disabled {
 }
 
 .status__item--stale {
+  color: var(--warn);
+}
+
+/* Flat fill is a fallback, not a live price: keep its count warning-coloured. */
+.status__item--synthetic {
   color: var(--warn);
 }
 

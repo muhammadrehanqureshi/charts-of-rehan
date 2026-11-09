@@ -167,6 +167,8 @@ export class ChartClient {
       days?: number | undefined;
       /** Fill older coarser-grained bars so the chart scrolls back years. */
       backfill?: number | undefined;
+      /** Add marked flat buckets for missing no-trade session buckets. */
+      fill?: "flat" | undefined;
       signal?: AbortSignal;
       /** Longer for a decade backfill; the ordinary 8s is for live polls. */
       timeoutMs?: number;
@@ -184,6 +186,9 @@ export class ChartClient {
     }
     if (options.backfill !== undefined && options.backfill > 1) {
       query.set("backfill", String(Math.round(options.backfill)));
+    }
+    if (options.fill === "flat") {
+      query.set("fill", "flat");
     }
     const url = `${this.baseUrl}/api/bars?${query.toString()}`;
     const raw = await this.request(url, options.signal, options.timeoutMs);
@@ -392,13 +397,16 @@ export class ChartClient {
     symbol: string,
     resolution: Resolution,
     handlers: StreamHandlers,
-    options: { day?: string } = {},
+    options: { day?: string; fill?: "flat" | undefined } = {},
   ): StreamHandle {
     const query = new URLSearchParams({ symbol, resolution });
     // A named session is a finished thing: there is nothing to stream, so the
     // caller simply does not ask for one and gets a plain REST answer.
     if (options.day !== undefined && options.day.length > 0) {
       query.set("day", options.day);
+    }
+    if (options.fill === "flat") {
+      query.set("fill", "flat");
     }
     const path = `/api/stream?${query.toString()}`;
     const url = this.baseUrl.length > 0 ? `${this.baseUrl}${path}` : path;

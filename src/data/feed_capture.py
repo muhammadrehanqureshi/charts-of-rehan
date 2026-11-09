@@ -111,6 +111,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from src.data.capture_health import status_view
+from src.data.sessions import capture_bounds
 
 from src import config  # noqa: E402
 
@@ -286,9 +287,34 @@ class CaptureSession:
         self.last_frame_at: str | None = None
         self.last_error: str | None = None
         self.running = False
+        #: True only while the socket is inside the owner's 08:55-16:00
+        #: (Mon-Thu) or 08:55-17:00 (Fri) recording window. The process stays
+        #: alive outside it and waits for the next window instead of exiting.
+        self.capture_open = False
         self.started_at = now_karachi().isoformat()
         self._fh = None
         self._fh_day = None
+
+    def _capture_is_open(self) -> bool:
+        """Is the named owner recording window open right now?"""
+        now = now_karachi()
+        bounds = capture_bounds(now.date())
+        return bounds is not None and bounds[0] <= now < bounds[1]
+
+    def _seconds_until_window(self) -> float:
+        """Seconds until the next recording window opens (bounded wait)."""
+        now = now_karachi()
+        for offset in range(0, 8):
+            day = (now + timedelta(days=offset)).date()
+            bounds = capture_bounds(day)
+            if bounds is None:
+                continue
+            opened, closed = bounds
+            if opened <= now < closed:
+                return 1.0
+            if now < opened:
+                return max(1.0, (opened - now).total_seconds())
+        return 60.0
 
     def _open_file(self) -> None:
         day = now_karachi().strftime("%Y%m%d")
@@ -326,6 +352,7 @@ class CaptureSession:
         status = {
             "pid": os.getpid() if self.running else None,
             "running": self.running,
+            "capturing": self.capture_open,
             "started_at": self.started_at,
             "updated_at": now_karachi().isoformat(),
             "feed_hosts": FEED_HOSTS,
@@ -364,6 +391,16 @@ class CaptureSession:
         self.write_status()
         backoff = 2.0
         while self.deadline is None or time.time() < self.deadline:
+            # In production the recorder runs only inside the owner's window.
+            # A bounded --duration run is deliberately not gated: that flag is
+            # for tests and diagnostics at any hour.
+            if self.duration is None and not self._capture_is_open():
+                self.capture_open = False
+                self.write_status()
+                time.sleep(min(30.0, self._seconds_until_window()))
+                continue
+            self.capture_open = True
+            self.write_status()
             buf = b""
             sock = None
             try:
@@ -377,6 +414,8 @@ class CaptureSession:
                 last_status = 0.0
                 last_tick = time.time()
                 while self.deadline is None or time.time() < self.deadline:
+                    if self.duration is None and not self._capture_is_open():
+                        break
                     try:
                         chunk = sock.recv(65536)
                         if not chunk:
@@ -433,6 +472,12 @@ class CaptureSession:
                         pass
             if self.deadline is not None and time.time() >= self.deadline:
                 break
+            if self.duration is None and not self._capture_is_open():
+                self.capture_open = False
+                self.write_status()
+                print(f"{now_karachi():%H:%M:%S} recording window closed; "
+                      f"waiting for the next 08:55")
+                continue
             self.counters["reconnects"] += 1
             self.write_status()
             print(f"{now_karachi():%H:%M:%S} reconnecting in {backoff:.0f}s")

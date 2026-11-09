@@ -18,6 +18,7 @@ import { useVisibility } from "../hooks/useVisibility";
 
 import type { HealthReport, MarketContext, Resolution } from "../api/types";
 import type { FeedStatus } from "../hooks/useChartFeed";
+import type { DayCount } from "../chart/dayCounts";
 import { formatClock, formatMinutes, formatStamp } from "../chart/format";
 import { timeframeLabel } from "../chart/timeframes";
 
@@ -33,6 +34,13 @@ export interface StatusBarProps {
   readonly captureName: string;
   readonly sha256: string;
   readonly bars: number;
+  /** How many of those bars are fill=flat placeholders, not trades. */
+  readonly syntheticBars: number;
+  /** Candles per Karachi date, oldest first: the chart's own blocks. */
+  readonly dayCounts: readonly DayCount[];
+  /** Distinct older dates the list leaves out. */
+  readonly earlierDays: number;
+  readonly fillMode: boolean;
   readonly gaps: number;
   readonly missingMinutes: number;
   readonly sourceLabel: string;
@@ -64,8 +72,10 @@ const STATUS_TEXT: Record<FeedStatus, string> = {
 export function StatusBar(props: StatusBarProps) {
   const {
     status, resolution, market, symbol, day, sessionNote, archived,
-    captureName, sha256, bars, gaps, missingMinutes, sourceLabel,
-    delaySeconds, lastBarAt, asOf, volumeAvailable, staleAfterMinutes,
+    captureName, sha256, bars, syntheticBars, dayCounts, earlierDays, fillMode,
+    gaps, missingMinutes,
+    sourceLabel, delaySeconds, lastBarAt, asOf, volumeAvailable,
+    staleAfterMinutes,
     ordersTotal, error, details, tape, recorder,
   } = props;
 
@@ -137,6 +147,26 @@ export function StatusBar(props: StatusBarProps) {
         <span className="status__item">
           <span className="status__key">bars</span> {bars}
         </span>
+        {dayCounts.length > 1 ? (
+          <span className="status__item"
+                title={"candles per Karachi date on this chart, oldest first" +
+                  "; * marks a date whose block includes fill=flat buckets"}>
+            <span className="status__key">days</span>{" "}
+            {dayCounts.map((item) =>
+              `${item.label} ${item.count}${item.synthetic > 0 ? "*" : ""}`,
+            ).join(" · ")}
+            {earlierDays > 0 ? ` · +${earlierDays} earlier` : ""}
+          </span>
+        ) : null}
+        {fillMode ? (
+          <span className={syntheticBars > 0
+            ? "status__item status__item--synthetic"
+            : "status__item"}
+                title="fill=flat adds zero-volume, zero-range buckets marked synthetic; they are not trades">
+            <span className="status__key">flat fill</span>{" "}
+            {syntheticBars > 0 ? `${syntheticBars} synthetic` : "no missing buckets"}
+          </span>
+        ) : null}
         {ordersTotal !== null ? (
           <span className="status__item" title="the venue's own cumulative order counter for this session">
             <span className="status__key">orders</span> {ordersTotal.toLocaleString("en-GB")}

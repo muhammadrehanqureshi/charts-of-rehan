@@ -43,12 +43,6 @@ const dayLabelFormat = new Intl.DateTimeFormat("en-GB", {
   month: "short",
 });
 
-const monthLabelFormat = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Asia/Karachi",
-  month: "short",
-  year: "numeric",
-});
-
 /** A band is [open, close) in minutes after midnight, Karachi time. */
 export type SessionBand = readonly [open: number, close: number];
 
@@ -312,13 +306,66 @@ function slotId(ms: number, schedule?: SessionSchedule): number {
 }
 
 /**
- * Every session change in a series, in bar order.
+ * One rule per Karachi trading date, in bar order.
  *
- * A break is a change of session band, not merely a change of date. That is
- * what makes Friday's lunch visible and what keeps a data hole inside one
- * band from being mistaken for a market close. The first intraday session is
- * still returned (with `first: true`) so callers can anchor it, but the
- * renderer does not draw a rule before the series begins.
+ * This is the chart's session division: every candle from 06 Nov belongs to
+ * 06 Nov, even on a Friday whose two official bands are separated by lunch.
+ * A band change is a time gap inside the day, not a new day, and must never
+ * leave one date in two pieces of two or three candles.
+ *
+ * Daily-grain backfill rows are skipped as boundaries but still advance
+ * `previous`, so the rule before a real session sits after the last backfill
+ * row rather than halfway across it. The first date is returned with
+ * `first: true`; the renderer does not draw a rule before the series begins.
+ */
+export function dayBreaks(
+  times: ArrayLike<number>,
+  resolution: Resolution,
+): SessionBreak[] {
+  if (!hasSessionBreaks(resolution)) {
+    return [];
+  }
+  const out: SessionBreak[] = [];
+  let lastDay = Number.NaN;
+  let previous: number | undefined;
+  for (let i = 0; i < times.length; i += 1) {
+    const t = times[i];
+    if (t === undefined || !Number.isFinite(t)) {
+      continue;
+    }
+    // A backfill row belongs to the previous date's edge, but it is not a
+    // candle in the new date's session and must not create a rule itself.
+    if (!isIntradayStamp(t, resolution)) {
+      previous = t;
+      continue;
+    }
+    const day = dayNumber(t);
+    if (day === lastDay) {
+      previous = t;
+      continue;
+    }
+    out.push({
+      t,
+      day: dayText(day),
+      label: dayLabelFormat.format(new Date(t)),
+      first: out.length === 0,
+      ...(previous !== undefined ? { previous } : {}),
+    });
+    lastDay = day;
+    previous = t;
+  }
+  return out;
+}
+
+/**
+ * Every band change in a series, in bar order.
+ *
+ * Kept for callers that need Friday's lunch as a separate intraday session;
+ * the chart uses `dayBreaks` because the owner's division is the date. A
+ * band change is not a new date, and must not split a Friday into 3+2 bars.
+ * The first intraday session is still returned (with `first: true`) so
+ * callers can anchor it, but the renderer does not draw a rule before the
+ * series begins.
  *
  * The rung's own policy is applied here, not by the caller: a calendar rung
  * yields no intraday rules even if a caller forgets to ask, which is the
@@ -359,39 +406,46 @@ export function sessionBreaks(
 }
 
 /**
- * Month boundaries across the daily-grain history behind a coarse rung.
+ * Day boundaries across the daily-grain history behind a coarse rung.
  *
- * A 10m/15m/30m/1h/4h chart carries a decade of daily rows before its first
- * real intraday session. Those rows are calendar bars, so there is no intraday
- * session to draw between them; one rule per bar would be a wall of thousands
- * of lines. Month starts are the same visual language at the only cadence
- * those rows honestly support, and they keep a reader oriented when the
- * viewport is panned back into 2024. Real intraday sessions still get every
+ * A 10m/15m/30m/1h/4h chart carries daily rows where the recorder has no
+ * intraday session. Those rows are whole-day bars, so their only honest
+ * break is at the day they open. Keep every day as a candidate: the paint
+ * plan collapses crowded candidates to the first day of each month, and
+ * keeps every day when the reader has zoomed in far enough to read them.
+ * This is what puts a rule between 4, 5 and 6 Nov when those days are daily
+ * backfill rather than real sessions. Real intraday sessions still get every
  * session rule from `sessionBreaks`.
  */
 export function calendarBreaks(times: ArrayLike<number>): SessionBreak[] {
   const out: SessionBreak[] = [];
-  let lastMonth = "";
+  let lastDay = "";
   let previous: number | undefined;
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
-    if (t === undefined || !isDailyGrainStamp(t)) {
+    if (t === undefined) {
+      continue;
+    }
+    if (!isDailyGrainStamp(t)) {
+      // A real intraday bar is the candle immediately before the next
+      // backfill day. The rule belongs between those two candles, not
+      // between the new day and the last daily row before the session.
+      previous = t;
       continue;
     }
     const day = dayText(dayNumber(t));
-    const month = day.slice(0, 7);
-    if (month === lastMonth) {
+    if (day === lastDay) {
       previous = t;
       continue;
     }
     out.push({
       t,
       day,
-      label: monthLabelFormat.format(new Date(t)),
+      label: dayLabelFormat.format(new Date(t)),
       first: out.length === 0,
       ...(previous !== undefined ? { previous } : {}),
     });
-    lastMonth = month;
+    lastDay = day;
     previous = t;
   }
   return out;

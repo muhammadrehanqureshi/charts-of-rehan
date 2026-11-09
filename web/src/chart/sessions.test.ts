@@ -105,7 +105,7 @@ describe("sessionBreaks", () => {
     ]);
   });
 
-  it("marks month starts across daily-grain history, not every day", () => {
+  it("keeps a candidate rule for every daily-grain day", () => {
     const times = [
       pkt("2024-04-29", "12:00"),
       pkt("2024-04-30", "12:00"),
@@ -115,12 +115,12 @@ describe("sessionBreaks", () => {
     ];
     const breaks = calendarBreaks(times);
     expect(breaks.map((item) => item.day)).toEqual([
-      "2024-04-29", "2024-05-01", "2024-06-03",
+      "2024-04-29", "2024-04-30", "2024-05-01", "2024-05-02", "2024-06-03",
     ]);
     expect(breaks[0]?.first).toBe(true);
     expect(breaks[1]?.first).toBe(false);
-    expect(breaks[1]?.label).toBe("May 2024");
-    expect(breaks[2]?.previous).toBe(times[3]);
+    expect(breaks[1]?.label).toBe("30 Apr");
+    expect(breaks[4]?.previous).toBe(times[3]);
   });
 
   it("covers every intraday rung and no calendar rung", () => {

@@ -79,6 +79,17 @@ describe("ColumnSeries", () => {
     expect(series.at(49)?.c).toBe(149);
   });
 
+  it("keeps the synthetic fill marker on the bar it belongs to", () => {
+    const series = new ColumnSeries();
+    series.upsertMany([
+      bar(0, 100),
+      { ...bar(1, 100), synthetic: true },
+    ]);
+    expect(series.at(0)?.synthetic).toBe(false);
+    expect(series.at(1)?.synthetic).toBe(true);
+    expect(series.columns().synthetic[1]).toBe(1);
+  });
+
   it("counts appended and revised bars separately", () => {
     const series = seriesOf(2);
     const counts = series.upsertMany([bar(1, 500), bar(2, 200)]);

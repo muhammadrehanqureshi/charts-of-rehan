@@ -212,7 +212,7 @@ class ChartHandler(BaseHTTPRequestHandler):
 
     def _payload(self, symbol: str, resolution: str, limit: int,
                  day: str | None = None, days: int = 0,
-                 backfill: int = 0) -> dict:
+                 backfill: int = 0, fill: str = "") -> dict:
         """The chart payload for one symbol, via the shared builder.
 
         ``day`` names one session; without it the builder describes today and
@@ -225,7 +225,7 @@ class ChartHandler(BaseHTTPRequestHandler):
         body = build_payload(self.state.store, self.state.source, symbol,
                              resolution, limit=limit,
                              moment=self.state.moment(), day=day,
-                             days=days, backfill=backfill).as_dict()
+                             days=days, backfill=backfill, fill=fill).as_dict()
         body["ok"] = True
         body["ingest"] = self.state.ingestor.health()
         return body
@@ -327,13 +327,22 @@ class ChartHandler(BaseHTTPRequestHandler):
                           f"buy/sell split to report"],
             })
             return
-        rows = flow_for(day or None)
-        # An unnamed question follows the same session the catalogue's own
-        # facts do, so the answer names the day it describes rather than
-        # leaving a Sunday's empty tape to be read as the chart's session.
+        # The watchlist's unnamed question is about the live day, not the
+        # newest stored session. On a holiday it must answer with today's
+        # empty tape, never with Friday's totals relabelled as today's.
+        try:
+            rows = flow_for(day or None, live=not day)
+        except TypeError:
+            rows = flow_for(day or None)
         session_for = getattr(self.state.source, "flow_day", None)
-        session_day = (session_for(day or None).isoformat()
-                       if callable(session_for) else day or None)
+        if callable(session_for):
+            try:
+                session_day = session_for(day or None,
+                                          live=not day).isoformat()
+            except TypeError:
+                session_day = session_for(day or None).isoformat()
+        else:
+            session_day = day or None
         notes: list[str] = []
         if not rows:
             notes.append(
@@ -495,12 +504,17 @@ class ChartHandler(BaseHTTPRequestHandler):
                 f"source {self.state.source.name} serves the running session "
                 f"only; it keeps no session archive to read {wanted}")
             return
+        try:
+            fill = service.normalise_fill(query.get("fill"))
+        except ContractError as exc:
+            self._send_error_json(400, "BAD_FILL", str(exc))
+            return
         if not day:
             # Today's live route: a symbol nobody has asked for yet is worth
             # warming, because the next poll of this chart will want it.
             self.state.ingestor.watch(symbol)
         self._send_json(self._payload(symbol, resolution, limit, day or None,
-                                      days, backfill))
+                                      days, backfill, fill))
 
     # ----------------------------------------------------------------- SSE
     def _stream(self, query: dict) -> None:
@@ -513,11 +527,16 @@ class ChartHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error_json(400, "UNSUPPORTED_RESOLUTION", str(exc))
             return
+        try:
+            fill = service.normalise_fill(query.get("fill"))
+        except ContractError as exc:
+            self._send_error_json(400, "BAD_FILL", str(exc))
+            return
         # The first payload is built before any header is written, so a
         # failure here is still an ordinary JSON error rather than half a
         # stream. Only after it exists does the response become an event
         # stream.
-        initial = self._payload(symbol, resolution, 1500)
+        initial = self._payload(symbol, resolution, 1500, fill=fill)
         subscription = self.state.ingestor.subscribe(symbol)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -550,7 +569,8 @@ class ChartHandler(BaseHTTPRequestHandler):
                         # not being polled to death, and the browser a hidden
                         # tab owns closes its stream entirely.
                         try:
-                            fresh = self._payload(symbol, resolution, 1500)
+                            fresh = self._payload(symbol, resolution, 1500,
+                                                  fill=fill)
                         except Exception:
                             fresh = None
                         if fresh is not None and fresh["bars"] != last_bars:

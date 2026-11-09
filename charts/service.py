@@ -50,6 +50,68 @@ def _stamp(moment) -> str:
 #: them a data gap would train a reader to ignore the list.
 GAP_FLOOR_MINUTES = 2
 
+#: The only fill mode the API accepts. It is deliberately not the default:
+#: a synthetic bucket must be requested, and every one of them is marked.
+FILL_MODES = ("flat",)
+
+
+def normalise_fill(value: str | None) -> str:
+    """The requested fill mode, or an empty string for the honest default."""
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    if text not in FILL_MODES:
+        raise ContractError(
+            f"fill must be one of {', '.join(FILL_MODES)} or omitted, not "
+            f"{value!r}")
+    return text
+
+
+def fill_flat_bars(bars: list[Bar], expected: list[datetime],
+                   resolution: str) -> tuple[list[Bar], int]:
+    """Add a marked flat bucket for every expected bucket that has no bar.
+
+    This is an explicit fallback, never a substitute for real data. Each
+    generated bar carries the previous close (or the first real bar's open
+    before the series starts), a zero range and zero volume, and
+    ``synthetic=True``. The real bars are returned unchanged; if there is no
+    real bar to anchor the session, nothing is generated, because a flat zero
+    is not a price.
+    """
+    if not bars or not expected:
+        return list(bars), 0
+    known = {bar.t: bar for bar in bars}
+    output: list[Bar] = []
+    added = 0
+    price = bars[0].o
+    for bucket in expected:
+        stamp = _stamp(bucket)
+        found = known.get(stamp)
+        if found is not None:
+            output.append(found)
+            price = found.c
+            continue
+        flat = Bar.build(
+            t=bucket, o=price, h=price, l=price, c=price, v=0,
+            synthetic=True)
+        output.append(flat)
+        added += 1
+    # A source may keep a real bar outside the expected grid (a deliberately
+    # late print, for example). Fill mode adds buckets; it never deletes one.
+    placed = {bar.t for bar in output}
+    output.extend(bar for bar in bars if bar.t not in placed)
+    output.sort(key=lambda bar: bar.t)
+    return output, added
+
+
+def _fill_note(added: int, resolution: str, *, forming: bool = False) -> str:
+    if added <= 0:
+        return ""
+    return (f"{added} flat no-trade {spec_of(resolution)} bucket(s) were "
+            f"added by fill=flat; each carries zero volume and zero range "
+            f"and is marked synthetic=true, so it is not a trade"
+            + (" and the session is still forming" if forming else ""))
+
 #: Resolutions whose buckets are the tape's own minute grid. Everything else
 #: is either finer (ticks, where a missing second is not a session gap) or
 #: calendar (where a missing day is reported as an absent session, not a
@@ -198,9 +260,13 @@ def _daily_backfill(source: BarSource, symbol: str, backfill: int,
     wanted = min(int(backfill or 0), DAILY_BACKFILL_CAP)
     if wanted <= 0 or not seen:
         return []
-    oldest = min(seen).split("T")[0]
-    if oldest <= "":  # pragma: no cover - defensive, never expected
-        return []
+    # A day that already has an intraday bar must never also receive a daily
+    # bar beside it. A day without one - the recorder was off, or the market
+    # was open before this capture existed - is the case the backfill fills.
+    # This includes the days after the last intraday capture, which is how a
+    # chart of 3 Nov can still show the exchange's own 4-6 Nov daily rows and
+    # cannot look three days stale.
+    seen_days = {stamp[:10] for stamp in seen}
     history = getattr(source, "history", None)
     if not callable(history):
         return []  # pragma: no cover - a source without history is unusable
@@ -213,26 +279,30 @@ def _daily_backfill(source: BarSource, symbol: str, backfill: int,
             f"the intraday sessions only"]
     added = 0
     earliest = ""
+    latest = ""
     for bar in daily:
         # The store answers oldest first, but the caller's order is not part
         # of the contract: skip a day the span already holds instead of
         # breaking, so an unordered feed cannot silently drop older years.
-        if bar.t[:10] >= oldest:
+        day_text = bar.t[:10]
+        if day_text in seen_days:
             continue
         if bar.t in seen:
             continue
         seen[bar.t] = bar
+        seen_days.add(day_text)
         added += 1
-        day_text = bar.t[:10]
         if not earliest or day_text < earliest:
             earliest = day_text
+        if not latest or day_text > latest:
+            latest = day_text
     if added == 0 or not earliest:
         return []
     return [
-        f"the daily backfill added {added} daily-grain bar(s) behind the "
-        f"intraday sessions, back to {earliest}, from the same feed a 1D "
-        f"chart reads; a candle from {earliest} covers a whole Karachi day, "
-        f"not {spec_of(resolution)}",
+        f"the daily backfill added {added} daily-grain bar(s) where the "
+        f"tape holds no intraday session, from {earliest} to {latest}, from "
+        f"the same feed a 1D chart reads; a candle in that stretch covers a "
+        f"whole Karachi day, not {spec_of(resolution)}",
     ]
 
 
@@ -245,7 +315,8 @@ def spec_of(resolution: str) -> str:
 def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
                          resolution: str, *, limit: int, context,
                          moment: datetime | None, today: date,
-                         days: int, backfill: int = 0) -> ChartPayload:
+                         days: int, backfill: int = 0,
+                         fill: str = "") -> ChartPayload:
     """The newest ``days`` sessions, concatenated into one contiguous chart.
 
     This is the TradingView habit the owner asked for: an intraday chart that
@@ -279,7 +350,7 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         try:
             payloads.append(_session_payload(
                 source, symbol, resolution, day=name, limit=0,
-                context=context, moment=moment))
+                context=context, moment=moment, fill=fill))
         except ContractError:
             raise
         except Exception as exc:  # noqa: BLE001 - one session may not undo all
@@ -318,7 +389,10 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
     for payload in payloads:
         gaps.extend(payload.gaps)
     gaps.sort(key=lambda gap: gap.start)
+    filled = sum(1 for bar in bars if bar.synthetic)
     notes: list[str] = []
+    if filled:
+        notes.append(_fill_note(filled, resolution))
     if held:
         notes.append(
             f"merged {held} session(s) with bars for {symbol} of "
@@ -364,7 +438,7 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
 
 def _session_payload(source: BarSource, symbol: str, resolution: str, *,
                      day: str, limit: int, context, moment: datetime | None,
-                     ) -> ChartPayload:
+                     fill: str = "") -> ChartPayload:
     """One named session, read from the source's own store for that day."""
     day_date = date.fromisoformat(day)
     spec = ladder.spec_for(resolution)
@@ -381,6 +455,9 @@ def _session_payload(source: BarSource, symbol: str, resolution: str, *,
     if forming:
         expected = [bucket for bucket in expected
                     if _stamp(bucket) <= _stamp(now)]
+    filled = 0
+    if fill == "flat":
+        bars, filled = fill_flat_bars(bars, expected, resolution)
     step = _gap_step(resolution)
     gap_floor = max(GAP_FLOOR_MINUTES, step)
     gaps = ([gap for gap in BarStore.gaps(bars, expected, step_minutes=step)
@@ -389,6 +466,9 @@ def _session_payload(source: BarSource, symbol: str, resolution: str, *,
     build_note = _build_note(resolution)
     if build_note:
         notes.append(build_note)
+    fill_note = _fill_note(filled, resolution, forming=forming)
+    if fill_note:
+        notes.append(fill_note)
     if bars:
         if expected:
             first = bars[0].t
@@ -490,7 +570,8 @@ def _source_notes(source: BarSource, symbol: str, *, day=None) -> list[str]:
 
 def _live_multi_payload(store: BarStore, source: BarSource, symbol: str,
                         resolution: str, *, limit: int, context,
-                        moment: datetime | None, today: date) -> ChartPayload:
+                        moment: datetime | None, today: date,
+                        fill: str = "") -> ChartPayload:
     """A live payload for any rung other than the store's own minute grain.
 
     The store only ever holds the tape's minute bars. Everything else is asked
@@ -571,6 +652,12 @@ def _live_multi_payload(store: BarStore, source: BarSource, symbol: str,
                     ladder.expected_bucket_starts(gap_day, resolution)
                     if fallback_day is not None
                     or bucket <= sessions.law.as_karachi(moment)]
+    filled = 0
+    if fill == "flat":
+        bars, filled = fill_flat_bars(bars, expected, resolution)
+        if filled:
+            notes.append(_fill_note(filled, resolution,
+                                    forming=fallback_day is None))
     gaps = []
     if bars and expected and bars[-1].t[:10] == gap_day.isoformat():
         first = bars[0].t
@@ -618,7 +705,7 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
                   resolution: str, *, limit: int = 1500,
                   moment: datetime | None = None,
                   day: date | str | None = None, days: int = 0,
-                  backfill: int = 0) -> ChartPayload:
+                  backfill: int = 0, fill: str = "") -> ChartPayload:
     """One symbol's chart payload, ready for the wire.
 
     ``limit`` keeps a long session from shipping thousands of bars to a screen
@@ -655,6 +742,7 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
     except ValueError as exc:
         raise ContractError(str(exc)) from exc
     resolution = canonical
+    fill = normalise_fill(fill)
     context = sessions.market_context(moment)
     today = _current_session(moment)
     wanted = day.isoformat() if isinstance(day, date) else (
@@ -669,19 +757,20 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
                 f"source {getattr(source, 'name', source)} serves the running "
                 f"session only; it keeps no store to read {wanted} from")
         return _session_payload(source, symbol, resolution, day=wanted,
-                                limit=limit, context=context, moment=moment)
+                                limit=limit, context=context, moment=moment,
+                                fill=fill)
 
     spec = ladder.spec_for(resolution)
     if days > 1 and not spec.calendar:
         return _merged_days_payload(store, source, symbol, resolution,
                                     limit=limit, context=context,
                                     moment=moment, today=today, days=days,
-                                    backfill=backfill)
+                                    backfill=backfill, fill=fill)
 
     if resolution != "1m":
         return _live_multi_payload(store, source, symbol, resolution,
                                    limit=limit, context=context,
-                                   moment=moment, today=today)
+                                   moment=moment, today=today, fill=fill)
 
     series = store.series(symbol, resolution)
     bars = list(series.bars) if series else []
@@ -697,7 +786,8 @@ def build_payload(store: BarStore, source: BarSource, symbol: str,
         if fallback:
             payload = _session_payload(source, symbol, resolution,
                                        day=fallback, limit=limit,
-                                       context=context, moment=moment)
+                                       context=context, moment=moment,
+                                       fill=fill)
             payload.notes.insert(
                 0, f"today ({today.isoformat()}) has no bar for {symbol} yet, "
                    f"so this is the newest stored session, "
