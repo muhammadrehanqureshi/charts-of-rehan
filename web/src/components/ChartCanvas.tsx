@@ -747,15 +747,17 @@ export function ChartCanvas(props: ChartCanvasProps) {
         (stamp) => isIntradayStamp(stamp, resolution));
       const firstIntraday = firstIntradayIndex >= 0
         ? state.realTimes[firstIntradayIndex] : undefined;
-      const range = state.chart.timeScale().getVisibleLogicalRange();
       // An intraday tape is shorter than the daily series behind it, and that
       // older stretch carries no session rules because none of those days was
-      // recorded as a session. Say so whenever any of it is on the plate, so
-      // panning back reads as history rather than as breaks that vanished.
+      // recorded as a session. Say so, so panning back reads as history rather
+      // than as breaks that vanished.
+      //
+      // This is a fact about the data, not about the viewport: asking the
+      // visible range lost the note whenever the engine had not laid the chart
+      // out yet, which is precisely the pan-back case it exists for.
       const intraday = hasSessionBreaks(resolution);
-      const dailyInView = range !== null
-        && (firstIntradayIndex < 0 || range.from < firstIntradayIndex - 1);
-      if (first === undefined || range === null || !intraday || !dailyInView) {
+      const dailyInView = firstIntradayIndex > 0;
+      if (first === undefined || !intraday || !dailyInView) {
         setEdgeNote(null);
         return;
       }
@@ -1341,6 +1343,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
     });
     scheduleOverlayPaint();
   };
+
+  // The note describes the data behind the tape, so derive it again whenever a
+  // new dataset lands, not only when the reader pans or zooms.
+  useEffect(() => {
+    refreshHistoryEdge.current?.();
+  }, [series, version, resolution]);
 
   return (
     <div className="chart tv-chart" ref={wrapper}>
