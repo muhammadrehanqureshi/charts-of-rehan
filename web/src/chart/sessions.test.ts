@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  calendarBreaks,
+  dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
   intradayStamps,
@@ -119,7 +119,7 @@ describe("sessionBreaks", () => {
       pkt("2024-05-02", "12:00"),
       pkt("2024-06-03", "12:00"),
     ];
-    const breaks = calendarBreaks(times);
+    const breaks = dayBreaks(times, "1h");
     expect(breaks.map((item) => item.day)).toEqual([
       "2024-04-29", "2024-04-30", "2024-05-01", "2024-05-02", "2024-06-03",
     ]);
