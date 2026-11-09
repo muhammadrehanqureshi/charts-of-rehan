@@ -1163,36 +1163,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // The dotted session rules: one blue rule at every exchange session
-    // change, through the price pane and every study pane beneath it. The
-    // Only recorded sessions get a rule. A daily-grain bar is history, not a
-    // session: marking every one of them drew 2,470 rules across a decade and
-    // turned each daily candle into its own one-candle session.
-    // The daily-grain history is tinted so the calendar days behind the tape
-    // read as history rather than as recorded sessions of their own kind.
-    const firstIntraday = state.realTimes.findIndex(
-      (stamp) => isIntradayStamp(stamp, resolution));
-    if (firstIntraday > 0) {
-      const edgeX = state.chart.timeScale().timeToCoordinate(
-        (state.barTimes[firstIntraday]! / 1000) as never);
-      if (edgeX !== null && edgeX > 0) {
-        context.save();
-        context.fillStyle = "rgba(255, 255, 255, 0.03)";
-        context.fillRect(0, 0, Math.min(edgeX, frame.plotWidth), cssHeight);
-        context.restore();
-      }
-    }
-    // Both regions are divided by date: the calendar days behind the tape
-    // first, then the recorded sessions, each under the same crowding law, so
-    // a decade of days reads as one cadence rather than a pile of rules.
+    // The session rules: one dashed vertical at every date the chart divides,
+    // through the price pane and every study pane beneath it. Lines only -
+    // no tint on the older stretch, and no dates printed on the plot, which
+    // used to land on top of the candles and the legend. The axis carries the
+    // dates, so going back in time changes the candles and nothing else.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
     if (state.calendarBreaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
-        ruleColors, true, cssHeight, dpr, true);
+        ruleColors, true, cssHeight, dpr, false);
     }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        ruleColors, false, cssHeight, dpr, true);
+        ruleColors, false, cssHeight, dpr, false);
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
