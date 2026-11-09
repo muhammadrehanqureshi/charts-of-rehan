@@ -32,6 +32,47 @@ FRIDAY = date(2026, 10, 9)
 SUNDAY = date(2026, 10, 11)
 
 
+class CaptureWindowTest(unittest.TestCase):
+    """The recorder's window, in force or next, from stated moments.
+
+    The status bar prints this so an idle recorder reads as "opens 08:55"
+    rather than as a fault. A holiday and a weekend both have to be skipped
+    to the next real morning, which is why the scan is stated here rather
+    than left to the clock at test time.
+    """
+
+    def test_a_holiday_morning_names_the_next_trading_window(self):
+        # Monday 9 Nov 2026 is a PSX holiday: the next window is Tuesday's.
+        window = sessions.capture_window(
+            datetime(2026, 11, 9, 12, 34, tzinfo=KARACHI))
+        self.assertEqual(window, {
+            "opens": "2026-11-10T08:55:00+05:00",
+            "closes": "2026-11-10T16:00:00+05:00",
+        })
+
+    def test_inside_the_window_it_names_that_same_window(self):
+        window = sessions.capture_window(
+            datetime(2026, 11, 10, 9, 30, tzinfo=KARACHI))
+        self.assertEqual(window, {
+            "opens": "2026-11-10T08:55:00+05:00",
+            "closes": "2026-11-10T16:00:00+05:00",
+        })
+
+    def test_after_a_friday_close_it_names_monday(self):
+        window = sessions.capture_window(
+            datetime(2026, 10, 9, 17, 30, tzinfo=KARACHI))
+        self.assertEqual(window, {
+            "opens": "2026-10-12T08:55:00+05:00",
+            "closes": "2026-10-12T16:00:00+05:00",
+        })
+
+    def test_a_sunday_night_names_the_morning_after(self):
+        window = sessions.capture_window(
+            datetime(2026, 10, 11, 23, 0, tzinfo=KARACHI))
+        self.assertIsNotNone(window)
+        self.assertEqual(window["opens"], "2026-10-12T08:55:00+05:00")
+
+
 class MinutesTest(unittest.TestCase):
 
     def test_the_whole_session_is_every_band_minute(self):

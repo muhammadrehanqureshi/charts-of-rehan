@@ -289,6 +289,29 @@ def capture_bounds(d: date) -> tuple[datetime, datetime] | None:
     return _at(d, window[0]), _at(d, window[1])
 
 
+def next_capture_window(moment: datetime | None = None,
+                        look_ahead_days: int = 8,
+                        ) -> tuple[datetime, datetime] | None:
+    """The recording window in force now, or the next one within a week.
+
+    The recorder sleeps outside 08:55-16:00 (Mon-Thu) and 08:55-17:00
+    (Friday), so a chart that reports "idle" without naming the next open
+    leaves the owner guessing whether capture is dead or simply early. Both
+    answers come from this one table. Eight days is enough scanning to find
+    the Monday after a Friday close, holidays included.
+    """
+    now = as_karachi(moment)
+    for offset in range(0, max(1, look_ahead_days)):
+        day = date.fromordinal(now.date().toordinal() + offset)
+        bounds = capture_bounds(day)
+        if bounds is None:
+            continue
+        opened, closed = bounds
+        if now < closed:
+            return opened, closed
+    return None
+
+
 def band_bounds(d: date, band: Band) -> tuple[datetime, datetime]:
     """Open and close instants (Karachi zone) of one band on date d."""
     return _at(d, band[0]), _at(d, band[1])

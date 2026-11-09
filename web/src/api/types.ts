@@ -533,8 +533,15 @@ export interface HealthReport {
   readonly recorder?: {
     readonly state: string;
     readonly feed_connected: boolean;
+    /** True only inside the owner's 08:55 recording window. */
+    readonly capturing: boolean;
     readonly last_frame_age_seconds: number | null;
     readonly last_error?: string | null;
+    /** The recording window in force now or next; null when none is near. */
+    readonly window?: {
+      readonly opens: string;
+      readonly closes: string;
+    } | null;
   } | null;
 }
 
@@ -601,11 +608,28 @@ function parseFastRecorderHealth(raw: unknown): HealthReport["recorder"] {
   if (raw === undefined || raw === null) return raw === null ? null : undefined;
   const value = record(raw, "health.recorder");
   const lastError = optionalStr(value["last_error"]);
+  const window = parseRecorderWindow(value["window"]);
   return {
     state: optionalStr(value["state"]) ?? "UNKNOWN",
     feed_connected: value["feed_connected"] === true,
+    // An older service sends no flag: capture is then unknown, never claimed.
+    capturing: value["capturing"] === true,
     last_frame_age_seconds: optionalNum(value["last_frame_age_seconds"]),
     ...(lastError === null ? {} : { last_error: lastError }),
+    ...(window === undefined ? {} : { window }),
+  };
+}
+
+/** The recorder's recording window: absent from an older service, null if none. */
+function parseRecorderWindow(
+  raw: unknown,
+): { opens: string; closes: string } | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  const value = record(raw, "health.recorder.window");
+  return {
+    opens: stamp(value["opens"], "health.recorder.window.opens"),
+    closes: stamp(value["closes"], "health.recorder.window.closes"),
   };
 }
 
