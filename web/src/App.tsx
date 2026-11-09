@@ -110,17 +110,15 @@ function isFlatFillRung(resolution: Resolution): boolean {
 const INTRADAY_SESSIONS = 20;
 
 /**
- * How many daily rows an intraday rung may attach: a tail, not a decade.
+ * How many daily rows an intraday rung may attach behind its sessions.
  *
- * Those rows only stand in for sessions the recorder holds no tape for (the
- * 4-6 Nov gap, a holiday week), so a fortnight covers every gap this chart
- * has produced. Requesting the store's whole decade was the earlier shape:
- * it squeezed five recorded sessions into the last two percent of the axis
- * and gave every daily candle a session rule of its own, which is what made
- * the 1h chart read as if every candle were a session. The 1D rung carries
- * the decade; an intraday rung draws its own grain plus the missing tail.
+ * This is the reader's history, not a squeeze: the chart opens on the recorded
+ * sessions and these daily rows are the context behind them, reachable by
+ * panning. They carry no session rule of their own - a session is a recorded
+ * intraday date - so a decade of daily candles never reads as a decade of
+ * one-candle sessions. The toolbar can shorten it, or drop it entirely.
  */
-const DAILY_TAIL_DAYS = 15;
+const DAILY_TAIL_DAYS = 2_600;
 
 function spanFor(resolution: Resolution): number {
   switch (resolution) {

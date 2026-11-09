@@ -69,8 +69,8 @@ import {
   type ProfileBarSource,
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
+import { opensDay } from "../chart/axis";
 import {
-  calendarBreaks,
   dayBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
@@ -94,6 +94,14 @@ const MIN_HEIGHT = 220;
 const RIGHT_OFFSET_BARS = 5;
 /** How many bars the chart shows when it opens, TradingView's own window. */
 const WINDOW_BARS = 160;
+/**
+ * Daily rows the opening window keeps behind the first recorded session.
+ *
+ * Enough to show that history continues to the left, few enough that the
+ * sessions still own the plate: a decade of daily candles belongs to a pan,
+ * not to the view the chart opens on.
+ */
+const DAILY_CONTEXT_BARS = 30;
 
 /**
  * The opening window for a coarse rung.
@@ -124,6 +132,10 @@ function openingRange(times: readonly number[]): { from: number; to: number } {
         seen += 1;
       }
     }
+    // A little daily context behind the tape, never the whole store: the
+    // decade is one pan away, while 2,500 daily rows on screen would squeeze
+    // the recorded sessions into a sliver of the axis.
+    first = Math.max(0, first - DAILY_CONTEXT_BARS);
   }
   return {
     from: Math.max(0, first),
@@ -251,8 +263,6 @@ interface EngineState {
   chartTimes: number[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
-  /** Day candidates across the daily-grain history behind those sessions. */
-  calendarBreaks: readonly SessionBreak[];
 }
 
 /** The nearest value at or below `value`, or -1 for an empty list. */
@@ -406,6 +416,8 @@ export function ChartCanvas(props: ChartCanvasProps) {
   } | null>(null);
   const paintQueued = useRef(false);
   const timeMap = useRef<ChartTimeMap>({ chartSec: [], realMs: [] });
+  /** The bar the previous axis tick landed on: one bar never prints twice. */
+  const lastTickIndex = useRef<number>(Number.NaN);
 
   const showSeconds = resolution === "1s" || resolution === "10s";
 
@@ -444,15 +456,15 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       // A packed axis has no calendar distance, so the day itself has to be
       // named where a new session begins; otherwise 49 hourly bars have only
-      // a month label and every session rule reads the same.
-      const dayText = karachiDay.format(moment);
-      const before = index > 0 ? map.realMs[index - 1] : undefined;
-      if (before !== undefined
-          && karachiDay.format(new Date(before)) !== dayText) {
-        return dayText;
-      }
-      if (markType === TickMarkType.DayOfMonth) {
-        return dayText;
+      // a month label and every session rule reads the same. The date is
+      // printed once, on the bar that opens it: a tick that lands mid-day,
+      // and a second tick that lands on the very same bar, print a clock
+      // instead, which is what stops two dates overlapping on the axis.
+      const opens = opensDay(map.realMs, index)
+        && index !== lastTickIndex.current;
+      lastTickIndex.current = index;
+      if (opens) {
+        return karachiDay.format(moment);
       }
       return showSeconds ? secondsFormat.format(moment)
         : karachiClock.format(moment);
@@ -757,7 +769,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
       realTimes: [],
       chartTimes: [],
       breaks: [],
-      calendarBreaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -934,19 +945,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // session rules.
     state.breaks = hasSessionBreaks(resolution)
       ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
-          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
-          return item.previous === undefined ? moved
-            : { ...moved, previous: chartMsOf(item.previous) };
-        })
-      : [];
-    // A coarse rung carries a decade of daily rows where it has no real
-    // intraday session. Keep one candidate rule per such day; the plan's
-    // dense mode collapses those candidates to month starts when the
-    // viewport is packed, and keeps every day when there is room for it.
-    // That gives 4-6 Nov their own candidate rules, which the plan keeps
-    // when the window has room and collapses only when it does not.
-    state.calendarBreaks = hasDailyBackfill(resolution)
-      ? calendarBreaks(realTimes).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
             : { ...moved, previous: chartMsOf(item.previous) };
@@ -1132,15 +1130,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
     });
     // The dotted session rules: one blue rule at every exchange session
     // change, through the price pane and every study pane beneath it. The
-    // x-axis supplies the date labels, TradingView style; only the lines
-    // belong on the plot. Daily backfill day candidates and real intraday
-    // session rules obey one crowding law, so a zoomed-out chart reads one
-    // cadence instead of a sparse calendar beside a dashed pile.
+    // Only recorded sessions get a rule. A daily-grain bar is history, not a
+    // session: marking every one of them drew 2,470 rules across a decade and
+    // turned each daily candle into its own one-candle session.
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
-    if (state.calendarBreaks.length > 1) {
-      paintSessionBreaks(context, state.chart, frame, state.calendarBreaks,
-        ruleColors, true, cssHeight, dpr, true);
-    }
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
         ruleColors, false, cssHeight, dpr, true);
