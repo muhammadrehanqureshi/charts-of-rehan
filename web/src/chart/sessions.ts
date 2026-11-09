@@ -315,8 +315,10 @@ function slotId(ms: number, schedule?: SessionSchedule): number {
  *
  * Daily-grain backfill rows are skipped as boundaries but still advance
  * `previous`, so the rule before a real session sits after the last backfill
- * row rather than halfway across it. The first date is returned with
- * `first: true`; the renderer does not draw a rule before the series begins.
+ * row rather than halfway across it. `first: true` means there is no bar at
+ * all before this date; when calendar rows precede the tape, the first real
+ * date still earns its rule, because the daily block before it is a different
+ * grain and the join must be visible.
  */
 export function dayBreaks(
   times: ArrayLike<number>,
@@ -348,7 +350,7 @@ export function dayBreaks(
       t,
       day: dayText(day),
       label: dayLabelFormat.format(new Date(t)),
-      first: out.length === 0,
+      first: out.length === 0 && previous === undefined,
       ...(previous !== undefined ? { previous } : {}),
     });
     lastDay = day;
