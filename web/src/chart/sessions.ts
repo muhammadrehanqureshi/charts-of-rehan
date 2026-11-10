@@ -65,10 +65,13 @@ export interface RungPolicy {
   readonly breaks: boolean;
   /**
    * May this rung carry daily EOD rows (stamped Karachi noon) behind its
-   * recorded sessions? Those rows are calendar history, not intraday bars, so
-   * on these rungs they are excluded from the session-rule pass. On the
-   * minute and second rungs the flag is false, which matters: noon is a real
-   * intraday bar there and must not be discarded.
+   * recorded sessions?
+   *
+   * No intraday rung may. A daily row is a whole day wearing a 30-minute
+   * label, so a 30-minute chart that carried 2,462 of them showed blocks of
+   * hundreds of candles between two session rules, and no rule count could
+   * make those blocks hold one session's candles. The decade belongs to the
+   * daily, weekly and monthly rungs, where every candle is the same grain.
    */
   readonly calendarGrain: boolean;
 }
@@ -81,19 +84,19 @@ export interface RungPolicy {
  * about its grain.
  */
 export const RUNG_POLICY: Readonly<Record<Resolution, RungPolicy>> = {
-  // Every intraday rung carries the daily history behind its recorded
-  // sessions. The purpose of this chart is ten years at any timeframe, and a
-  // one-minute or five-minute view that stopped at the first recorded session
-  // while the hourly view carried the decade was the hole in that promise.
-  "1s": { breaks: true, calendarGrain: true },
-  "10s": { breaks: true, calendarGrain: true },
-  "1m": { breaks: true, calendarGrain: true },
-  "5m": { breaks: true, calendarGrain: true },
-  "10m": { breaks: true, calendarGrain: true },
-  "15m": { breaks: true, calendarGrain: true },
-  "30m": { breaks: true, calendarGrain: true },
-  "1h": { breaks: true, calendarGrain: true },
-  "4h": { breaks: true, calendarGrain: true },
+  // An intraday rung carries its own grain and nothing else. The session
+  // rules divide that rung's own candles, so a block between two rules is
+  // one session at this timeframe: six hours of 1h candles, twelve half-hour
+  // candles, 358 minutes. Mixing the daily decade in made that impossible.
+  "1s": { breaks: true, calendarGrain: false },
+  "10s": { breaks: true, calendarGrain: false },
+  "1m": { breaks: true, calendarGrain: false },
+  "5m": { breaks: true, calendarGrain: false },
+  "10m": { breaks: true, calendarGrain: false },
+  "15m": { breaks: true, calendarGrain: false },
+  "30m": { breaks: true, calendarGrain: false },
+  "1h": { breaks: true, calendarGrain: false },
+  "4h": { breaks: true, calendarGrain: false },
   "1D": { breaks: false, calendarGrain: false },
   "1d": { breaks: false, calendarGrain: false },
   session: { breaks: false, calendarGrain: false },
@@ -310,24 +313,17 @@ function slotId(ms: number, schedule?: SessionSchedule): number {
 }
 
 /**
- * One rule wherever one real session meets the next, read from the rung's own
- * candles.
+ * One rule per trading session, read from the rung's own candles.
  *
- * The chart carries a decade of daily EOD rows behind every intraday rung -
- * one candle per trading day, 2,462 of them at 1h. Dividing at every date
- * therefore put a rule on essentially every candle in the history, and the
- * viewport planner could only keep an arbitrary pixel-spaced subset of them,
- * which is exactly why rules landed on dates no reader could predict. The
- * division is now derived from the candles themselves: consecutive candles of
- * one Karachi date are one session, a lone noon-stamped candle is a daily
- * history row and never a session, and a rule is drawn where a session opens
- * with another session already behind it.
+ * The candles between two rules are what matters: they must be exactly one
+ * session of this rung, so a 1h block holds the session's six hours, a 30m
+ * block its twelve half-hours, a 4h block its two plates. That is arithmetic
+ * the data answers rather than a constant to guess: an intraday rung now
+ * carries only its own tape, so consecutive candles of one Karachi date are
+ * one session, and the date change is where the rule belongs.
  *
- * Because the input is the rung's own series, every timeframe divides its own
- * candles: a 1m chart divides its minutes, a 4h chart its four-hour plates, and
- * both name the same trading days. The first session is never ruled off, since
- * there is nothing to its left inside the series, and a Friday's lunch is not a
- * division - it is a gap inside one date.
+ * The first session is never ruled off - there is nothing to its left inside
+ * the series - and Friday's lunch is a gap inside one date, not a division.
  */
 export function dayBreaks(
   times: ArrayLike<number>,
@@ -336,49 +332,32 @@ export function dayBreaks(
   if (!hasSessionBreaks(resolution)) {
     return [];
   }
-  // Group runs of one date into flat arrays: a decade of candles must not
-  // allocate an object per bar while a series is being replayed.
-  const starts: number[] = [];
-  const lasts: number[] = [];
-  const counts: number[] = [];
+  const out: SessionBreak[] = [];
   let lastDay = Number.NaN;
+  let previous: number | undefined;
+  let started = false;
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
     if (t === undefined || !Number.isFinite(t)) {
       continue;
     }
     const day = dayNumber(t);
-    if (day !== lastDay) {
-      starts.push(t);
-      lasts.push(t);
-      counts.push(1);
-      lastDay = day;
+    if (day === lastDay) {
+      previous = t;
       continue;
     }
-    lasts[lasts.length - 1] = t;
-    counts[counts.length - 1] = (counts[counts.length - 1] ?? 1) + 1;
-  }
-  const out: SessionBreak[] = [];
-  let seenSession = false;
-  for (let g = 0; g < starts.length; g += 1) {
-    const start = starts[g]!;
-    // One candle on a date is that date's daily history row, not a session: a
-    // rule between two of those would divide a calendar, not a trading day.
-    const isSession = (counts[g] ?? 0) > 1 || !isDailyGrainStamp(start);
-    if (!isSession) {
-      continue;
-    }
-    if (seenSession) {
-      const previous = lasts[g - 1];
+    if (started) {
       out.push({
-        t: start,
-        day: dayText(dayNumber(start)),
-        label: dayLabelFormat.format(new Date(start)),
+        t,
+        day: dayText(day),
+        label: dayLabelFormat.format(new Date(t)),
         first: false,
         ...(previous !== undefined ? { previous } : {}),
       });
     }
-    seenSession = true;
+    started = true;
+    lastDay = day;
+    previous = t;
   }
   return out;
 }
