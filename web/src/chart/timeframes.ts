@@ -31,12 +31,28 @@ const LABELS: Record<string, { label: string; short: string;
   "1M": { label: "1 month", short: "1M", group: "days" },
 };
 
-export const TIMEFRAMES: readonly TimeframeOption[] = RESOLUTIONS.map((id) => {
-  const found = LABELS[id];
-  return found === undefined
-    ? { id, label: id, short: id, group: "minutes" }
-    : { id, ...found };
-});
+/**
+ * Rungs the owner removed from the ladder.
+ *
+ * The service still answers `1s` and `10s`, and the wire contract keeps them
+ * so an older payload still parses, but a second-grain chart is not a session
+ * anyone reads: one minute is the smallest step the toolbar offers.
+ */
+const HIDDEN: ReadonlySet<Resolution> = new Set<Resolution>(["1s", "10s"]);
+
+/** Is this rung on the toolbar's ladder? */
+export function isOffered(resolution: Resolution): boolean {
+  return !HIDDEN.has(resolution);
+}
+
+export const TIMEFRAMES: readonly TimeframeOption[] = RESOLUTIONS
+  .filter((id) => !HIDDEN.has(id))
+  .map((id) => {
+    const found = LABELS[id];
+    return found === undefined
+      ? { id, label: id, short: id, group: "minutes" }
+      : { id, ...found };
+  });
 
 export const TIMEFRAME_GROUPS: ReadonlyArray<{
   readonly key: TimeframeOption["group"];

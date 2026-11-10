@@ -94,15 +94,14 @@ describe("sessionBreaks across the ladder", () => {
       at("2026-10-30", 14, 32),
       at("2026-10-30", 15, 32),
       at("2026-11-02", 9, 32),
+      at("2026-11-02", 10, 32),
     ];
     const breaks = dayBreaks(times, "1h");
-    expect(breaks.map((item) => item.day)).toEqual([
-      "2026-10-30", "2026-11-02",
-    ]);
-    expect(breaks[1]?.previous).toBe(times[4]);
+    expect(breaks.map((item) => item.day)).toEqual(["2026-11-02"]);
+    expect(breaks[0]?.previous).toBe(times[4]);
   });
 
-  it("divides every date, daily rows and sessions alike", () => {
+  it("divides the sessions and leaves the daily rows undivided", () => {
     const times = [
       at("2026-11-04", 12, 0),
       at("2026-11-05", 12, 0),
@@ -110,30 +109,24 @@ describe("sessionBreaks across the ladder", () => {
       at("2026-11-10", 9, 32),
       at("2026-11-10", 10, 32),
       at("2026-11-11", 9, 32),
+      at("2026-11-11", 10, 32),
     ];
     const breaks = dayBreaks(times, "1h");
-    // One division per date, whatever grain the candles carry: 4-6 Nov are
-    // daily rows and 10-11 Nov are recorded sessions, and all five are dates.
-    expect(breaks.map((item) => item.day)).toEqual([
-      "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-10",
-      "2026-11-11",
-    ]);
-    expect(breaks[0]?.first).toBe(true);
-    expect(breaks[1]?.previous).toBe(times[0]);
-    expect(breaks[3]?.previous).toBe(times[2]);
+    // 4-6 Nov are single daily rows - the calendar, not sessions - so only
+    // the session opens divide, and the first session owns no rule.
+    expect(breaks.map((item) => item.day)).toEqual(["2026-11-11"]);
+    expect(breaks[0]?.previous).toBe(times[4]);
   });
 
-  it("puts the division between the last daily row and the session after it", () => {
+  it("never rules off the calendar stretch behind the tape", () => {
     const times = [
       at("2026-10-30", 15, 32),
       at("2026-11-04", 12, 0),
       at("2026-11-06", 12, 0),
     ];
-    const breaks = dayBreaks(times, "1h");
-    expect(breaks.map((item) => item.t)).toEqual(times);
-    expect(breaks[0]?.first).toBe(true);
-    expect(breaks[1]?.previous).toBe(times[0]);
-    expect(breaks[2]?.previous).toBe(times[1]);
+    // A lone candle a day is the history behind the sessions; a rule on it
+    // divided a calendar rather than a trading day.
+    expect(dayBreaks(times, "1h")).toEqual([]);
   });
 
   it("anchors the first rule without drawing one before the series", () => {

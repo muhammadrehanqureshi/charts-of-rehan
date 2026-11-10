@@ -310,19 +310,24 @@ function slotId(ms: number, schedule?: SessionSchedule): number {
 }
 
 /**
- * One rule per Karachi trading date, in bar order.
+ * One rule wherever one real session meets the next, read from the rung's own
+ * candles.
  *
- * This is the chart's session division: every candle from 06 Nov belongs to
- * 06 Nov, even on a Friday whose two official bands are separated by lunch.
- * A band change is a time gap inside the day, not a new day, and must never
- * leave one date in two pieces of two or three candles.
+ * The chart carries a decade of daily EOD rows behind every intraday rung -
+ * one candle per trading day, 2,462 of them at 1h. Dividing at every date
+ * therefore put a rule on essentially every candle in the history, and the
+ * viewport planner could only keep an arbitrary pixel-spaced subset of them,
+ * which is exactly why rules landed on dates no reader could predict. The
+ * division is now derived from the candles themselves: consecutive candles of
+ * one Karachi date are one session, a lone noon-stamped candle is a daily
+ * history row and never a session, and a rule is drawn where a session opens
+ * with another session already behind it.
  *
- * Every bar is divided by its Karachi date, whatever its grain: a daily
- * backfill row is one candle for that date, so it opens the date exactly as a
- * session's first candle does. There is no second pass and no grain rule, so
- * one timeframe cannot divide a chart differently from another. `first: true`
- * means there is no bar at all before this date, and the renderer draws no
- * rule there.
+ * Because the input is the rung's own series, every timeframe divides its own
+ * candles: a 1m chart divides its minutes, a 4h chart its four-hour plates, and
+ * both name the same trading days. The first session is never ruled off, since
+ * there is nothing to its left inside the series, and a Friday's lunch is not a
+ * division - it is a gap inside one date.
  */
 export function dayBreaks(
   times: ArrayLike<number>,
@@ -331,28 +336,49 @@ export function dayBreaks(
   if (!hasSessionBreaks(resolution)) {
     return [];
   }
-  const out: SessionBreak[] = [];
+  // Group runs of one date into flat arrays: a decade of candles must not
+  // allocate an object per bar while a series is being replayed.
+  const starts: number[] = [];
+  const lasts: number[] = [];
+  const counts: number[] = [];
   let lastDay = Number.NaN;
-  let previous: number | undefined;
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
     if (t === undefined || !Number.isFinite(t)) {
       continue;
     }
     const day = dayNumber(t);
-    if (day === lastDay) {
-      previous = t;
+    if (day !== lastDay) {
+      starts.push(t);
+      lasts.push(t);
+      counts.push(1);
+      lastDay = day;
       continue;
     }
-    out.push({
-      t,
-      day: dayText(day),
-      label: dayLabelFormat.format(new Date(t)),
-      first: out.length === 0 && previous === undefined,
-      ...(previous !== undefined ? { previous } : {}),
-    });
-    lastDay = day;
-    previous = t;
+    lasts[lasts.length - 1] = t;
+    counts[counts.length - 1] = (counts[counts.length - 1] ?? 1) + 1;
+  }
+  const out: SessionBreak[] = [];
+  let seenSession = false;
+  for (let g = 0; g < starts.length; g += 1) {
+    const start = starts[g]!;
+    // One candle on a date is that date's daily history row, not a session: a
+    // rule between two of those would divide a calendar, not a trading day.
+    const isSession = (counts[g] ?? 0) > 1 || !isDailyGrainStamp(start);
+    if (!isSession) {
+      continue;
+    }
+    if (seenSession) {
+      const previous = lasts[g - 1];
+      out.push({
+        t: start,
+        day: dayText(dayNumber(start)),
+        label: dayLabelFormat.format(new Date(start)),
+        first: false,
+        ...(previous !== undefined ? { previous } : {}),
+      });
+    }
+    seenSession = true;
   }
   return out;
 }

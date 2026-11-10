@@ -51,7 +51,7 @@ import {
 
 import { perDayCounts } from "./chart/dayCounts";
 import { hasDailyBackfill, scheduleFrom } from "./chart/sessions";
-import { timeframeShort } from "./chart/timeframes";
+import { isOffered, timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
   clearDrawings,
@@ -427,13 +427,14 @@ export function App() {
         try {
           const health = parseHealth(raw);
           setFeedHealth(health);
+          // The service still answers 1s and 10s; the ladder no longer offers
+          // them, so they are dropped here once instead of in every control.
+          const offered = health.resolutions.filter(isOffered);
           setResolutions(
-            health.resolutions.length > 0 ? health.resolutions : FALLBACK_RESOLUTIONS,
+            offered.length > 0 ? offered : FALLBACK_RESOLUTIONS,
           );
           setResolution((current) =>
-            health.resolutions.includes(current)
-              ? current
-              : (health.resolutions[0] ?? "1m"),
+            offered.includes(current) ? current : (offered[0] ?? "1m"),
           );
         } catch (error) {
           setBootError(error instanceof Error ? error.message : String(error));

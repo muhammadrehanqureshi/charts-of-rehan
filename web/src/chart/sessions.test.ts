@@ -111,7 +111,7 @@ describe("sessionBreaks", () => {
     }
   });
 
-  it("keeps a candidate rule for every daily-grain day", () => {
+  it("reads a lone daily row as history, not as a session", () => {
     const times = [
       pkt("2024-04-29", "12:00"),
       pkt("2024-04-30", "12:00"),
@@ -119,14 +119,44 @@ describe("sessionBreaks", () => {
       pkt("2024-05-02", "12:00"),
       pkt("2024-06-03", "12:00"),
     ];
+    // One candle per day is the calendar behind the tape. Dividing it put a
+    // rule on every candle of a decade, which the planner then thinned to an
+    // arbitrary subset - the wrong-looking dividers this rule replaced.
+    expect(dayBreaks(times, "1h")).toEqual([]);
+  });
+
+  it("divides one session from the next and never rules the first off", () => {
+    const times = [
+      pkt("2026-10-15", "09:32"),
+      pkt("2026-10-15", "10:32"),
+      pkt("2026-10-15", "15:29"),
+      pkt("2026-10-16", "09:17"),
+      pkt("2026-10-16", "10:17"),
+    ];
     const breaks = dayBreaks(times, "1h");
-    expect(breaks.map((item) => item.day)).toEqual([
-      "2024-04-29", "2024-04-30", "2024-05-01", "2024-05-02", "2024-06-03",
-    ]);
-    expect(breaks[0]?.first).toBe(true);
-    expect(breaks[1]?.first).toBe(false);
-    expect(breaks[1]?.label).toBe("30 Apr");
-    expect(breaks[4]?.previous).toBe(times[3]);
+    expect(breaks.map((item) => item.day)).toEqual(["2026-10-16"]);
+    expect(breaks[0]?.label).toBe("16 Oct");
+    expect(breaks[0]?.previous).toBe(times[2]);
+    expect(breaks[0]?.first).toBe(false);
+  });
+
+  it("divides each rung's own candles at the same dates", () => {
+    // A minute session is hundreds of candles, a 4h session is two. Both
+    // divide where the day changes, because each pass reads its own series.
+    const minute: number[] = [];
+    for (const day of ["2026-10-28", "2026-10-29"]) {
+      for (let step = 0; step < 380; step += 1) {
+        minute.push(pkt(day, "09:32") + step * 60_000);
+      }
+    }
+    const fourHour = [
+      pkt("2026-10-28", "09:32"), pkt("2026-10-28", "13:32"),
+      pkt("2026-10-29", "09:32"), pkt("2026-10-29", "13:32"),
+    ];
+    expect(dayBreaks(fourHour, "4h").map((item) => item.day))
+      .toEqual(["2026-10-29"]);
+    expect(dayBreaks(minute, "1m").map((item) => item.day))
+      .toEqual(["2026-10-29"]);
   });
 
   it("covers every intraday rung and no calendar rung", () => {

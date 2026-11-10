@@ -3,18 +3,23 @@ import { describe, expect, it } from "vitest";
 import { RESOLUTIONS } from "../api/types";
 import {
   TIMEFRAMES,
+  isOffered,
   timeframeLabel,
   timeframeMs,
   timeframeShort,
 } from "./timeframes";
 
 describe("timeframe ladder", () => {
-  it("offers every rung the chart service can serve", () => {
+  it("offers the ladder the owner kept: one minute and up", () => {
     expect(TIMEFRAMES.map((item) => item.id)).toEqual([
-      "1s", "10s", "1m", "5m", "10m", "15m", "30m", "1h", "4h",
-      "1D", "1W", "1M",
+      "1m", "5m", "10m", "15m", "30m", "1h", "4h", "1D", "1W", "1M",
     ]);
-    expect(new Set(RESOLUTIONS)).toEqual(new Set(TIMEFRAMES.map((item) => item.id)));
+    // The wire contract still carries the second rungs so an older payload
+    // parses; the toolbar simply never offers them again.
+    expect(RESOLUTIONS).toEqual(expect.arrayContaining(["1s", "10s"]));
+    expect(isOffered("1s")).toBe(false);
+    expect(isOffered("10s")).toBe(false);
+    expect(isOffered("1m")).toBe(true);
   });
 
   it("names each rung without falling back to its wire id", () => {
