@@ -946,9 +946,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
     };
     // The chart's division is the Karachi date, not the exchange band. A
     // Friday's lunch is a gap inside one day; splitting it would leave the
-    // date in two pieces of two or three candles. Daily backfill rows are
-    // calendar bars stamped at Karachi noon, so they never create these
-    // session rules.
+    // date in two pieces of two or three candles. An intraday rung carries
+    // only its own tape, so the candles between two rules are exactly one
+    // session at this timeframe.
     state.breaks = hasSessionBreaks(resolution)
       ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };

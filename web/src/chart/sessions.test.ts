@@ -73,24 +73,23 @@ describe("sessionBreaks", () => {
     expect(sessionBreaks(times, "1h")).toHaveLength(1);
   });
 
-  it("reads a noon stamp as the daily row on every rung", () => {
+  it("keeps a real noon candle: no rung carries daily rows any more", () => {
     const times = [
       pkt("2026-10-21", "09:32"),
       pkt("2026-10-21", "12:00"),
       pkt("2026-10-21", "15:29"),
     ];
-    // A daily backfill row is stamped at noon. On a minute chart a real
-    // minute can share that stamp, so the row is read as history and never
-    // opens a session; the day's own first bar still does, exactly once.
+    // Noon is still recognisable as the daily-row stamp, but an intraday rung
+    // no longer carries those rows, so a noon candle here is the rung's own.
     expect(isDailyGrainStamp(times[1] ?? 0)).toBe(true);
     for (const rung of ["1m", "5m", "1h"] as const) {
-      expect(isIntradayStamp(times[1] ?? 0, rung)).toBe(false);
-      expect(intradayStamps(times, rung)).toEqual([times[0], times[2]]);
+      expect(isIntradayStamp(times[1] ?? 0, rung)).toBe(true);
+      expect(intradayStamps(times, rung)).toEqual(times);
       expect(sessionBreaks(times, rung)).toHaveLength(1);
     }
   });
 
-  it("drops the daily-grain rows on every intraday rung", () => {
+  it("carries no daily rows, so nothing is discarded from the tape", () => {
     const times = [
       pkt("2016-11-01", "12:00"),
       pkt("2016-11-02", "12:00"),
@@ -98,20 +97,19 @@ describe("sessionBreaks", () => {
       pkt("2026-10-12", "10:32"),
       pkt("2026-10-13", "09:32"),
     ];
-    expect(isDailyGrainStamp(times[0] ?? 0)).toBe(true);
-    // Every intraday rung now carries the decade, so a lone noon row is the
-    // daily bar on the minute chart too - and it never opens a session.
+    // The decade lives on the daily rung. An intraday rung is its own tape,
+    // so every stamp it receives is a candle of that rung.
     for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
       "1h", "4h"] as const) {
-      expect(isIntradayStamp(times[0] ?? 0, rung)).toBe(false);
-      expect(intradayStamps(times, rung)).toEqual(times.slice(2));
+      expect(isIntradayStamp(times[0] ?? 0, rung)).toBe(true);
+      expect(intradayStamps(times, rung)).toEqual(times);
       expect(sessionBreaks(times, rung).map((item) => item.day)).toEqual([
-        "2026-10-12", "2026-10-13",
+        "2016-11-01", "2016-11-02", "2026-10-12", "2026-10-13",
       ]);
     }
   });
 
-  it("reads a lone daily row as history, not as a session", () => {
+  it("treats every date's candles as one session block", () => {
     const times = [
       pkt("2024-04-29", "12:00"),
       pkt("2024-04-30", "12:00"),
@@ -119,10 +117,11 @@ describe("sessionBreaks", () => {
       pkt("2024-05-02", "12:00"),
       pkt("2024-06-03", "12:00"),
     ];
-    // One candle per day is the calendar behind the tape. Dividing it put a
-    // rule on every candle of a decade, which the planner then thinned to an
-    // arbitrary subset - the wrong-looking dividers this rule replaced.
-    expect(dayBreaks(times, "1h")).toEqual([]);
+    // Whatever a date holds, its candles are one block: the rule sits where
+    // the date changes, and the first block is never ruled off.
+    expect(dayBreaks(times, "1h").map((item) => item.day)).toEqual([
+      "2024-04-30", "2024-05-01", "2024-05-02", "2024-06-03",
+    ]);
   });
 
   it("divides one session from the next and never rules the first off", () => {
@@ -167,9 +166,11 @@ describe("sessionBreaks", () => {
     for (const rung of ["1D", "1W", "1M", "1d", "session"] as const) {
       expect(hasSessionBreaks(rung)).toBe(false);
     }
+    // No rung carries the daily decade behind its own candles: a 30m block
+    // must hold twelve half-hours, not a year of one-candle days.
     for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
       "1h", "4h"] as const) {
-      expect(hasDailyBackfill(rung)).toBe(true);
+      expect(hasDailyBackfill(rung)).toBe(false);
     }
     for (const rung of ["1D", "1d", "1W", "1M", "session"] as const) {
       expect(hasDailyBackfill(rung)).toBe(false);

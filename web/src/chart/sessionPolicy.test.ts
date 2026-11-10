@@ -49,9 +49,9 @@ describe("RUNG_POLICY", () => {
     }
   });
 
-  it("gives every intraday rung the daily history behind the tape", () => {
+  it("gives no rung a daily backfill: each rung is its own grain", () => {
     for (const rung of INTRADAY) {
-      expect(hasDailyBackfill(rung)).toBe(true);
+      expect(hasDailyBackfill(rung)).toBe(false);
     }
     for (const rung of ["1D", "1W", "1M"] as const) {
       expect(hasDailyBackfill(rung)).toBe(false);
@@ -101,7 +101,7 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[0]?.previous).toBe(times[4]);
   });
 
-  it("divides the sessions and leaves the daily rows undivided", () => {
+  it("divides every date, so each block is one session", () => {
     const times = [
       at("2026-11-04", 12, 0),
       at("2026-11-05", 12, 0),
@@ -112,21 +112,20 @@ describe("sessionBreaks across the ladder", () => {
       at("2026-11-11", 10, 32),
     ];
     const breaks = dayBreaks(times, "1h");
-    // 4-6 Nov are single daily rows - the calendar, not sessions - so only
-    // the session opens divide, and the first session owns no rule.
-    expect(breaks.map((item) => item.day)).toEqual(["2026-11-11"]);
-    expect(breaks[0]?.previous).toBe(times[4]);
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2026-11-05", "2026-11-06", "2026-11-10", "2026-11-11",
+    ]);
+    expect(breaks[2]?.previous).toBe(times[2]);
   });
 
-  it("never rules off the calendar stretch behind the tape", () => {
+  it("rules each date even when a date holds a single candle", () => {
     const times = [
       at("2026-10-30", 15, 32),
       at("2026-11-04", 12, 0),
       at("2026-11-06", 12, 0),
     ];
-    // A lone candle a day is the history behind the sessions; a rule on it
-    // divided a calendar rather than a trading day.
-    expect(dayBreaks(times, "1h")).toEqual([]);
+    expect(dayBreaks(times, "1h").map((item) => item.day))
+      .toEqual(["2026-11-04", "2026-11-06"]);
   });
 
   it("anchors the first rule without drawing one before the series", () => {
@@ -142,11 +141,15 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[1]?.previous).toBe(times[0]);
   });
 
-  it("never opens a session on a lone noon row, whatever the rung", () => {
+  it("opens one session on a lone candle, whatever its stamp", () => {
     const noon = at("2026-10-15", 12, 0);
     expect(isDailyGrainStamp(noon)).toBe(true);
+    // No intraday rung carries daily rows, so a candle at noon is that
+    // rung's own candle and the block it belongs to starts there.
     for (const rung of INTRADAY) {
-      expect(sessionBreaks([noon], rung)).toHaveLength(0);
+      const breaks = sessionBreaks([noon], rung);
+      expect(breaks).toHaveLength(1);
+      expect(breaks[0]?.first).toBe(true);
     }
   });
 });
