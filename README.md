@@ -46,6 +46,7 @@ list, and never invents a bar.
 | `assets/` | the official mark (`charts-of-rehan.png`), its 128 px preview, and the multi-size `.ico` the Desktop shortcut draws its icon from |
 | `docs/` | architecture, API, deployment, data provenance |
 | `scripts/` | the guarded landing flow: repository identity, PR creation, merge |
+| `update-charts.cmd` | the one-click updater: fast-forward master, rebuild `web/dist` |
 | `tools/sanitize.py` | the exposure scan that must pass before this tree is published |
 
 ## Quick start
@@ -81,6 +82,11 @@ npm run build      # writes web/dist, which the service then serves
 
 Then `python -m charts --source tape --static web/dist` serves the API and the
 built UI on one loopback port.
+
+To take the latest master in one pass, run `update-charts.cmd` (or its
+Desktop shortcut): it fast-forwards only, refuses a dirty tree or a
+feature branch, reinstalls dependencies only when the lockfile moved, and
+rebuilds `web/dist` for the service to serve.
 
 ## API
 
