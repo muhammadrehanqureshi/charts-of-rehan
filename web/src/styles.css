@@ -1066,6 +1066,97 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* The market tape: every stock that traded, its own buy/sell split and net
+ * delta, inside the LIVE tape card. A bounded inner scroll keeps the selected
+ * stock's day table and prints reachable without scrolling past 300 rows. */
+.tape__market {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.tape__markethead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tape__marketscroll {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2a2a transparent;
+}
+
+.tape__marketscroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tape__marketscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tape__marketscroll::-webkit-scrollbar-thumb {
+  background: #2a2a2a;
+  border-radius: 3px;
+}
+
+.tape__markettable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tape__markettable th,
+.tape__markettable td {
+  padding: 2px 2px;
+  text-align: right;
+  font-weight: 400;
+}
+
+.tape__markettable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tape__markettable th:first-child,
+.tape__markettable td:first-child {
+  width: 28%;
+  text-align: left;
+}
+
+.tape__marketrow {
+  cursor: pointer;
+}
+
+.tape__marketrow:hover td {
+  background: #131313;
+}
+
+.tape__marketopen {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tape__marketopen:hover {
+  color: var(--up);
+}
+
 .tape__totals {
   margin-top: 4px;
 }
