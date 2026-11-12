@@ -132,6 +132,21 @@ export function Watchlist(props: WatchlistProps) {
   }, [rows]);
 
   const traded = rows.filter((row) => (row.bars ?? 0) > 0).length;
+  // A reader with no names on the list still needs the session's per-stock
+  // buy, sell and net delta. The list shows the busiest names when it is
+  // empty; adding a symbol turns it back into the reader's own list.
+  const topTraded = useMemo(() => {
+    if (watch.length > 0) {
+      return [];
+    }
+    const ranked = rows.filter((row) => (row.bars ?? 0) > 0 && row.index !== true);
+    ranked.sort((left, right) =>
+      (flow?.get(right.symbol)?.volume ?? right.volume ?? 0)
+      - (flow?.get(left.symbol)?.volume ?? left.volume ?? 0));
+    return ranked.slice(0, 30).map((row) => row.symbol);
+  }, [rows, flow, watch.length]);
+  const listed = watch.length > 0 ? watch : topTraded;
+  const implicit = watch.length === 0 && topTraded.length > 0;
   const detail = bySymbol.get(symbol);
   const detailFlow = flow?.get(symbol);
   const detailChange = sessionChange(detail);
@@ -201,14 +216,14 @@ export function Watchlist(props: WatchlistProps) {
                 </th>
                 <th scope="col" className="watchlist__th">Last</th>
                 <th scope="col" className="watchlist__th">Chg%</th>
-                <th scope="col" className="watchlist__th" title="buy volume on the live day">Live buy</th>
-                <th scope="col" className="watchlist__th" title="sell volume on the live day">Live sell</th>
+                <th scope="col" className="watchlist__th" title="live buy volume this session">Buy</th>
+                <th scope="col" className="watchlist__th" title="live sell volume this session">Sell</th>
                 <th scope="col" className="watchlist__th watchlist__th--delta" title="buy minus sell: the session's own net delta">Net Δ</th>
-                <th scope="col" className="watchlist__th watchlist__th--total" title="classified buy + sell on the live day">Total</th>
+                <th scope="col" className="watchlist__th watchlist__th--total" title="classified buy + sell this session">Total</th>
               </tr>
             </thead>
             <tbody>
-              {watch.length === 0 ? (
+              {listed.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="watchlist__quiet">
                     {loading
@@ -216,7 +231,7 @@ export function Watchlist(props: WatchlistProps) {
                       : "Your list is empty. Use + to put symbols on it."}
                   </td>
                 </tr>
-              ) : watch.map((name) => {
+              ) : listed.map((name) => {
                 const row = bySymbol.get(name);
                 const change = sessionChange(row);
                 const active = name === symbol;
@@ -245,18 +260,20 @@ export function Watchlist(props: WatchlistProps) {
                       {row?.index === true
                         ? <span className="wrow__tag">IDX</span>
                         : null}
-                      <button
-                        type="button"
-                        className="wrow__remove"
-                        aria-label={`remove ${name} from the watchlist`}
-                        title={`remove ${name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          remove(name);
-                        }}
-                      >
-                        ✕
-                      </button>
+                      {watch.includes(name) ? (
+                        <button
+                          type="button"
+                          className="wrow__remove"
+                          aria-label={`remove ${name} from the watchlist`}
+                          title={`remove ${name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            remove(name);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      ) : null}
                     </th>
                     <td className="wrow__cell">
                       {row?.close === null || row === undefined
@@ -292,6 +309,7 @@ export function Watchlist(props: WatchlistProps) {
 
         <p className="watchlist__note">
           {traded} of {rows.length} traded ·{" "}
+          {implicit ? "top 30 by volume · + adds your own names · " : ""}
           {live
             ? `live day ${day || "(waiting for today's tape)"} · buy, sell and net delta from the venue's counters`
             : `stored session ${storedDay ?? day}`}{" "}
