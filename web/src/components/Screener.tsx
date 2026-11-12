@@ -33,6 +33,15 @@ export interface ScreenerProps {
   readonly flow?: ReadonlyMap<string, SymbolFlow>;
 }
 
+/** The session's net delta, signed, as the watchlist reads it. */
+function netDelta(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)
+      || value === 0) {
+    return "-";
+  }
+  return `${value > 0 ? "+" : "−"}${formatVolume(Math.abs(value))}`;
+}
+
 interface Screened {
   readonly row: SymbolRow;
   readonly change: number | null;
@@ -205,6 +214,7 @@ export function Screener(props: ScreenerProps) {
               {head("volume", "Volume")}
               {head("delta", "Buy")}
               {head("delta", "Sell")}
+              {head("delta", "Net Δ")}
               {head("bars", "Bars")}
               <th scope="col" className="screener__th screener__th--num">
                 Range
@@ -214,7 +224,7 @@ export function Screener(props: ScreenerProps) {
           <tbody>
             {shown.length === 0 ? (
               <tr>
-                <td colSpan={9} className="screener__quiet">
+                <td colSpan={10} className="screener__quiet">
                   {loading
                     ? "waiting for the catalogue…"
                     : "no symbol matches this filter in this session."}
@@ -279,6 +289,11 @@ export function Screener(props: ScreenerProps) {
                     {money?.sell_volume == null
                       ? <span className="wrow__absent">-</span>
                       : formatVolume(money.sell_volume)}
+                  </td>
+                  <td className={item.delta == null || item.delta === 0
+                    ? "screener__cell screener__cell--num screener__cell--delta"
+                    : `screener__cell screener__cell--num screener__cell--delta${item.delta > 0 ? " screener__cell--up" : " screener__cell--down"}`}>
+                    {netDelta(item.delta)}
                   </td>
                   <td className="screener__cell screener__cell--num">
                     {(row.bars ?? 0) === 0

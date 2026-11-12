@@ -50,7 +50,7 @@ import {
 } from "./lightweight";
 
 import { perDayCounts } from "./chart/dayCounts";
-import { hasDailyBackfill, scheduleFrom } from "./chart/sessions";
+import { scheduleFrom } from "./chart/sessions";
 import { isOffered, timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
@@ -108,17 +108,6 @@ function isFlatFillRung(resolution: Resolution): boolean {
  * must be behind every rung. The service's own limit still caps the payload.
  */
 const INTRADAY_SESSIONS = 20;
-
-/**
- * How many daily rows an intraday rung may attach behind its sessions.
- *
- * This is the reader's history, not a squeeze: the chart opens on the recorded
- * sessions and these daily rows are the context behind them, reachable by
- * panning. They carry no session rule of their own - a session is a recorded
- * intraday date - so a decade of daily candles never reads as a decade of
- * one-candle sessions. The toolbar can shorten it, or drop it entirely.
- */
-const DAILY_TAIL_DAYS = 2_600;
 
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
@@ -344,10 +333,6 @@ export function App() {
   // synthetic bucket is grey, carries zero volume and is counted in the
   // status bar, and this switch turns it off for a real-bars-only chart.
   const [fillFlat, setFillFlat] = useState(true);
-  // How many daily rows an intraday rung may attach behind its sessions. The
-  // reader chooses: none at all (only recorded sessions), a fortnight of tail
-  // for the missing days, or a longer lead-in for context.
-  const [tailDays, setTailDays] = useState(DAILY_TAIL_DAYS);
   const [watch, setWatch] = useState<readonly string[]>(readWatchlist);
   const indicators = useIndicators();
   const [appearance, setAppearance, resetAppearance] = useAppearance();
@@ -556,7 +541,6 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
-    backfillDays: hasDailyBackfill(resolution) ? tailDays : undefined,
     fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
@@ -691,9 +675,6 @@ export function App() {
         onToggleScreener={() => setScreenerOpen((open) => !open)}
         fillFlat={fillMode}
         onToggleFillFlat={() => setFillFlat((on) => !on)}
-        tailDays={tailDays}
-        onTailDays={setTailDays}
-        tailOn={hasDailyBackfill(resolution)}
       />
 
       {/* The studies sit in a strip above the chart, not in a side column:
