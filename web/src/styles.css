@@ -577,6 +577,13 @@ button:disabled {
   font-size: 11.5px;
 }
 
+/* The session's net delta: signed, and toned by the side it leans to, so a
+ * row answers "who won the session" without arithmetic. */
+.wrow__cell--delta {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
 /* The day's own total (named buy plus named sell), a neutral column so the
  * eye reads size first and direction from the two beside it. */
 .wrow__cell--total {
@@ -959,9 +966,17 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-/* The order book plate: the level-one quote (bid / ask with the resting
- * shares on each side), inside the instrument's own detail card, reusing the
- * flows grid conventions with two wide columns. */
+/* The live order book plate: the venue's level-one quote (bid / ask with the
+ * resting shares on each side), refreshed with the tape, inside the
+ * instrument's own detail card. */
+.detail__bookhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 10px;
+}
+
 .detail__book {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -994,13 +1009,7 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-/* The session's own buy / sell / buy+sell totals, the third pair in the
- * same grid: the numbers answer the question the book plate opens with -
- * what did the session actually trade across this resting quote. */
-.detail__book dt.detail__bookhead {
-  grid-column: 1 / -1;
-  margin-top: 4px;
-}
+
 
 /* ------------------------------------------------------- live tape plate */
 

@@ -36,28 +36,14 @@ export interface ToolbarProps {
   /** Flat no-trade buckets for missing session buckets, visibly marked. */
   readonly fillFlat: boolean;
   readonly onToggleFillFlat: () => void;
-  /** Daily rows attached behind an intraday rung, in days. */
-  readonly tailDays: number;
-  readonly onTailDays: (days: number) => void;
-  /** True only on the rungs that can carry a daily tail at all. */
-  readonly tailOn: boolean;
 }
-
-/**
- * The daily-history choices, in days.
- *
- * Zero is a real choice: only recorded sessions, no daily context candles. A
- * fortnight covers a gap the recorder may have missed; the full store is the
- * decade behind the tape, which is what a reader pans back through.
- */
-const TAIL_CHOICES = [0, 15, 60, 2_600] as const;
 
 export function Toolbar(props: ToolbarProps) {
   const {
     symbol, resolution, onResolution, resolutions, day, onDay, sessions,
     onRefresh, busy, indicatorsOpen, onToggleIndicators, onSearch,
     onOpenSettings, screenerOpen, onToggleScreener, fillFlat,
-    onToggleFillFlat, tailDays, onTailDays, tailOn,
+    onToggleFillFlat,
   } = props;
   const available = TIMEFRAMES.filter((item) => resolutions.includes(item.id));
 
@@ -141,27 +127,6 @@ export function Toolbar(props: ToolbarProps) {
           Flat fill
         </button>
       </div>
-
-      {tailOn ? (
-        <div className="toolbar__cell">
-          <label className="toolbar__session">
-            <span className="visually-hidden">daily tail</span>
-            <select
-              aria-label="daily tail"
-              value={tailDays}
-              title="Daily candles attached behind the recorded sessions for days with no tape"
-              onChange={(event) => onTailDays(Number(event.target.value))}
-            >
-              {TAIL_CHOICES.map((days) => (
-                <option key={days} value={days}>
-                  {days === 0 ? "no daily history"
-                    : days >= 2_600 ? "full history" : `tail ${days}d`}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      ) : null}
 
       <div className="toolbar__cell">
         <button

@@ -94,15 +94,28 @@ export function dayTotal(flow: SymbolFlow | null | undefined,
   return (flow.buy_volume ?? 0) + (flow.sell_volume ?? 0);
 }
 
-function side(
-  value: number | null | undefined,
-  kind: "buy" | "sell",
-): string {
+function side(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)
       || value <= 0) {
     return "-";
   }
-  return `${kind === "buy" ? "" : ""}${formatVolume(value)}`;
+  return formatVolume(value);
+}
+
+/** The session's net delta: buy minus sell, signed, never a bare magnitude. */
+function netDelta(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)
+      || value === 0) {
+    return "-";
+  }
+  return `${value > 0 ? "+" : "−"}${formatVolume(Math.abs(value))}`;
+}
+
+function deltaTone(value: number | null | undefined): string {
+  if (value === null || value === undefined || value === 0) {
+    return "";
+  }
+  return value > 0 ? " wrow__cell--up" : " wrow__cell--down";
 }
 
 export function Watchlist(props: WatchlistProps) {
@@ -190,13 +203,14 @@ export function Watchlist(props: WatchlistProps) {
                 <th scope="col" className="watchlist__th">Chg%</th>
                 <th scope="col" className="watchlist__th" title="buy volume on the live day">Live buy</th>
                 <th scope="col" className="watchlist__th" title="sell volume on the live day">Live sell</th>
+                <th scope="col" className="watchlist__th watchlist__th--delta" title="buy minus sell: the session's own net delta">Net Δ</th>
                 <th scope="col" className="watchlist__th watchlist__th--total" title="classified buy + sell on the live day">Total</th>
               </tr>
             </thead>
             <tbody>
               {watch.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="watchlist__quiet">
+                  <td colSpan={7} className="watchlist__quiet">
                     {loading
                       ? "reading the catalogue…"
                       : "Your list is empty. Use + to put symbols on it."}
@@ -258,13 +272,16 @@ export function Watchlist(props: WatchlistProps) {
                           `${change.percent.toFixed(2)}%`}
                     </td>
                     <td className="wrow__cell wrow__cell--buy">
-                      {side(money?.buy_volume, "buy")}
+                      {side(money?.buy_volume)}
                     </td>
                     <td className="wrow__cell wrow__cell--sell">
-                      {side(money?.sell_volume, "sell")}
+                      {side(money?.sell_volume)}
+                    </td>
+                    <td className={`wrow__cell wrow__cell--delta${deltaTone(money?.delta)}`}>
+                      {netDelta(money?.delta)}
                     </td>
                     <td className="wrow__cell wrow__cell--total">
-                      {side(dayTotal(money), "buy")}
+                      {side(dayTotal(money))}
                     </td>
                   </tr>
                 );
@@ -276,7 +293,7 @@ export function Watchlist(props: WatchlistProps) {
         <p className="watchlist__note">
           {traded} of {rows.length} traded ·{" "}
           {live
-            ? `live day ${day || "(waiting for today's tape)"} · buy/sell from the venue's counters`
+            ? `live day ${day || "(waiting for today's tape)"} · buy, sell and net delta from the venue's counters`
             : `stored session ${storedDay ?? day}`}{" "}
           · change against the first print
         </p>
@@ -381,63 +398,45 @@ export function Watchlist(props: WatchlistProps) {
             </dl>
             {book !== undefined && book !== null
               ? (
-                <dl className="detail__book" aria-label="order book">
-                  <div>
-                    <dt>bid</dt>
-                    <dd className="detail__buy">
-                      {book.bid === null
-                        ? "-"
-                        : `${formatPrice(book.bid)}`}
-                      <span className="detail__booksize">
-                        {book.bid_size == null ? "" : formatVolume(book.bid_size)}
+                <section className="detail__bookwrap" aria-label="live order book">
+                  <div className="detail__bookhead">
+                    <h3 className="tape__title">Live order book</h3>
+                    {book.last === null ? null : (
+                      <span className="tape__count">
+                        last {formatPrice(book.last)}
                       </span>
-                    </dd>
+                    )}
                   </div>
-                  <div>
-                    <dt>ask</dt>
-                    <dd className="detail__sell">
-                      {book.ask === null
-                        ? "-"
-                        : `${formatPrice(book.ask)}`}
-                      <span className="detail__booksize">
-                        {book.ask_size == null ? "" : formatVolume(book.ask_size)}
-                      </span>
-                    </dd>
-                  </div>
-                  <>
-                      <div>
-                        <dt className="detail__bookhead">buy (session)</dt>
-                        <dd className="detail__buy">
-                          {detailFlow?.buy_volume == null
-                            ? "-" : formatVolume(detailFlow.buy_volume)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="detail__bookhead">sell (session)</dt>
-                        <dd className="detail__sell">
-                          {detailFlow?.sell_volume == null
-                            ? "-" : formatVolume(detailFlow.sell_volume)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="detail__bookhead">B+S total</dt>
-                        <dd className="detail__total">
-                          {dayTotal(detailFlow) == null
-                            ? "-" : formatVolume(dayTotal(detailFlow) as number)}
-                        </dd>
-                      </div>
-                  </>
-                </dl>
+                  <dl className="detail__book">
+                    <div>
+                      <dt>bid</dt>
+                      <dd className="detail__buy">
+                        {book.bid === null ? "-" : formatPrice(book.bid)}
+                        <span className="detail__booksize">
+                          {book.bid_size == null ? "" : formatVolume(book.bid_size)}
+                        </span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>ask</dt>
+                      <dd className="detail__sell">
+                        {book.ask === null ? "-" : formatPrice(book.ask)}
+                        <span className="detail__booksize">
+                          {book.ask_size == null ? "" : formatVolume(book.ask_size)}
+                        </span>
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="watchlist__note">
+                    {book.note.length > 0
+                      ? book.note
+                      : book.at === null
+                        ? "the tape has not observed this book yet"
+                        : `the broker's own quote, as observed ${formatClock(book.at)}`}
+                  </p>
+                </section>
               )
               : null}
-            {book !== undefined && book !== null
-              && (book.note.length > 0 || book.at === null)
-              ? <p className="watchlist__note">{book.note}</p>
-              : book !== undefined && book !== null && book.at !== null
-                ? <p className="watchlist__note">
-                    the broker's own book, as observed {formatClock(book.at)}
-                  </p>
-                : null}
             {tape !== undefined && tape !== null
               ? (
                 <section className="tape" aria-label="live tape">
