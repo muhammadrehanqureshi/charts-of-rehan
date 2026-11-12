@@ -16,6 +16,7 @@ import {
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
+  isIntradayStamp,
   scheduleFrom,
   sessionBreaks,
 } from "./sessions";
@@ -49,10 +50,12 @@ describe("RUNG_POLICY", () => {
     }
   });
 
-  it("gives no rung a daily backfill: each rung is its own grain", () => {
+  it("gives every intraday rung the bounded daily backfill", () => {
     for (const rung of INTRADAY) {
-      expect(hasDailyBackfill(rung)).toBe(false);
+      expect(hasDailyBackfill(rung)).toBe(true);
     }
+    // Calendar rungs already are the daily grain; a backfill would duplicate
+    // every candle they hold.
     for (const rung of ["1D", "1W", "1M"] as const) {
       expect(hasDailyBackfill(rung)).toBe(false);
     }
@@ -141,13 +144,18 @@ describe("sessionBreaks across the ladder", () => {
     expect(breaks[1]?.previous).toBe(times[0]);
   });
 
-  it("opens one session on a lone candle, whatever its stamp", () => {
+  it("does not rule a lone daily-context row", () => {
     const noon = at("2026-10-15", 12, 0);
     expect(isDailyGrainStamp(noon)).toBe(true);
-    // No intraday rung carries daily rows, so a candle at noon is that
-    // rung's own candle and the block it belongs to starts there.
+    // Noon is the daily backfill's stamp. It is a real stored session, but
+    // it is not an intraday rule, so it never opens a captured block.
     for (const rung of INTRADAY) {
-      const breaks = sessionBreaks([noon], rung);
+      expect(isIntradayStamp(noon, rung)).toBe(false);
+      expect(sessionBreaks([noon], rung)).toEqual([]);
+    }
+    const open = at("2026-10-15", 9, 32);
+    for (const rung of INTRADAY) {
+      const breaks = sessionBreaks([open], rung);
       expect(breaks).toHaveLength(1);
       expect(breaks[0]?.first).toBe(true);
     }

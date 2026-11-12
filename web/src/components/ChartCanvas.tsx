@@ -31,7 +31,6 @@ import {
   type MouseEventParams,
   type Time,
   type UTCTimestamp,
-  TickMarkType,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
@@ -52,6 +51,7 @@ import type {
   Gap,
   Resolution,
 } from "../api/types";
+import { axisSpanRank } from "../chart/axis";
 import {
   measureBetween,
   newDrawingId,
@@ -75,7 +75,6 @@ import {
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
-  isIntradayStamp,
   type SessionBreak,
   type SessionSchedule,
 } from "../chart/sessions";
@@ -113,13 +112,23 @@ const DAILY_CONTEXT_BARS = 30;
  * (the 4-6 Nov gap, when it exists) attached at the right edge so the chart
  * still reaches the newest exchange day.
  */
-function openingRange(times: readonly number[]): { from: number; to: number } {
+function openingRange(
+  times: readonly number[],
+  daily?: ArrayLike<boolean | number>,
+): { from: number; to: number } {
   const total = times.length;
   if (total === 0) {
     return { from: 0, to: 0 };
   }
+  const isDaily = (index: number): boolean => {
+    const flag = daily?.[index];
+    if (flag !== undefined) {
+      return flag === true || flag === 1;
+    }
+    return isDailyGrainStamp(times[index] ?? 0);
+  };
   let lastIntraday = total - 1;
-  while (lastIntraday >= 0 && isDailyGrainStamp(times[lastIntraday] ?? 0)) {
+  while (lastIntraday >= 0 && isDaily(lastIntraday)) {
     lastIntraday -= 1;
   }
   let first = Math.max(0, total - 1 - WINDOW_BARS);
@@ -127,7 +136,7 @@ function openingRange(times: readonly number[]): { from: number; to: number } {
     first = lastIntraday;
     let seen = 0;
     for (let i = lastIntraday; i >= 0 && seen < WINDOW_BARS; i -= 1) {
-      if (!isDailyGrainStamp(times[i] ?? 0)) {
+      if (!isDaily(i)) {
         first = i;
         seen += 1;
       }
@@ -151,6 +160,8 @@ export interface TvTheme {
   readonly border: string;
   readonly up: string;
   readonly down: string;
+  /** The muted body of a daily-grain history candle. */
+  readonly daily: string;
   readonly volumeUp: string;
   readonly volumeDown: string;
   readonly crosshair: string;
@@ -174,6 +185,7 @@ export const TV_DARK_THEME: TvTheme = {
   border: "#1f1f1f",
   up: "#089981",
   down: "#f23645",
+  daily: "#5d6675",
   volumeUp: "rgba(8, 153, 129, 0.45)",
   volumeDown: "rgba(242, 54, 69, 0.45)",
   crosshair: "#758696",
@@ -261,6 +273,8 @@ interface EngineState {
   realTimes: number[];
   /** Real ms by data index, NaN where the engine skipped a duplicate. */
   chartTimes: number[];
+  /** Per-bar grain: true only for a daily-grain row behind the tape. */
+  dailyFlags: boolean[];
   /** The real intraday session starts the overlay rules run between. */
   breaks: readonly SessionBreak[];
 }
@@ -431,6 +445,20 @@ export function ChartCanvas(props: ChartCanvasProps) {
   const timeMap = useRef<ChartTimeMap>({ chartSec: [], realMs: [] });
   /** The bar the previous axis tick landed on: one bar never prints twice. */
   const lastTickIndex = useRef<number>(Number.NaN);
+  /** The real span the visible axis covers, which picks the label rank. */
+  const axisSpanDays = useRef(0);
+  /** The last rank label printed, so a year or month is named once. */
+  const axisRankKey = useRef("");
+
+  const setAxisSpan = (fromMs: number, toMs: number): void => {
+    const span = Math.abs(toMs - fromMs) / 86_400_000;
+    if (!Number.isFinite(span)) {
+      return;
+    }
+    axisSpanDays.current = span;
+    axisRankKey.current = "";
+    lastTickIndex.current = Number.NaN;
+  };
 
   const showSeconds = resolution === "1s" || resolution === "10s";
 
@@ -443,7 +471,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
    * was being misread.
    */
   const tickLabel = useMemo(() => {
-    return (time: Time, markType: TickMarkType): string => {
+    return (time: Time): string => {
       const sec = Number(time);
       const map = timeMap.current;
       const index = nearestIndex(map.chartSec, sec);
@@ -451,33 +479,42 @@ export function ChartCanvas(props: ChartCanvasProps) {
       if (Number.isNaN(moment.getTime())) {
         return "";
       }
-      // Every calendar rank gets its own rank-appropriate label: a day reads
-      // as "23 Oct", a month as "Oct 2025" and a year as "2026", so a
-      // decade never shows three ambiguous "23 Oct" stamps at one rank.
-      if (markType === TickMarkType.Year) {
-        return karachiYear.format(moment);
+      // The engine ranks ticks from presentation time, which is only minutes
+      // long even when the packed series covers a decade. The real span of
+      // the visible history decides the rank: years for a decade, months for
+      // a year, days for the captured month.
+      const rank = axisSpanRank(axisSpanDays.current);
+      if (rank === "year") {
+        const label = karachiYear.format(moment);
+        if (label === axisRankKey.current) {
+          return "";
+        }
+        axisRankKey.current = label;
+        return label;
       }
-      if (markType === TickMarkType.Month) {
-        return karachiMonth.format(moment);
+      if (rank === "month") {
+        const label = karachiMonth.format(moment);
+        if (label === axisRankKey.current) {
+          return "";
+        }
+        axisRankKey.current = label;
+        return label;
       }
-      // A packed axis has no calendar distance, so the day itself has to be
-      // named where a new session begins; otherwise 49 hourly bars have only
-      // a month label and every session rule reads the same. One bar never
-      // prints twice: the engine can ask for two ticks that land on the same
-      // candle, and two labels on one candle is the overlap this replaces.
+      // A day is named once: the engine can ask for two ticks on the same
+      // candle, and two dates on one candle is the overlap this replaces.
       const repeated = index >= 0 && index === lastTickIndex.current;
       lastTickIndex.current = index;
       if (repeated) {
         return "";
       }
-      // Dates only, on every intraday rung. A packed tape has no calendar
-      // distance of its own, so a clock on this axis is a time from another
-      // bar: "13:32" printed under a decade of daily candles was exactly
-      // that. The date of the tick's own bar is the one label that is always
-      // true, and a bar that has already printed prints nothing.
-      return karachiDay.format(moment);
+      const label = karachiDay.format(moment);
+      if (label === axisRankKey.current) {
+        return "";
+      }
+      axisRankKey.current = label;
+      return label;
     };
-  }, [showSeconds]);
+  }, []);
 
   /** The indicator plan: the chart engine rebuilds when the plan changes. */
   const indicatorsKey = useMemo(
@@ -567,7 +604,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         timeVisible: true,
         secondsVisible: showSeconds,
         tickMarkFormatter:
-          (time: Time, markType: TickMarkType) => tickLabel(time, markType),
+          (time: Time) => tickLabel(time),
       },
       localization: {
         priceFormatter: (price: number) => formatPrice(price, decimals),
@@ -683,7 +720,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         // six candles in the opening window.
         const live = engine.current;
         const open = hasDailyBackfill(resolution) && live !== null
-          ? openingRange(live.realTimes)
+          ? openingRange(live.realTimes, live.dailyFlags)
           : {
             from: Math.max(0, fitCount.current - WINDOW_BARS - 1),
             to: fitCount.current - 1 + RIGHT_OFFSET_BARS,
@@ -730,7 +767,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
       const first = state.realTimes[0];
       const firstIntradayIndex = state.realTimes.findIndex(
-        (stamp) => isIntradayStamp(stamp, resolution));
+        (_stamp, index) => state.dailyFlags[index] !== true);
       const firstIntraday = firstIntradayIndex >= 0
         ? state.realTimes[firstIntradayIndex] : undefined;
       // An intraday tape is shorter than the daily series behind it, and that
@@ -756,6 +793,14 @@ export function ChartCanvas(props: ChartCanvasProps) {
       setEdgeNote((current) => (current === text ? current : text));
     };
     const rangeSub = () => {
+      const state = engine.current;
+      const range = chart.timeScale().getVisibleRange();
+      if (state !== null && range !== null) {
+        setAxisSpan(
+          realFromChartMs(state, Number(range.from) * 1000),
+          realFromChartMs(state, Number(range.to) * 1000),
+        );
+      }
       scheduleOverlayPaint();
       writeHistoryEdge();
     };
@@ -774,6 +819,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       barTimes: [],
       realTimes: [],
       chartTimes: [],
+      dailyFlags: [],
       breaks: [],
     };
 
@@ -870,6 +916,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       close: number;
       volume: number;
       synthetic: boolean;
+      daily: boolean;
     }[] = [];
     let previous = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < length; i += 1) {
@@ -894,6 +941,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       accepted.push({
         sourceIndex: i, realMs: t, open, high, low, close,
         volume: data.volume[i] ?? Number.NaN, synthetic,
+        daily: data.daily?.[i] === 1,
       });
     }
     if (accepted.length === 0) {
@@ -906,12 +954,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const chartSec = accepted.map((_bar, index) =>
       baseSec + index * PRESENTATION_STEP_SEC);
     const realTimes = accepted.map((bar) => bar.realMs);
+    const dailyFlags = accepted.map((bar) => bar.daily);
     timeMap.current = { chartSec, realMs: realTimes };
+    const opening = openingRange(realTimes, dailyFlags);
+    setAxisSpan(
+      realTimes[Math.min(opening.from, realTimes.length - 1)] ?? 0,
+      realTimes[Math.min(opening.to, realTimes.length - 1)] ?? 0,
+    );
     const chartTimes = new Array<number>(length).fill(Number.NaN);
     for (let index = 0; index < accepted.length; index += 1) {
       chartTimes[accepted[index]!.sourceIndex] = (chartSec[index] ?? baseSec) * 1000;
     }
     state.realTimes = realTimes;
+    state.dailyFlags = dailyFlags;
     state.chartTimes = chartTimes;
     state.barTimes = accepted.map((_bar, index) =>
       (chartSec[index] ?? baseSec) * 1000);
@@ -930,9 +985,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
         close: bar.close,
         ...(bar.synthetic
           ? { color: "#787b86", borderColor: "#787b86" }
-          : {}),
+          : bar.daily
+            ? { color: tokens.daily, borderColor: tokens.daily }
+            : {}),
       });
-      if (!wantsDelta && Number.isFinite(bar.volume)) {
+      // A daily context row's volume is a whole session; drawing it beside a
+      // minute's volume would flatten every real bar in the strip.
+      if (!wantsDelta && !bar.daily && Number.isFinite(bar.volume)) {
         volumeData.push({
           time,
           value: bar.volume,
@@ -949,7 +1008,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // exchange's own schedule decides the bands, so the rule lands on the
     // first candle of the new session instead of a guessed clock edge.
     state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(realTimes, resolution, schedule)
+      ? sessionBreaks(realTimes, resolution, schedule, dailyFlags)
         .map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
@@ -1006,7 +1065,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       // candles. The earlier sessions are a pan away, which is what a
       // continuous series is for.
       const range = hasDailyBackfill(resolution)
-        ? openingRange(realTimes)
+        ? openingRange(realTimes, state.dailyFlags)
         : {
           from: Math.max(0, candlesData.length - WINDOW_BARS - 1),
           to: candlesData.length - 1 + RIGHT_OFFSET_BARS,
@@ -1469,6 +1528,72 @@ function paintOne(
  * the first one starting at pane 2 (0 price, 1 volume). This runs on a
  * freshly built engine or on new bars; series then exist once and feed.
  */
+/**
+ * The chart's own grain, without the daily history behind it.
+ *
+ * An indicator is a statement about this rung's bars. Feeding it a decade of
+ * daily closes and then a week of minute candles calculates a different
+ * statistic than the label says, so the study starts at the first recorded
+ * bar and the older context carries no line at all.
+ */
+function intradaySeries(
+  data: SeriesData,
+): { data: SeriesData; offset: number } {
+  if (data.daily === undefined) {
+    return { data, offset: 0 };
+  }
+  let offset = 0;
+  while (offset < data.length && data.daily[offset] === 1) {
+    offset += 1;
+  }
+  if (offset === 0) {
+    return { data, offset: 0 };
+  }
+  const length = data.length - offset;
+  const slice = (values: Float64Array): Float64Array => values.slice(offset);
+  return {
+    data: {
+      ...data,
+      length,
+      time: slice(data.time),
+      open: slice(data.open),
+      high: slice(data.high),
+      low: slice(data.low),
+      close: slice(data.close),
+      volume: slice(data.volume),
+      ...(data.synthetic === undefined
+        ? {} : { synthetic: data.synthetic.slice(offset) }),
+      ...(data.buy === undefined ? {} : { buy: data.buy.slice(offset) }),
+      ...(data.sell === undefined ? {} : { sell: data.sell.slice(offset) }),
+      daily: new Uint8Array(length),
+    },
+    offset,
+  };
+}
+
+/** Put a study's values back on the chart's own bar indices. */
+function padOutput(
+  output: IndicatorOutput,
+  offset: number,
+  total: number,
+): IndicatorOutput {
+  if (offset === 0) {
+    return output;
+  }
+  const pad = (values: Float64Array): Float64Array => {
+    const padded = new Float64Array(total);
+    padded.fill(Number.NaN);
+    padded.set(values, offset);
+    return padded;
+  };
+  return {
+    ...output,
+    lines: output.lines.map((line) => ({ ...line, values: pad(line.values) })),
+    ...(output.histogram === undefined
+      ? {} : { histogram: { ...output.histogram, values: pad(output.histogram.values) } }),
+  };
+}
+
 function buildIndicators(
   state: EngineState,
   specs: readonly IndicatorSpec[],
@@ -1476,7 +1601,9 @@ function buildIndicators(
   tokens: TvTheme,
 ): void {
   void tokens;
-  const outputs = computeIndicators(specs, data);
+  const view = intradaySeries(data);
+  const outputs = computeIndicators(specs, view.data)
+    .map((output) => padOutput(output, view.offset, data.length));
   // Pane 0 is the price (volume rides its own overlay scale), so the first
   // study pane is pane 1.
   let nextPane = 1;

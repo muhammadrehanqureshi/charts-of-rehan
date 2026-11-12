@@ -26,6 +26,8 @@ export interface BarRow {
   readonly v: number;
   /** True only for a flat bucket added by the explicit fill mode. */
   readonly synthetic: boolean;
+  /** True only for a daily-grain history row behind an intraday chart. */
+  readonly daily: boolean;
 }
 
 export interface UpsertCounts {
@@ -50,6 +52,7 @@ export class ColumnSeries {
   private close: Float64Array;
   private volume: Float64Array;
   private synthetic: Uint8Array;
+  private daily: Uint8Array;
   private revisions = 0;
 
   constructor(capacity = INITIAL_CAPACITY) {
@@ -61,6 +64,7 @@ export class ColumnSeries {
     this.close = new Float64Array(this.capacity);
     this.volume = new Float64Array(this.capacity);
     this.synthetic = new Uint8Array(this.capacity);
+    this.daily = new Uint8Array(this.capacity);
   }
 
   get length(): number {
@@ -87,7 +91,7 @@ export class ColumnSeries {
   columns(): {
     time: Float64Array; open: Float64Array; high: Float64Array;
     low: Float64Array; close: Float64Array; volume: Float64Array;
-    synthetic: Uint8Array;
+    synthetic: Uint8Array; daily: Uint8Array;
   } {
     return {
       time: this.time.slice(0, this.count),
@@ -97,6 +101,7 @@ export class ColumnSeries {
       close: this.close.slice(0, this.count),
       volume: this.volume.slice(0, this.count),
       synthetic: this.synthetic.slice(0, this.count),
+      daily: this.daily.slice(0, this.count),
     };
   }
 
@@ -113,6 +118,7 @@ export class ColumnSeries {
       c: this.close[index] ?? 0,
       v: this.volume[index] ?? 0,
       synthetic: this.synthetic[index] === 1,
+      daily: this.daily[index] === 1,
     };
   }
 
@@ -324,11 +330,13 @@ export class ColumnSeries {
     let close = 0;
     let volume = 0;
     let synthetic = false;
+    let daily = false;
     let started = false;
 
     const flush = () => {
       if (started) {
-        folded.pushRaw(bucket, open, high, low, close, volume, synthetic);
+        folded.pushRaw(bucket, open, high, low, close, volume, synthetic,
+                       daily);
       }
     };
 
@@ -344,12 +352,14 @@ export class ColumnSeries {
         close = this.close[index] ?? 0;
         volume = 0;
         synthetic = this.synthetic[index] === 1;
+        daily = this.daily[index] === 1;
         started = true;
       } else {
         high = Math.max(high, this.high[index] ?? 0);
         low = Math.min(low, this.low[index] ?? 0);
         close = this.close[index] ?? 0;
         synthetic = synthetic && this.synthetic[index] === 1;
+        daily = daily && this.daily[index] === 1;
       }
       volume += this.volume[index] ?? 0;
     }
@@ -368,6 +378,7 @@ export class ColumnSeries {
         c: this.close[index] ?? 0,
         v: this.volume[index] ?? 0,
         synthetic: this.synthetic[index] === 1,
+        daily: this.daily[index] === 1,
       });
     }
     return bars;
@@ -403,7 +414,8 @@ export class ColumnSeries {
       (this.low[index] ?? 0) === bar.l &&
       (this.close[index] ?? 0) === bar.c &&
       (this.volume[index] ?? 0) === bar.v &&
-      (this.synthetic[index] === 1) === (bar.synthetic === true);
+      (this.synthetic[index] === 1) === (bar.synthetic === true) &&
+      (this.daily[index] === 1) === (bar.daily === true);
     if (same) {
       return false;
     }
@@ -414,13 +426,14 @@ export class ColumnSeries {
     this.close[index] = bar.c;
     this.volume[index] = bar.v;
     this.synthetic[index] = bar.synthetic === true ? 1 : 0;
+    this.daily[index] = bar.daily === true ? 1 : 0;
     this.revisions += 1;
     return true;
   }
 
   private push(moment: number, bar: Bar): void {
     this.pushRaw(moment, bar.o, bar.h, bar.l, bar.c, bar.v,
-                 bar.synthetic === true);
+                 bar.synthetic === true, bar.daily === true);
   }
 
   private insertAfter(index: number, moment: number, bar: Bar): void {
@@ -435,6 +448,7 @@ export class ColumnSeries {
     this.close[index + 1] = bar.c;
     this.volume[index + 1] = bar.v;
     this.synthetic[index + 1] = bar.synthetic === true ? 1 : 0;
+    this.daily[index + 1] = bar.daily === true ? 1 : 0;
     this.count += 1;
   }
 
@@ -446,6 +460,7 @@ export class ColumnSeries {
     this.close[to] = this.close[from] ?? 0;
     this.volume[to] = this.volume[from] ?? 0;
     this.synthetic[to] = this.synthetic[from] ?? 0;
+    this.daily[to] = this.daily[from] ?? 0;
   }
 
   private pushRaw(
@@ -456,6 +471,7 @@ export class ColumnSeries {
     close: number,
     volume: number,
     synthetic = false,
+    daily = false,
   ): void {
     this.ensure(this.count + 1);
     this.time[this.count] = moment;
@@ -465,6 +481,7 @@ export class ColumnSeries {
     this.close[this.count] = close;
     this.volume[this.count] = volume;
     this.synthetic[this.count] = synthetic ? 1 : 0;
+    this.daily[this.count] = daily ? 1 : 0;
     this.count += 1;
   }
 
@@ -490,6 +507,9 @@ export class ColumnSeries {
     const nextSynthetic = new Uint8Array(capacity);
     nextSynthetic.set(this.synthetic);
     this.synthetic = nextSynthetic;
+    const nextDaily = new Uint8Array(capacity);
+    nextDaily.set(this.daily);
+    this.daily = nextDaily;
     this.capacity = capacity;
   }
 }

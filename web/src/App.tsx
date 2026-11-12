@@ -50,7 +50,11 @@ import {
 } from "./lightweight";
 
 import { perDayCounts } from "./chart/dayCounts";
-import { scheduleFrom } from "./chart/sessions";
+import {
+  hasDailyBackfill,
+  isDailyGrainStamp,
+  scheduleFrom,
+} from "./chart/sessions";
 import { isOffered, timeframeShort } from "./chart/timeframes";
 import { definitionFor } from "./indicators/registry";
 import {
@@ -108,6 +112,15 @@ function isFlatFillRung(resolution: Resolution): boolean {
  * must be behind every rung. The service's own limit still caps the payload.
  */
 const INTRADAY_SESSIONS = 20;
+
+/**
+ * Daily rows an intraday rung may carry behind its captured sessions.
+ *
+ * The exchange store reaches 2016; asking for the whole decade gives every
+ * intraday rung a reachable ten-year history without inventing a minute the
+ * recorder never saw. The service marks these rows with their own grain.
+ */
+const DAILY_TAIL_DAYS = 2_600;
 
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
@@ -541,6 +554,7 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
+    backfillDays: hasDailyBackfill(resolution) ? DAILY_TAIL_DAYS : undefined,
     fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
@@ -625,11 +639,34 @@ export function App() {
       (total, bar) => total + (bar.synthetic === true ? 1 : 0), 0) ?? 0,
     [feed.meta.payload],
   );
+  const dailyBars = useMemo(() => {
+    if (!hasDailyBackfill(resolution)) {
+      return 0;
+    }
+    let total = 0;
+    for (const bar of feed.meta.payload?.bars ?? []) {
+      if (bar.daily === true) {
+        total += 1;
+      } else if (bar.daily === undefined) {
+        // An older service sends no grain flag; the noon stamp is then the
+        // only statement of it there is.
+        const at = Date.parse(bar.t);
+        if (Number.isFinite(at) && isDailyGrainStamp(at)) {
+          total += 1;
+        }
+      }
+    }
+    return total;
+  }, [feed.meta.payload, resolution]);
   // What a reader checks a session break against: how many candles each date
   // actually holds, oldest first. One backward pass over the payload's own
   // bars, memoised on that payload.
+  // A daily context row is a whole session, not a candle of this rung: it is
+  // named by the "daily context" count, not listed as a date's candle block.
   const dayCounts = useMemo(
-    () => perDayCounts(feed.meta.payload?.bars ?? []),
+    () => perDayCounts(
+      (feed.meta.payload?.bars ?? []).filter((bar) => bar.daily !== true),
+    ),
     [feed.meta.payload],
   );
   const fillMode = fillFlat && isFlatFillRung(resolution);
@@ -729,6 +766,8 @@ export function App() {
             sha256={session?.capture?.sha256 ?? ""}
             bars={bars}
             syntheticBars={syntheticBars}
+            dailyBars={dailyBars}
+            firstBarAt={feed.meta.payload?.bars[0]?.t ?? ""}
             dayCounts={dayCounts.days}
             earlierDays={dayCounts.earlierDays}
             fillMode={fillMode}

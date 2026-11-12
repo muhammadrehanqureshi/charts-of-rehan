@@ -30,6 +30,7 @@ The rules this module implements, in order:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from itertools import islice
 
@@ -296,7 +297,9 @@ def _daily_backfill(source: BarSource, symbol: str, backfill: int,
             continue
         if bar.t in seen:
             continue
-        seen[bar.t] = bar
+        # The row is real stored history, but its grain is a whole session.
+        # Mark it so the chart never draws it as one interval of this rung.
+        seen[bar.t] = replace(bar, daily=True)
         seen_days.add(day_text)
         added += 1
         if not earliest or day_text < earliest:

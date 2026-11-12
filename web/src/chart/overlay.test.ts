@@ -121,6 +121,37 @@ describe("break plan", () => {
     expect(plan[0]?.x).toBe(1);
   });
 
+  it("keeps the sessions' rules under a packed daily decade", () => {
+    // 200 daily rows at one pixel each would declare the whole viewport
+    // dense if the two grains were pooled. The recorded sessions are roomy
+    // and must keep every rule they earned.
+    const xByTime = new Map<number, number>();
+    const breaks: SessionBreak[] = [];
+    const base = Date.parse("2024-01-01T12:00:00+05:00");
+    for (let i = 0; i < 200; i += 1) {
+      const t = base + i * 86_400_000;
+      xByTime.set(t, i);
+      breaks.push({
+        t, day: new Date(t).toISOString().slice(0, 10),
+        label: "history", first: i === 0, daily: true,
+      });
+    }
+    const sessionXs = [500, 560, 620, 680, 740, 800];
+    for (let i = 0; i < sessionXs.length; i += 1) {
+      const t = Date.parse(`2026-10-${String(12 + i).padStart(2, "0")}T09:32:00+05:00`);
+      xByTime.set(t, sessionXs[i]!);
+      breaks.push({
+        t, day: `2026-10-${String(12 + i).padStart(2, "0")}`,
+        label: `${12 + i} Oct`, first: false, daily: false,
+      });
+    }
+    const plan = breakPlan(breaks, (t) => xByTime.get(t) ?? null, 900);
+    const xs = plan.map((item) => item.x);
+    for (const x of sessionXs.slice(1)) {
+      expect(xs).toContain(x);
+    }
+  });
+
   it("a crowded span falls to the month's rule, intraday or not", () => {
     const entries: [string, number, boolean?][] = [];
     for (let i = 0; i < 6; i += 1) {

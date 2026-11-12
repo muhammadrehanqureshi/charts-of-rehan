@@ -67,11 +67,12 @@ export interface RungPolicy {
    * May this rung carry daily EOD rows (stamped Karachi noon) behind its
    * recorded sessions?
    *
-   * No intraday rung may. A daily row is a whole day wearing a 30-minute
-   * label, so a 30-minute chart that carried 2,462 of them showed blocks of
-   * hundreds of candles between two session rules, and no rule count could
-   * make those blocks hold one session's candles. The decade belongs to the
-   * daily, weekly and monthly rungs, where every candle is the same grain.
+   * Intraday rungs may, as a bounded context behind the capture: the tape
+   * only started in October 2026, while the exchange's stored daily history
+   * reaches 2016. Those rows are a coarser grain and carry their own flag:
+   * each is one whole session, ruled on a daily cadence that never joins the
+   * recorded tape's population. The payload note names them so the reader is
+   * never told a daily candle is an interval of the rung.
    */
   readonly calendarGrain: boolean;
 }
@@ -84,19 +85,20 @@ export interface RungPolicy {
  * about its grain.
  */
 export const RUNG_POLICY: Readonly<Record<Resolution, RungPolicy>> = {
-  // An intraday rung carries its own grain and nothing else. The session
-  // rules divide that rung's own candles, so a block between two rules is
-  // one session at this timeframe: six hours of 1h candles, twelve half-hour
-  // candles, 358 minutes. Mixing the daily decade in made that impossible.
-  "1s": { breaks: true, calendarGrain: false },
-  "10s": { breaks: true, calendarGrain: false },
-  "1m": { breaks: true, calendarGrain: false },
-  "5m": { breaks: true, calendarGrain: false },
-  "10m": { breaks: true, calendarGrain: false },
-  "15m": { breaks: true, calendarGrain: false },
-  "30m": { breaks: true, calendarGrain: false },
-  "1h": { breaks: true, calendarGrain: false },
-  "4h": { breaks: true, calendarGrain: false },
+  // An intraday rung carries its captured tape plus the bounded daily
+  // history behind it. Daily rows are their own session each, with their own
+  // rule class, so a block between two tape rules still holds one session at
+  // this timeframe; the decade exists only as clearly-noted context for the
+  // years the tape never recorded.
+  "1s": { breaks: true, calendarGrain: true },
+  "10s": { breaks: true, calendarGrain: true },
+  "1m": { breaks: true, calendarGrain: true },
+  "5m": { breaks: true, calendarGrain: true },
+  "10m": { breaks: true, calendarGrain: true },
+  "15m": { breaks: true, calendarGrain: true },
+  "30m": { breaks: true, calendarGrain: true },
+  "1h": { breaks: true, calendarGrain: true },
+  "4h": { breaks: true, calendarGrain: true },
   "1D": { breaks: false, calendarGrain: false },
   "1d": { breaks: false, calendarGrain: false },
   session: { breaks: false, calendarGrain: false },
@@ -193,6 +195,14 @@ export interface SessionBreak {
   readonly first: boolean;
   /** The last bar before this session, when the series holds one. */
   readonly previous?: number | undefined;
+  /**
+   * True when this rule opens a daily-grain history row rather than a
+   * session of the chart's own rung. The rule is still true - one daily
+   * candle is one whole session - but the planner keeps the two populations
+   * on separate spacing rhythms, so a decade of daily rows cannot thin the
+   * recorded sessions' rules away.
+   */
+  readonly daily?: boolean;
 }
 
 /** Whole Karachi days since the epoch; the identity of a session date. */
@@ -237,9 +247,18 @@ export function isDailyGrainStamp(ms: number): boolean {
  * resolution, so they are excluded there. On a 1m chart noon is a real bar
  * and is kept.
  */
-export function isIntradayStamp(ms: number, resolution: Resolution): boolean {
+export function isIntradayStamp(
+  ms: number,
+  resolution: Resolution,
+  daily?: boolean,
+): boolean {
   if (!Number.isFinite(ms)) {
     return false;
+  }
+  // A payload carrying the service's own grain flag is read from that flag:
+  // a real noon minute on a recorded day is not the daily backfill.
+  if (daily !== undefined) {
+    return !daily;
   }
   return !hasDailyBackfill(resolution) || !isDailyGrainStamp(ms);
 }
@@ -248,11 +267,19 @@ export function isIntradayStamp(ms: number, resolution: Resolution): boolean {
 export function intradayStamps(
   times: ArrayLike<number>,
   resolution: Resolution,
+  daily?: ArrayLike<boolean | number>,
 ): number[] {
   const out: number[] = [];
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
-    if (t !== undefined && isIntradayStamp(t, resolution)) {
+    if (t === undefined) {
+      continue;
+    }
+    const flag = daily?.[i];
+    const isDaily = flag !== undefined
+      ? flag === true || flag === 1
+      : hasDailyBackfill(resolution) && isDailyGrainStamp(t);
+    if (!isDaily) {
       out.push(t);
     }
   }
@@ -285,8 +312,18 @@ function bandsFor(
  * band: the break is then the move into the 14:32 band, not a second edge
  * inside the lunch.
  */
-function slotId(ms: number, schedule?: SessionSchedule): number {
+function slotId(
+  ms: number,
+  schedule?: SessionSchedule,
+  daily = false,
+): number {
   const day = dayNumber(ms);
+  // A daily-grain row is a whole session by itself: one slot for its date,
+  // not the hour band its noon stamp happens to fall in (on a Friday noon is
+  // the lunch break, which would otherwise attach it to the afternoon).
+  if (daily) {
+    return day * 1024 + 1;
+  }
   const bands = bandsFor(day, schedule);
   const minute = minuteOfDay(ms);
   let band = -1;
@@ -373,11 +410,18 @@ export function dayBreaks(
  * The rung's own policy is applied here, not by the caller: a calendar rung
  * yields no intraday rules even if a caller forgets to ask, which is the
  * whole point of keeping the policy in one table.
+ *
+ * A daily-grain backfill row behind an intraday chart is also a session - one
+ * whole day of it - so it earns a rule of its own. The flag from the payload
+ * says which rows those are; the planner keeps their cadence separate from
+ * the recorded tape's, so a decade of them never crowds the sessions out.
  */
 export function sessionBreaks(
   times: ArrayLike<number>,
   resolution: Resolution,
   schedule?: SessionSchedule,
+  /** Per-bar grain flags from the payload; absent on an older service. */
+  daily?: ArrayLike<boolean | number>,
 ): SessionBreak[] {
   if (!hasSessionBreaks(resolution)) {
     return [];
@@ -387,10 +431,22 @@ export function sessionBreaks(
   let previous: number | undefined;
   for (let i = 0; i < times.length; i += 1) {
     const t = times[i];
-    if (t === undefined || !isIntradayStamp(t, resolution)) {
+    if (t === undefined || !Number.isFinite(t)) {
       continue;
     }
-    const slot = slotId(t, schedule);
+    const flag = daily?.[i];
+    const isDaily = flag !== undefined
+      ? flag === true || flag === 1
+      : hasDailyBackfill(resolution) && isDailyGrainStamp(t);
+    // A service that sends no grain flags is read the old way: its noon rows
+    // are history, and folding them into the intraday rules would rule a
+    // decade of days as if each were this rung's own candle. With flags, a
+    // daily row earns its own one-session rule and the planner keeps its
+    // cadence separate from the recorded tape's.
+    if (flag === undefined && isDaily) {
+      continue;
+    }
+    const slot = slotId(t, schedule, isDaily);
     if (slot === lastSlot) {
       previous = t;
       continue;
@@ -400,6 +456,7 @@ export function sessionBreaks(
       day: dayText(dayNumber(t)),
       label: dayLabelFormat.format(new Date(t)),
       first: out.length === 0,
+      daily: isDaily,
       ...(previous !== undefined ? { previous } : {}),
     });
     lastSlot = slot;

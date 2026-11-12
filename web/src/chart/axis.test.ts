@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { karachiDayText, opensDay } from "./axis";
+import { axisSpanRank, karachiDayText, opensDay } from "./axis";
 
 /** A Karachi wall-clock stamp as epoch milliseconds. */
 function at(day: string, hour: number, minute: number): number {
@@ -9,6 +9,14 @@ function at(day: string, hour: number, minute: number): number {
 }
 
 describe("the axis date rule", () => {
+  it("ranks a decade as years, a year as months and a month as days", () => {
+    expect(axisSpanRank(3_650)).toBe("year");
+    expect(axisSpanRank(400)).toBe("month");
+    expect(axisSpanRank(35)).toBe("day");
+    expect(axisSpanRank(0)).toBe("day");
+    expect(axisSpanRank(Number.NaN)).toBe("day");
+  });
+
   it("reads the Karachi date of an instant", () => {
     expect(karachiDayText(at("2026-10-20", 15, 32))).toBe("2026-10-20");
     // 22:30 Karachi is already the next UTC day; the label follows Karachi.
