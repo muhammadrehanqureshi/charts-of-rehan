@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiError, type ChartClient, type StreamState } from "../api/client";
 import type {
+  Bar,
   ChartPayload,
   ChartSession,
   ErrorCategory,
@@ -60,6 +61,32 @@ export interface FeedState {
   readonly error: { category: ErrorCategory; detail: string } | null;
   readonly version: number;
   readonly refresh: () => void;
+}
+
+/**
+ * Fold a stream snapshot into the payload the chart already holds.
+ *
+ * A stream snapshot carries only the newest 1,500 bars, while a daily rung's
+ * REST answer can be seven years deeper (2,476 rows). Replacing the deeper
+ * list with the snapshot made the status bar and the day table claim a decade
+ * was 1,500 sessions. The union keeps the older rows and lets a newer day,
+ * or a refreshed forming bar, overwrite its own stamp.
+ */
+function mergeBars(
+  existing: readonly Bar[],
+  incoming: readonly Bar[],
+  cap: number,
+): Bar[] {
+  const byTime = new Map<string, Bar>();
+  for (const bar of existing) {
+    byTime.set(bar.t, bar);
+  }
+  for (const bar of incoming) {
+    byTime.set(bar.t, bar);
+  }
+  const times = [...byTime.keys()].sort();
+  const kept = times.length > cap ? times.slice(times.length - cap) : times;
+  return kept.map((t) => byTime.get(t) as Bar);
 }
 
 const EMPTY_META: FeedMeta = {
@@ -119,6 +146,13 @@ export function useChartFeed(
     const adopt = (payload: ChartPayload, spanFacts = false) => {
       series.upsertMany(payload.bars);
       setMeta((current) => {
+        const bars = current.payload === null
+          ? payload.bars
+          : mergeBars(current.payload.bars, payload.bars, limit);
+        const gaps = current.payload === null
+          ? payload.gaps : current.payload.gaps;
+        const notes = current.payload === null
+          ? payload.notes : current.payload.notes;
         if (!spanFacts || current.payload === null) {
           return {
             symbol: payload.symbol,
@@ -126,9 +160,9 @@ export function useChartFeed(
             market: payload.market,
             session: payload.session,
             source: payload.source,
-            notes: payload.notes,
-            gaps: payload.gaps,
-            payload,
+            notes,
+            gaps,
+            payload: { ...payload, bars, bar_count: bars.length, gaps, notes },
           };
         }
         // A span's identity is the merged answer: which sessions it spans,
@@ -138,7 +172,7 @@ export function useChartFeed(
         return {
           ...current,
           market: payload.market,
-          payload: { ...payload, bar_count: current.payload.bar_count },
+          payload: { ...payload, bars, bar_count: bars.length, gaps, notes },
         };
       });
       bump();
