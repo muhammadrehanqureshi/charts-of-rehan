@@ -481,8 +481,8 @@ button:disabled {
 .watchlist__body {
   min-height: 0;
   overflow: auto;
-  /* The six columns (symbol, last, chg%, buy, sell, total) fill the plate
-     exactly: a fat native rail under them reads as a cut Total column. */
+  /* The seven columns (symbol, last, chg%, buy, sell, net delta, total) fill
+     the plate exactly: a fat native rail under them reads as a cut column. */
   scrollbar-width: thin;
   scrollbar-color: #2a2a2a transparent;
 }
@@ -1007,6 +1007,14 @@ button:disabled {
 .detail__book dd.detail__buy,
 .detail__book dd.detail__sell {
   font-variant-numeric: tabular-nums;
+}
+
+/* The resting size beside the quote: quieter than the price, and held off it
+ * so 79.63 with 99 shares never reads as 79.63999. */
+.detail__booksize {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 10.5px;
 }
 
 
