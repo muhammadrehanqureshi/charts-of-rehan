@@ -71,7 +71,7 @@ import {
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
 import {
-  dayBreaks,
+  sessionBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
@@ -944,13 +944,13 @@ export function ChartCanvas(props: ChartCanvasProps) {
       const index = nearestIndex(realTimes, realMs);
       return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
     };
-    // The chart's division is the Karachi date, not the exchange band. A
-    // Friday's lunch is a gap inside one day; splitting it would leave the
-    // date in two pieces of two or three candles. An intraday rung carries
-    // only its own tape, so the candles between two rules are exactly one
-    // session at this timeframe.
+    // Every band change is a real session break: the date changes, and
+    // Friday's 12:00-14:32 lunch is a second session on the same date. The
+    // exchange's own schedule decides the bands, so the rule lands on the
+    // first candle of the new session instead of a guessed clock edge.
     state.breaks = hasSessionBreaks(resolution)
-      ? dayBreaks(realTimes, resolution).map((item): SessionBreak => {
+      ? sessionBreaks(realTimes, resolution, schedule)
+        .map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
             : { ...moved, previous: chartMsOf(item.previous) };
