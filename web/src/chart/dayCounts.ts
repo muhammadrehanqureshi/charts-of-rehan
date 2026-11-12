@@ -1,12 +1,12 @@
 /**
  * How many candles each Karachi date holds on this chart.
  *
- * The chart's own division is the date (see `dayBreaks`), so the number worth
- * reading beside the series is the candle count per date: five on a Friday
- * whose lunch sits inside the block, six on a Monday, one on a date that only
- * carries the daily backfill row. Showing the newest few and naming how many
- * older dates were left out keeps a decade of daily backfill to one backward
- * pass and a handful of objects instead of four hundred labels.
+ * The chart rules every session band (see `sessionBreaks`), but the count a
+ * reader checks against is per Karachi date: five on a Friday whose lunch
+ * splits the day, six on a Monday, one on a date that only carries the daily
+ * backfill row. Showing the newest few and naming how many older dates were
+ * left out keeps a decade of daily backfill to one backward pass and a
+ * handful of objects instead of four hundred labels.
  */
 
 import type { Bar } from "../api/types";

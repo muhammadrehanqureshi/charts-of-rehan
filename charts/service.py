@@ -69,23 +69,30 @@ def normalise_fill(value: str | None) -> str:
 
 def fill_flat_bars(bars: list[Bar], expected: list[datetime],
                    resolution: str) -> tuple[list[Bar], int]:
-    """Add a marked flat bucket for every expected bucket that has no bar.
+    """Mark a no-trade bucket, but only inside what was actually recorded.
 
-    This is an explicit fallback, never a substitute for real data. Each
-    generated bar carries the previous close (or the first real bar's open
-    before the series starts), a zero range and zero volume, and
-    ``synthetic=True``. The real bars are returned unchanged; if there is no
-    real bar to anchor the session, nothing is generated, because a flat zero
-    is not a price.
+    The recorded window runs from the first real bar to the last. A bucket
+    before the first print or after the last one was not recorded at all - a
+    late recorder or a capture that ended early - and a flat candle there
+    would invent a session that never happened. That is exactly how a day
+    whose recording began at 15:09 grew five flat morning hours at the
+    afternoon's opening price. Interior holes are genuine no-trade buckets;
+    each generated bar carries the previous close, a zero range, zero volume
+    and ``synthetic=True``. The real bars are returned unchanged; with no
+    real bar there is no window to fill.
     """
     if not bars or not expected:
         return list(bars), 0
     known = {bar.t: bar for bar in bars}
+    first = min(known)
+    last = max(known)
     output: list[Bar] = []
     added = 0
-    price = bars[0].o
+    price = min(bars, key=lambda bar: bar.t).o
     for bucket in expected:
         stamp = _stamp(bucket)
+        if stamp < first or stamp > last:
+            continue
         found = known.get(stamp)
         if found is not None:
             output.append(found)

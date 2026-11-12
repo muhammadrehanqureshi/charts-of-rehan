@@ -312,6 +312,73 @@ export function Watchlist(props: WatchlistProps) {
         </p>
       </section>
 
+      <section className="market" aria-label="live tape, every traded stock">
+        <div className="tape__market">
+          <div className="tape__markethead">
+            <h3 className="tape__title">Live tape · every traded stock</h3>
+            <span className="tape__count">
+              {marketRows.length} traded · net Δ = buy − sell
+            </span>
+          </div>
+          <div className="tape__marketscroll">
+            <table
+              className="tape__markettable"
+              aria-label="live buy, sell, net delta and total for every traded stock"
+            >
+              <thead>
+                <tr>
+                  <th scope="col">symbol</th>
+                  <th scope="col">buy</th>
+                  <th scope="col">sell</th>
+                  <th scope="col">net Δ</th>
+                  <th scope="col">total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {marketRows.map(({ row: name, flow: money }) => {
+                  const total = dayTotal(money);
+                  const delta = money?.delta ?? 0;
+                  return (
+                    <tr
+                      key={name.symbol}
+                      className="tape__marketrow"
+                      onClick={() => onSymbol(name.symbol)}
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          className="tape__marketopen"
+                          title={`open ${name.symbol} on the chart`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSymbol(name.symbol);
+                          }}
+                        >
+                          {name.symbol}
+                        </button>
+                      </td>
+                      <td className="detail__buy">
+                        {side(money?.buy_volume)}
+                      </td>
+                      <td className="detail__sell">
+                        {side(money?.sell_volume)}
+                      </td>
+                      <td className={delta > 0 ? "detail__buy"
+                        : delta < 0 ? "detail__sell" : ""}>
+                        {netDelta(money?.delta)}
+                      </td>
+                      <td className="detail__total">
+                        {total == null ? "-" : formatVolume(total)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section className="detail" aria-label="symbol detail">
         {detail === undefined ? (
           <p className="detail__quiet">
@@ -454,74 +521,10 @@ export function Watchlist(props: WatchlistProps) {
               ? (
                 <section className="tape" aria-label="live tape">
                   <div className="tape__head">
-                    <h3 className="tape__title">Live tape</h3>
+                    <h3 className="tape__title">Live prints</h3>
                     <span className="tape__count">
                       {tape.totals?.prints ?? tape.events_total} prints
                     </span>
-                  </div>
-                  <div className="tape__market">
-                    <div className="tape__markethead">
-                      <h4 className="tape__title">Every traded stock</h4>
-                      <span className="tape__count">
-                        {marketRows.length} traded · net Δ = buy − sell
-                      </span>
-                    </div>
-                    <div className="tape__marketscroll">
-                      <table
-                        className="tape__markettable"
-                        aria-label="live buy, sell, net delta and total for every traded stock"
-                      >
-                        <thead>
-                          <tr>
-                            <th scope="col">symbol</th>
-                            <th scope="col">buy</th>
-                            <th scope="col">sell</th>
-                            <th scope="col">net Δ</th>
-                            <th scope="col">total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {marketRows.map(({ row: name, flow: money }) => {
-                            const total = dayTotal(money);
-                            const delta = money?.delta ?? 0;
-                            return (
-                              <tr
-                                key={name.symbol}
-                                className="tape__marketrow"
-                                onClick={() => onSymbol(name.symbol)}
-                              >
-                                <td>
-                                  <button
-                                    type="button"
-                                    className="tape__marketopen"
-                                    title={`open ${name.symbol} on the chart`}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      onSymbol(name.symbol);
-                                    }}
-                                  >
-                                    {name.symbol}
-                                  </button>
-                                </td>
-                                <td className="detail__buy">
-                                  {side(money?.buy_volume)}
-                                </td>
-                                <td className="detail__sell">
-                                  {side(money?.sell_volume)}
-                                </td>
-                                <td className={delta > 0 ? "detail__buy"
-                                  : delta < 0 ? "detail__sell" : ""}>
-                                  {netDelta(money?.delta)}
-                                </td>
-                                <td className="detail__total">
-                                  {total == null ? "-" : formatVolume(total)}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
                   </div>
                   {tape.days.length > 0 ? (
                     <table className="tape__days" aria-label="volume totals by day">

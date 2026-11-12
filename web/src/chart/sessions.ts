@@ -365,12 +365,10 @@ export function dayBreaks(
 /**
  * Every band change in a series, in bar order.
  *
- * Kept for callers that need Friday's lunch as a separate intraday session;
- * the chart uses `dayBreaks` because the owner's division is the date. A
- * band change is not a new date, and must not split a Friday into 3+2 bars.
- * The first intraday session is still returned (with `first: true`) so
- * callers can anchor it, but the renderer does not draw a rule before the
- * series begins.
+ * The chart uses this: a date change is a break, and Friday's 12:00-14:32
+ * lunch is a second session on the same date. The first intraday session is
+ * still returned (with `first: true`) so callers can anchor it, but the
+ * renderer does not draw a rule before the series begins.
  *
  * The rung's own policy is applied here, not by the caller: a calendar rung
  * yields no intraday rules even if a caller forgets to ask, which is the
