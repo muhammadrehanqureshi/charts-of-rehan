@@ -411,7 +411,7 @@ export function Watchlist(props: WatchlistProps) {
                     <div>
                       <dt>bid</dt>
                       <dd className="detail__buy">
-                        {book.bid === null ? "-" : formatPrice(book.bid)}
+                        {book.bid === null ? "-" : formatPrice(book.bid)}{" "}
                         <span className="detail__booksize">
                           {book.bid_size == null ? "" : formatVolume(book.bid_size)}
                         </span>
@@ -420,7 +420,7 @@ export function Watchlist(props: WatchlistProps) {
                     <div>
                       <dt>ask</dt>
                       <dd className="detail__sell">
-                        {book.ask === null ? "-" : formatPrice(book.ask)}
+                        {book.ask === null ? "-" : formatPrice(book.ask)}{" "}
                         <span className="detail__booksize">
                           {book.ask_size == null ? "" : formatVolume(book.ask_size)}
                         </span>
