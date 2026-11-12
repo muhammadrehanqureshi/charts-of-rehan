@@ -12,6 +12,30 @@
 const KARACHI_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 86_400_000;
 
+/** The rank a packed axis should print at this real history span. */
+export type AxisSpanRank = "year" | "month" | "day";
+
+/**
+ * A decade needs years, a year needs months, a month needs days.
+ *
+ * The engine ranks ticks from presentation time, which is only a few minutes
+ * long on a packed decade chart. Using its rank printed "14 Nov" again and
+ * again with no year, so the real span of the visible history decides the
+ * label rank instead.
+ */
+export function axisSpanRank(spanDays: number): AxisSpanRank {
+  if (!Number.isFinite(spanDays) || spanDays <= 0) {
+    return "day";
+  }
+  if (spanDays > 730) {
+    return "year";
+  }
+  if (spanDays > 90) {
+    return "month";
+  }
+  return "day";
+}
+
 /** The Karachi calendar day of an instant, `YYYY-MM-DD`, or "" if unusable. */
 export function karachiDayText(ms: number): string {
   if (!Number.isFinite(ms)) {

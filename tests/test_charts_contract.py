@@ -140,7 +140,7 @@ class PayloadTest(unittest.TestCase):
         the full timeframe ladder and the computed index proxies, without
         changing the session block or the bar shape.
         """
-        self.assertEqual(SCHEMA_VERSION, 4)
+        self.assertEqual(SCHEMA_VERSION, 5)
 
     def test_a_v2_payload_carries_the_session_it_is_showing(self):
         from charts.contract import ChartSession

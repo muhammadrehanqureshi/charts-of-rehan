@@ -77,6 +77,12 @@ export interface Bar {
   readonly v: number;
   /** True only for a flat no-trade bucket added by fill=flat. */
   readonly synthetic?: boolean;
+  /**
+   * True only for a daily-grain row the decade backfill prepended behind an
+   * intraday chart. One such candle covers a whole session, not a bar of this
+   * rung; the service sends the flag rather than leaving it to a noon guess.
+   */
+  readonly daily?: boolean;
 }
 
 export interface Gap {
@@ -325,6 +331,7 @@ function parseBar(raw: unknown, path: string): Bar {
     c: num(value["c"], `${path}.c`),
     v: num(value["v"], `${path}.v`),
     synthetic: value["synthetic"] === true,
+    daily: value["daily"] === true,
   };
   if (bar.h < Math.max(bar.o, bar.c, bar.l)) {
     throw new ContractViolation(path, "high is below another price");

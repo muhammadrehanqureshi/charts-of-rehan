@@ -423,7 +423,7 @@ export function breakPlan(
   /** Carry one date label per day when the caller paints it. */
   withLabels = false,
 ): BreakPlan[] {
-  const visible: { x: number; day: string; label: string }[] = [];
+  const visible: { x: number; day: string; label: string; daily: boolean }[] = [];
   for (const item of breaks) {
     if (item.first) {
       continue;
@@ -442,46 +442,70 @@ export function breakPlan(
     if (x === null || x < -1 || x > plotWidth + 1) {
       continue;
     }
-    visible.push({ x: Math.round(x), day: item.day, label: item.label });
+    visible.push({
+      x: Math.round(x), day: item.day, label: item.label,
+      daily: item.daily === true,
+    });
   }
   if (visible.length === 0) {
     return [];
   }
-  let span = 0;
-  for (let i = 1; i < visible.length; i += 1) {
-    span += visible[i]!.x - visible[i - 1]!.x;
-  }
   // Crowding is the viewport's property, not the rung's: a real session span
   // packs as tight as a decade of daily rows the moment the reader zooms out.
   // Both passes - calendar history and real sessions - obey the same law:
-  // roomy keeps every join's rule, crowded keeps the month's rule. One
-  // cadence per viewport, never a sparse calendar beside a dashed pile.
-  const dense = visible.length > 1
-    && span / (visible.length - 1) < DENSE_PX;
+  // roomy keeps every join's rule, crowded keeps the month's rule.
+  //
+  // But the two populations are measured separately. A decade of daily rows
+  // packed at half a pixel each used to declare the whole viewport dense and
+  // thin the recorded sessions' rules away with it; those sessions can be
+  // roomy while the history behind them is not. Each grain keeps its own
+  // rhythm, and the two plans merge in x order.
   const plan: BreakPlan[] = [];
-  let lastLine = Number.NEGATIVE_INFINITY;
   let lastLabelDay = "";
-  for (let i = 0; i < visible.length; i += 1) {
-    const item = visible[i]!;
-    const monthStart = i === 0
-      || item.day.slice(0, 7) !== visible[i - 1]!.day.slice(0, 7);
-    // Rules keep a rhythm of their own: in the dense mode only the month's
-    // first bar asks for one, and none crowds the previous within 18px.
-    const asks = !dense || monthStart;
-    if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
-      // A packed axis has no calendar distance of its own, so the first
-      // rule of each session carries the date. A Friday lunch rule stays
-      // label-free because it names the same day as the morning rule.
-      plan.push({
-        x: item.x,
-        ...(withLabels && item.day !== lastLabelDay
-          ? { label: item.label } : {}),
-      });
-      lastLine = item.x;
+  for (const grain of [false, true] as const) {
+    const items = visible.filter((item) => item.daily === grain);
+    if (items.length === 0) {
+      continue;
     }
-    lastLabelDay = item.day;
+    let span = 0;
+    for (let i = 1; i < items.length; i += 1) {
+      span += items[i]!.x - items[i - 1]!.x;
+    }
+    const dense = items.length > 1
+      && span / (items.length - 1) < DENSE_PX;
+    let lastLine = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i]!;
+      const monthStart = i === 0
+        || item.day.slice(0, 7) !== items[i - 1]!.day.slice(0, 7);
+      // Rules keep a rhythm of their own: in the dense mode only the month's
+      // first bar asks for one, and none crowds the previous within 18px.
+      const asks = !dense || monthStart;
+      if (asks && (!dense || item.x - lastLine >= LINE_MIN_PX)) {
+        // A packed axis has no calendar distance of its own, so the first
+        // rule of each session carries the date. A Friday lunch rule stays
+        // label-free because it names the same day as the morning rule.
+        plan.push({
+          x: item.x,
+          ...(withLabels && item.day !== lastLabelDay
+            ? { label: item.label } : {}),
+        });
+        lastLine = item.x;
+        lastLabelDay = item.day;
+      }
+    }
   }
-  return plan;
+  plan.sort((a, b) => a.x - b.x);
+  // A daily rule and a session rule can land on the same pixel at a month
+  // boundary; one stroke is enough. The session's plan is built first, so its
+  // label wins.
+  const deduped: BreakPlan[] = [];
+  for (const item of plan) {
+    if (deduped[deduped.length - 1]?.x !== item.x) {
+      deduped.push(item);
+    }
+  }
+  return deduped;
 }
 
 /**

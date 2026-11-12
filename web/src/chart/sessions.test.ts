@@ -73,23 +73,23 @@ describe("sessionBreaks", () => {
     expect(sessionBreaks(times, "1h")).toHaveLength(1);
   });
 
-  it("keeps a real noon candle: no rung carries daily rows any more", () => {
+  it("treats noon as daily context, not an intraday rule", () => {
     const times = [
       pkt("2026-10-21", "09:32"),
       pkt("2026-10-21", "12:00"),
       pkt("2026-10-21", "15:29"),
     ];
-    // Noon is still recognisable as the daily-row stamp, but an intraday rung
-    // no longer carries those rows, so a noon candle here is the rung's own.
+    // Noon is the daily backfill's stamp. The row is a real stored session,
+    // but it is not a captured intraday candle and never opens a block.
     expect(isDailyGrainStamp(times[1] ?? 0)).toBe(true);
     for (const rung of ["1m", "5m", "1h"] as const) {
-      expect(isIntradayStamp(times[1] ?? 0, rung)).toBe(true);
-      expect(intradayStamps(times, rung)).toEqual(times);
+      expect(isIntradayStamp(times[1] ?? 0, rung)).toBe(false);
+      expect(intradayStamps(times, rung)).toEqual([times[0], times[2]]);
       expect(sessionBreaks(times, rung)).toHaveLength(1);
     }
   });
 
-  it("carries no daily rows, so nothing is discarded from the tape", () => {
+  it("drops daily backfill rows from the intraday rules", () => {
     const times = [
       pkt("2016-11-01", "12:00"),
       pkt("2016-11-02", "12:00"),
@@ -97,16 +97,50 @@ describe("sessionBreaks", () => {
       pkt("2026-10-12", "10:32"),
       pkt("2026-10-13", "09:32"),
     ];
-    // The decade lives on the daily rung. An intraday rung is its own tape,
-    // so every stamp it receives is a candle of that rung.
+    // The decade behind the tape is daily grain at noon; the captured tape
+    // is the only stretch the intraday rules divide.
     for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
       "1h", "4h"] as const) {
-      expect(isIntradayStamp(times[0] ?? 0, rung)).toBe(true);
-      expect(intradayStamps(times, rung)).toEqual(times);
+      expect(isIntradayStamp(times[0] ?? 0, rung)).toBe(false);
+      expect(intradayStamps(times, rung)).toEqual([
+        times[2], times[3], times[4],
+      ]);
       expect(sessionBreaks(times, rung).map((item) => item.day)).toEqual([
-        "2016-11-01", "2016-11-02", "2026-10-12", "2026-10-13",
+        "2026-10-12", "2026-10-13",
       ]);
     }
+  });
+
+  it("gives a daily-grain row its own session rule when the payload flags it", () => {
+    const times = [
+      pkt("2016-11-01", "12:00"),
+      pkt("2016-11-02", "12:00"),
+      pkt("2026-10-12", "09:32"),
+      pkt("2026-10-12", "10:32"),
+    ];
+    const flags = [1, 1, 0, 0];
+    // One daily candle is one whole session, so the date change is a real
+    // break - and the flag, not the noon stamp, says which rows those are.
+    expect(isIntradayStamp(times[0] ?? 0, "1m", true)).toBe(false);
+    expect(isIntradayStamp(times[2] ?? 0, "1m", false)).toBe(true);
+    const breaks = sessionBreaks(times, "1h", undefined, flags);
+    expect(breaks.map((item) => item.day)).toEqual([
+      "2016-11-01", "2016-11-02", "2026-10-12",
+    ]);
+    expect(breaks[0]?.daily).toBe(true);
+    expect(breaks[2]?.daily).toBe(false);
+  });
+
+  it("keeps a real noon minute bar when the payload says it is intraday", () => {
+    const times = [
+      pkt("2026-10-12", "11:59"),
+      pkt("2026-10-12", "12:00"),
+      pkt("2026-10-12", "12:01"),
+    ];
+    // 12:00 is a real minute on Monday to Thursday; the grain flag protects
+    // it from the legacy noon heuristic.
+    expect(sessionBreaks(times, "1m", undefined, [0, 0, 0])).toHaveLength(1);
+    expect(isIntradayStamp(times[1] ?? 0, "1m", false)).toBe(true);
   });
 
   it("treats every date's candles as one session block", () => {
@@ -166,11 +200,11 @@ describe("sessionBreaks", () => {
     for (const rung of ["1D", "1W", "1M", "1d", "session"] as const) {
       expect(hasSessionBreaks(rung)).toBe(false);
     }
-    // No rung carries the daily decade behind its own candles: a 30m block
-    // must hold twelve half-hours, not a year of one-candle days.
+    // Every intraday rung carries the bounded daily context behind its
+    // captured tape; calendar rungs already are that grain.
     for (const rung of ["1s", "10s", "1m", "5m", "10m", "15m", "30m",
       "1h", "4h"] as const) {
-      expect(hasDailyBackfill(rung)).toBe(false);
+      expect(hasDailyBackfill(rung)).toBe(true);
     }
     for (const rung of ["1D", "1d", "1W", "1M", "session"] as const) {
       expect(hasDailyBackfill(rung)).toBe(false);

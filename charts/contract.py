@@ -36,7 +36,11 @@ from typing import Any, Iterable, Mapping
 #: v4 (2026-11-09) added the optional ``synthetic`` flag on a bar. It is false
 #: for every real print and true only for a flat no-trade bucket added by the
 #: explicit ``fill=flat`` mode; an older bar without the field is real.
-SCHEMA_VERSION = 4
+#: v5 (2026-11-12) added the optional ``daily`` flag. It is true only for a
+#: daily-grain row the decade backfill prepended behind an intraday chart; a
+#: bar without the field is that chart's own grain. The distinction is sent
+#: explicitly so a consumer never has to guess a grain from a noon stamp.
+SCHEMA_VERSION = 5
 
 #: The resolutions this service may serve, finest first. ``1m`` is the broker
 #: tape's own grain; sub-minute rungs are built from tick rows; coarser
@@ -107,6 +111,9 @@ class Bar:
     #: True only for a bucket the fill mode created: no trade, no range, no
     #: volume. Never true for a bar read from the tape or the archive.
     synthetic: bool = False
+    #: True only for a daily-grain history row behind an intraday chart. Such
+    #: a candle covers a whole session; it is never that rung's own interval.
+    daily: bool = False
 
     def __post_init__(self) -> None:
         if self.h < max(self.o, self.c, self.l):
@@ -118,7 +125,8 @@ class Bar:
 
     @classmethod
     def build(cls, *, t: datetime | str, o: Any, h: Any, l: Any,  # noqa: E741
-              c: Any, v: Any = 0.0, synthetic: bool = False) -> "Bar":
+              c: Any, v: Any = 0.0, synthetic: bool = False,
+              daily: bool = False) -> "Bar":
         return cls(
             t=_iso(t),
             o=_number(o, field_name="open", positive=True),
@@ -127,11 +135,13 @@ class Bar:
             c=_number(c, field_name="close", positive=True),
             v=max(0.0, _number(v or 0, field_name="volume", positive=False)),
             synthetic=bool(synthetic),
+            daily=bool(daily),
         )
 
     def as_dict(self) -> dict:
         return {"t": self.t, "o": self.o, "h": self.h, "l": self.l,
-                "c": self.c, "v": self.v, "synthetic": self.synthetic}
+                "c": self.c, "v": self.v, "synthetic": self.synthetic,
+                "daily": self.daily}
 
 
 @dataclass(frozen=True)
@@ -283,7 +293,8 @@ class ChartPayload:
                     o=float(row["o"]), h=float(row["h"]),
                     l=float(row["l"]), c=float(row["c"]),  # noqa: E741
                     v=float(row.get("v", 0.0)),
-                    synthetic=bool(row.get("synthetic", False)))
+                    synthetic=bool(row.get("synthetic", False)),
+                    daily=bool(row.get("daily", False)))
                 for row in raw.get("bars", [])
             ]
             gaps = [

@@ -36,6 +36,10 @@ export interface StatusBarProps {
   readonly bars: number;
   /** How many of those bars are fill=flat placeholders, not trades. */
   readonly syntheticBars: number;
+  /** Daily-grain history rows behind the captured intraday tape. */
+  readonly dailyBars?: number;
+  /** The oldest bar the chart actually carries, for the history span. */
+  readonly firstBarAt?: string;
   /** Candles per Karachi date, oldest first: the chart's own blocks. */
   readonly dayCounts: readonly DayCount[];
   /** Distinct older dates the list leaves out. */
@@ -72,8 +76,8 @@ const STATUS_TEXT: Record<FeedStatus, string> = {
 export function StatusBar(props: StatusBarProps) {
   const {
     status, resolution, market, symbol, day, sessionNote, archived,
-    captureName, sha256, bars, syntheticBars, dayCounts, earlierDays, fillMode,
-    gaps, missingMinutes,
+    captureName, sha256, bars, syntheticBars, dailyBars = 0, firstBarAt = "",
+    dayCounts, earlierDays, fillMode, gaps, missingMinutes,
     sourceLabel, delaySeconds, lastBarAt, asOf, volumeAvailable,
     staleAfterMinutes,
     ordersTotal, error, details, tape, recorder,
@@ -147,6 +151,13 @@ export function StatusBar(props: StatusBarProps) {
         <span className="status__item">
           <span className="status__key">bars</span> {bars}
         </span>
+        {firstBarAt.length > 0 && lastBarAt.length > 0 ? (
+          <span className="status__item"
+                title="oldest and newest bar this chart actually carries">
+            <span className="status__key">history</span>{" "}
+            {firstBarAt.slice(0, 10)} → {lastBarAt.slice(0, 10)}
+          </span>
+        ) : null}
         {dayCounts.length > 1 ? (
           <span className="status__item"
                 title={"candles per Karachi date on this chart, oldest first" +
@@ -165,6 +176,12 @@ export function StatusBar(props: StatusBarProps) {
                 title="fill=flat adds zero-volume, zero-range buckets marked synthetic; they are not trades">
             <span className="status__key">flat fill</span>{" "}
             {syntheticBars > 0 ? `${syntheticBars} synthetic` : "no missing buckets"}
+          </span>
+        ) : null}
+        {dailyBars > 0 ? (
+          <span className="status__item"
+                title={`daily-grain history behind the captured ${timeframeLabel(resolution)} tape; one candle covers a whole session, not a ${timeframeLabel(resolution)} bar`}>
+            <span className="status__key">daily context</span> {dailyBars}
           </span>
         ) : null}
         {ordersTotal !== null ? (

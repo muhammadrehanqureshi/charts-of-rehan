@@ -85,6 +85,8 @@ export interface SeriesData {
   readonly volume: Float64Array;
   /** 1 marks a flat no-trade bucket; absent or 0 is a real bar. */
   readonly synthetic?: Uint8Array;
+  /** 1 marks a daily-grain history row, not an interval of this rung. */
+  readonly daily?: Uint8Array;
   /**
    * The tape's own classified buy volume per bar, when the service has a
    * print tape. NaN marks a bar the tape did not classify; a calculation must

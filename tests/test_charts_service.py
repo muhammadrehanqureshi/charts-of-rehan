@@ -195,6 +195,10 @@ class MergedBackfillTest(unittest.TestCase):
         added = [key for key, value in seen.items() if value is not None]
         self.assertEqual(len(added), 2)
         self.assertIn("2026-10-09T12:00:00+05:00", added)
+        # A daily row behind an intraday chart is marked with its own grain,
+        # so the renderer cannot mistake it for an hour of the tape.
+        self.assertTrue(seen["2026-10-09T12:00:00+05:00"].daily)
+        self.assertTrue(seen["2026-10-08T12:00:00+05:00"].daily)
         self.assertEqual(source.asked, ("OGDC", "1D", 40))
         self.assertTrue(any("daily backfill added 2" in note for note in notes))
 

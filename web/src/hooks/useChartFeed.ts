@@ -108,12 +108,15 @@ export function useChartFeed(
     day?: string;
     days?: number | undefined;
     limit?: number;
+    /** Daily-grain rows the service may attach behind the captured tape. */
+    backfillDays?: number | undefined;
     /** Marked flat buckets for missing no-trade session buckets. */
     fill?: "flat" | undefined;
   } = {},
 ): FeedState {
   const day = options.day ?? "";
   const days = Math.max(0, Math.floor(options.days ?? 0));
+  const backfill = Math.max(0, Math.floor(options.backfillDays ?? 0));
   const fill = options.fill;
   // A merge of one day is no merge: that is the ordinary live chart.
   const merged = days > 1 && day.length === 0;
@@ -183,6 +186,10 @@ export function useChartFeed(
         limit,
         day,
         days: merged ? days : undefined,
+        // The decade is a backfill behind the captured sessions, never a
+        // replacement for them. Asking in the same request keeps the chart
+        // from jumping when a second payload prepends older bars.
+        backfill: merged ? backfill : undefined,
         fill,
         signal: controller.signal,
         timeoutMs: 20_000,
@@ -259,8 +266,8 @@ export function useChartFeed(
       handle.close();
       series.clear();
     };
-  }, [client, symbol, resolution, limit, day, days, fill, series, bump,
-    manual, visible]);
+  }, [client, symbol, resolution, limit, day, days, backfill, fill, series,
+    bump, manual, visible]);
 
   const refresh = useCallback(() => setManual((value) => value + 1), []);
 
