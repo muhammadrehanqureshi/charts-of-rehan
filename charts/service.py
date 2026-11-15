@@ -439,6 +439,11 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         "sessions are packed edge to edge: the hours between one session's "
         "close and the next open are a session break on the chart, not "
         "elapsed time")
+    if backfill <= 0:
+        notes.append(
+            "this intraday chart contains captured intraday bars only; older "
+            "EOD history is available on the 1D chart and is not reconstructed "
+            "as intraday candles")
     newest = payloads[-1]
     if newest.bars:
         notes.append(
