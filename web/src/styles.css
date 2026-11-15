@@ -896,6 +896,26 @@ button:disabled {
   background: color-mix(in srgb, var(--down) 14%, transparent);
 }
 
+.settings-dialog__save {
+  padding: 4px 14px;
+  border: 1px solid var(--focus);
+  border-radius: 4px;
+  background: var(--focus);
+  color: #fff;
+  font-size: 11.5px;
+}
+
+.settings-dialog__save:hover {
+  filter: brightness(1.08);
+}
+
+.settings-dialog__save:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .indicator__title--open {
   padding: 2px 7px;
   border: 0;
