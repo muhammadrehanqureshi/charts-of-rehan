@@ -76,22 +76,38 @@ function tone(percent: number | null | undefined): string {
 }
 
 /**
- * The day's own total: the shares the evidence named a side, buy plus sell.
- * A split the tape could not attribute stays out of it, exactly as the venue
- * measured nothing firm about it.
+ * The session's overall traded volume.
+ *
+ * Buy and sell are the classified split; the venue's overall volume also
+ * contains prints the window classifier could not attribute. The TOTAL column
+ * is the venue's total, so it never understates a session whose coverage is
+ * low. Falls back to rated volume when an older service sends no total.
  */
+export function totalVolume(
+  volume: number | null | undefined,
+  classified: number | null | undefined,
+  buy: number | null | undefined,
+  sell: number | null | undefined,
+): number | null {
+  if (volume != null) {
+    return volume;
+  }
+  if (classified != null) {
+    return classified;
+  }
+  if (buy == null && sell == null) {
+    return null;
+  }
+  return (buy ?? 0) + (sell ?? 0);
+}
+
 export function dayTotal(flow: SymbolFlow | null | undefined,
 ): number | null {
   if (flow === undefined || flow === null) {
     return null;
   }
-  if (flow.classified_volume != null) {
-    return flow.classified_volume;
-  }
-  if (flow.buy_volume == null && flow.sell_volume == null) {
-    return null;
-  }
-  return (flow.buy_volume ?? 0) + (flow.sell_volume ?? 0);
+  return totalVolume(flow.volume, flow.classified_volume,
+    flow.buy_volume, flow.sell_volume);
 }
 
 function side(value: number | null | undefined): string {
@@ -215,7 +231,7 @@ export function Watchlist(props: WatchlistProps) {
                 <th scope="col" className="watchlist__th" title="live buy volume this session">Buy</th>
                 <th scope="col" className="watchlist__th" title="live sell volume this session">Sell</th>
                 <th scope="col" className="watchlist__th watchlist__th--delta" title="buy minus sell: the session's own net delta">Net Δ</th>
-                <th scope="col" className="watchlist__th watchlist__th--total" title="classified buy + sell this session">Total</th>
+                <th scope="col" className="watchlist__th watchlist__th--total" title="all traded shares this session">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -331,7 +347,7 @@ export function Watchlist(props: WatchlistProps) {
                   <th scope="col">buy</th>
                   <th scope="col">sell</th>
                   <th scope="col">net Δ</th>
-                  <th scope="col">total</th>
+                  <th scope="col" title="all traded shares this session">total</th>
                 </tr>
               </thead>
               <tbody>
@@ -533,7 +549,7 @@ export function Watchlist(props: WatchlistProps) {
                           <th scope="col">day</th>
                           <th scope="col">buy</th>
                           <th scope="col">sell</th>
-                          <th scope="col">total</th>
+                          <th scope="col" title="all traded shares">total</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -553,9 +569,15 @@ export function Watchlist(props: WatchlistProps) {
                                 ? "-" : formatVolume(row.totals.sell_volume)}
                             </td>
                             <td className="detail__total">
-                              {row.totals.classified_volume == null
-                                ? "-"
-                                : formatVolume(row.totals.classified_volume)}
+                              {(() => {
+                                const total = totalVolume(
+                                  row.totals.volume,
+                                  row.totals.classified_volume,
+                                  row.totals.buy_volume,
+                                  row.totals.sell_volume,
+                                );
+                                return total == null ? "-" : formatVolume(total);
+                              })()}
                             </td>
                           </tr>
                         ))}
@@ -572,7 +594,7 @@ export function Watchlist(props: WatchlistProps) {
                           <th scope="col">day</th>
                           <th scope="col">buy</th>
                           <th scope="col">sell</th>
-                          <th scope="col">total</th>
+                          <th scope="col" title="all traded shares">total</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -587,9 +609,15 @@ export function Watchlist(props: WatchlistProps) {
                               ? "-" : formatVolume(tape.totals.sell_volume)}
                           </td>
                           <td className="detail__total">
-                            {tape.totals?.classified_volume == null
-                              ? "-"
-                              : formatVolume(tape.totals.classified_volume)}
+                            {(() => {
+                              const total = totalVolume(
+                                tape.totals?.volume,
+                                tape.totals?.classified_volume,
+                                tape.totals?.buy_volume,
+                                tape.totals?.sell_volume,
+                              );
+                              return total == null ? "-" : formatVolume(total);
+                            })()}
                           </td>
                         </tr>
                       </tbody>
