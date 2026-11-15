@@ -289,4 +289,24 @@ describe("sessionBreaks", () => {
     expect(breaks).toHaveLength(1);
     expect(breaks[0]?.t).toBe(times[0]);
   });
+
+  it("opens every intraday rung's rules on the first bar that exists", () => {
+    // The full expected grid for each rung, with the first session cut short
+    // exactly as a late capture does. The missing slots must not move the
+    // rule: it opens on the first actual bar of Friday's morning band, and
+    // its second rule opens on the afternoon band, never in the lunch.
+    for (const rung of ["1m", "5m", "10m", "15m", "30m", "1h", "4h"] as const) {
+      const thursday = expectedSessionTimes("2026-10-29", rung);
+      const friday = expectedSessionTimes("2026-10-30", rung);
+      const partial = thursday.slice(0, Math.max(1, Math.floor(thursday.length / 2)));
+      const breaks = sessionBreaks([...partial, ...friday], rung)
+        .filter((item) => !item.first);
+      expect(breaks.map((item) => item.day)).toEqual([
+        "2026-10-30", "2026-10-30",
+      ]);
+      expect(breaks[0]?.t).toBe(pkt("2026-10-30", "09:17"));
+      expect(breaks[0]?.previous).toBe(partial[partial.length - 1]);
+      expect(breaks[1]?.t).toBe(pkt("2026-10-30", "14:32"));
+    }
+  });
 });

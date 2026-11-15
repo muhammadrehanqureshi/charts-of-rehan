@@ -8,7 +8,8 @@
 import { describe, expect, it } from "vitest";
 import {
   anchorAt, breakPlan, fibLevels, frameFor, makePositions,
-  paintSessionBreaks, profileLevels, volumeProfile,
+  paintOverlay, paintSessionBreaks, profileLevels, volumeProfile,
+  type OverlayPositions,
 } from "./overlay";
 import type { SessionBreak } from "./sessions";
 
@@ -96,6 +97,26 @@ describe("break plan", () => {
     const x = new Map([[previous, 100], [first, 120]]);
     const plan = breakPlan(breaks, (t) => x.get(t) ?? null, 700);
     expect(plan[0]?.x).toBe(110);
+  });
+
+  it("paints a live shape without clearing the kept drawings", () => {
+    // The live line is drawn over the committed layer. Clearing here used to
+    // erase every earlier drawing the moment a second one started.
+    let clears = 0;
+    const context = {
+      canvas: { width: 40, height: 30 },
+      clearRect: () => { clears += 1; },
+    } as unknown as CanvasRenderingContext2D;
+    const frame = frameFor(fakeChart(), 800, 500);
+    const base = {
+      drawings: [], hidden: false, toolColor: "#2962ff",
+      midDrag: null, positions: {} as OverlayPositions,
+    };
+    paintOverlay(context, fakeChart() as never, null as never, frame, base);
+    expect(clears).toBe(1);
+    paintOverlay(context, fakeChart() as never, null as never, frame,
+      { ...base, clear: false });
+    expect(clears).toBe(1);
   });
 
   it("names the day each session rule opens when labels are asked for", () => {

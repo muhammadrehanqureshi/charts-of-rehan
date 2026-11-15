@@ -24,7 +24,6 @@
 import {
   type CandlestickData,
   type HistogramData,
-  type WhitespaceData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
@@ -73,8 +72,6 @@ import {
 import { flowColumns } from "../chart/flow";
 import {
   sessionBreaks,
-  expectedBucketTime,
-  expectedSessionGrid,
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
@@ -879,12 +876,19 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // to its default bar spacing, so hold the logical window now and hand it
     // straight back once the bars are in. Without this, every poll undid a
     // wheel zoom a second after it happened.
-    const held = timeScale.getVisibleLogicalRange();
     const base = seriesData(series);
     const length = base.time.length;
     if (length === 0) {
       return;
     }
+    // Only a window the reader actually took, or an update of the same bar
+    // count, is held. A timeframe switch replaces 2,200 minute bars with 55
+    // hourly ones; restoring the minute window then squeezes those 55 into
+    // the right quarter of the plate and crowds the session rules into the
+    // wrong pixels. A changed count refits to the new rung's own tape.
+    const held = zoomed.current || length === fitCount.current
+      ? timeScale.getVisibleLogicalRange()
+      : null;
     // The tape's own split, folded onto the bars this chart is drawing. Only
     // minute-or-coarser charts take it: a five-second candle cannot borrow a
     // minute's split without inventing detail.
@@ -953,34 +957,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
       state.chartTimes = [];
       return;
     }
-    const intradayOnly = accepted.every((bar) => !bar.daily);
-    const usesExpectedGrid = hasSessionBreaks(resolution)
-      && intradayOnly && resolution !== "1s" && resolution !== "10s";
-    const expectedGrid = usesExpectedGrid
-      ? expectedSessionGrid(
-        accepted.map((bar) => bar.realMs), resolution, schedule,
-      )
-      : [];
-    const barSlots = accepted.map((bar) =>
-      expectedGrid.length > 0
-        ? expectedBucketTime(bar.realMs, resolution, schedule) ?? bar.realMs
-        : bar.realMs,
-    );
-    const slotTimes = expectedGrid.length > 0
-      ? [...new Set([...expectedGrid, ...barSlots])].sort((a, b) => a - b)
-      : accepted.map((bar) => bar.realMs);
-    const baseSec = Math.floor((slotTimes[0] ?? accepted[0]!.realMs) / 1000);
-    const chartSec = slotTimes.map((_time, index) =>
+    const baseSec = Math.floor(accepted[0]!.realMs / 1000);
+    const chartSec = accepted.map((_bar, index) =>
       baseSec + index * PRESENTATION_STEP_SEC);
-    const chartSecBySlot = new Map<number, number>();
-    for (let index = 0; index < slotTimes.length; index += 1) {
-      chartSecBySlot.set(slotTimes[index]!, chartSec[index] ?? baseSec);
-    }
-    const barChartSec = barSlots.map((time) =>
-      chartSecBySlot.get(time) ?? baseSec);
     const realTimes = accepted.map((bar) => bar.realMs);
     const dailyFlags = accepted.map((bar) => bar.daily);
-    timeMap.current = { chartSec, realMs: slotTimes };
+    timeMap.current = { chartSec, realMs: realTimes };
     const opening = openingRange(realTimes, dailyFlags);
     setAxisSpan(
       realTimes[Math.min(opening.from, realTimes.length - 1)] ?? 0,
@@ -988,29 +970,18 @@ export function ChartCanvas(props: ChartCanvasProps) {
     );
     const chartTimes = new Array<number>(length).fill(Number.NaN);
     for (let index = 0; index < accepted.length; index += 1) {
-      chartTimes[accepted[index]!.sourceIndex] = (barChartSec[index] ?? baseSec) * 1000;
+      chartTimes[accepted[index]!.sourceIndex] = (chartSec[index] ?? baseSec) * 1000;
     }
     state.realTimes = realTimes;
     state.dailyFlags = dailyFlags;
     state.chartTimes = chartTimes;
-    state.barTimes = accepted.map((_bar, index) =>
-      (barChartSec[index] ?? baseSec) * 1000);
+    state.barTimes = chartSec.map((sec) => sec * 1000);
     state.index.clear();
-    const candlesData: (CandlestickData | WhitespaceData)[] = [];
+    const candlesData: CandlestickData[] = [];
     const volumeData: HistogramData[] = [];
-    const barsBySlot = new Map<number, typeof accepted[number]>();
     for (let index = 0; index < accepted.length; index += 1) {
       const bar = accepted[index]!;
-      barsBySlot.set(barSlots[index]!, bar);
-    }
-    for (let index = 0; index < slotTimes.length; index += 1) {
-      const slotTime = slotTimes[index]!;
       const time = (chartSec[index] ?? baseSec) as UTCTimestamp;
-      const bar = barsBySlot.get(slotTime);
-      if (bar === undefined) {
-        candlesData.push({ time });
-        continue;
-      }
       state.index.set(Number(time), bar.sourceIndex);
       candlesData.push({
         time,
@@ -1035,7 +1006,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
     }
     const chartMsOf = (realMs: number): number => {
-      const index = nearestIndex(slotTimes, realMs);
+      const index = nearestIndex(realTimes, realMs);
       return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
     };
     // Every band change is a real session break: the date changes, and
@@ -1043,12 +1014,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // exchange's own schedule decides the bands, so the rule lands on the
     // first candle of the new session instead of a guessed clock edge.
     state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(
-        expectedGrid.length > 0 ? slotTimes : realTimes,
-        resolution,
-        schedule,
-        expectedGrid.length > 0 ? undefined : dailyFlags,
-      )
+      ? sessionBreaks(realTimes, resolution, schedule, dailyFlags)
         .map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved
@@ -1133,6 +1099,9 @@ export function ChartCanvas(props: ChartCanvasProps) {
         } else {
           timeScale.setVisibleLogicalRange(range);
         }
+        // The rules are mapped through the scale that just changed; repaint
+        // once it has settled instead of keeping the pre-fit coordinates.
+        scheduleOverlayPaint();
       };
       apply();
       // The engine lays out its own scale once the first data lands. A second
@@ -1179,10 +1148,18 @@ export function ChartCanvas(props: ChartCanvasProps) {
       return;
     }
     paintQueued.current = true;
-    requestAnimationFrame(() => {
+    const run = () => {
       paintQueued.current = false;
       paintOverlayNow();
-    });
+    };
+    // A hidden tab pauses animation frames, which used to leave the queue
+    // stuck and the rules unpainted until the reader came back. Painting now
+    // is cheap and only happens on data or tool changes.
+    if (document.visibilityState === "hidden") {
+      run();
+      return;
+    }
+    requestAnimationFrame(run);
   };
 
   const paintOverlayNow = () => {
@@ -1241,7 +1218,11 @@ export function ChartCanvas(props: ChartCanvasProps) {
     const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
     if (state.breaks.length > 1) {
       paintSessionBreaks(context, state.chart, frame, state.breaks,
-        ruleColors, true, cssHeight, dpr, false);
+        ruleColors, true, cssHeight, dpr, false,
+        (t) => {
+          const index = state.barTimes.indexOf(t);
+          return index >= 0 ? index : null;
+        });
     }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
@@ -1555,6 +1536,7 @@ function paintOne(
     midDrag: null,
     positions,
     bars,
+    clear: false,
   });
 }
 
