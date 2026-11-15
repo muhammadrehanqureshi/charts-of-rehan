@@ -65,6 +65,32 @@ describe("multi-statement scripts", () => {
     expect(run(dataFor([10, 12, 15]))[2]).toBeCloseTo(103);
   });
 
+  it("accepts Pine pivot highs and lows in both call shapes", () => {
+    // The study that failed on `unknown function "pivothigh"` used the
+    // ta-namespaced form. Both the two-argument (high/low) and three-argument
+    // (source) shapes are Pine, and the script normaliser removes `ta.`.
+    expect(() => validateFormula("ta.pivothigh(high, 2, 2)\npivotlow(low, 2, 2)"))
+      .not.toThrow();
+    const bars = dataFor([1, 2, 5, 2, 1]);
+    const high = compileFormula("ta.pivothigh(1, 1)")(bars);
+    expect(high[2]).toBeCloseTo(6);
+    expect(Number.isNaN(high[0] ?? 0)).toBe(true);
+    const low = compileFormula("pivotlow(low, 1, 1)")(
+      dataFor([5, 4, 3, 4, 5]));
+    expect(low[2]).toBeCloseTo(2);
+    const study = [
+      "//@version=5",
+      'indicator("QoR", overlay=true, max_boxes_count=60)',
+      'left = input.int(5, "Left")',
+      'right = input.int(5, "Right")',
+      "ph = ta.pivothigh(high, left, right)",
+      "pl = ta.pivotlow(low, left, right)",
+      "plot(ph)",
+      "plot(pl)",
+    ].join("\n");
+    expect(() => validateFormula(study)).not.toThrow();
+  });
+
   it("survives a wrapped call, which is one statement not two", () => {
     expect(() => validateFormula("sma(\n  close,\n  3\n)")).not.toThrow();
   });

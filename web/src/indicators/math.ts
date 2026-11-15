@@ -157,6 +157,75 @@ export function lowest(values: Float64Array, period: number): Float64Array {
   return out;
 }
 
+/**
+ * Pine's pivot high: the value at a bar that is strictly above every bar
+ * `left` before it and `right` after it. Pine confirms a pivot with later
+ * bars, so the result sits on the pivot bar itself and is NaN elsewhere;
+ * the final `right` bars can never qualify.
+ */
+export function pivotHigh(
+  values: Float64Array,
+  left: number,
+  right: number,
+): Float64Array {
+  const out = filled(values.length);
+  const before = Math.max(0, Math.trunc(left));
+  const after = Math.max(0, Math.trunc(right));
+  for (let index = before; index + after < values.length; index += 1) {
+    const candidate = values[index] ?? Number.NaN;
+    if (!Number.isFinite(candidate)) {
+      continue;
+    }
+    let pivot = true;
+    for (let at = index - before; at <= index + after; at += 1) {
+      if (at === index) {
+        continue;
+      }
+      const other = values[at];
+      if (other !== undefined && Number.isFinite(other) && other >= candidate) {
+        pivot = false;
+        break;
+      }
+    }
+    if (pivot) {
+      out[index] = candidate;
+    }
+  }
+  return out;
+}
+
+/** Pine's pivot low: the mirror of {@link pivotHigh}. */
+export function pivotLow(
+  values: Float64Array,
+  left: number,
+  right: number,
+): Float64Array {
+  const out = filled(values.length);
+  const before = Math.max(0, Math.trunc(left));
+  const after = Math.max(0, Math.trunc(right));
+  for (let index = before; index + after < values.length; index += 1) {
+    const candidate = values[index] ?? Number.NaN;
+    if (!Number.isFinite(candidate)) {
+      continue;
+    }
+    let pivot = true;
+    for (let at = index - before; at <= index + after; at += 1) {
+      if (at === index) {
+        continue;
+      }
+      const other = values[at];
+      if (other !== undefined && Number.isFinite(other) && other <= candidate) {
+        pivot = false;
+        break;
+      }
+    }
+    if (pivot) {
+      out[index] = candidate;
+    }
+  }
+  return out;
+}
+
 export function rateOfChange(values: Float64Array, period = 10): Float64Array {
   const out = filled(values.length);
   const window = Math.max(1, Math.floor(period));
