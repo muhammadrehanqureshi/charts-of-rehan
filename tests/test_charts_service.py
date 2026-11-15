@@ -220,6 +220,37 @@ class MergedBackfillTest(unittest.TestCase):
         self.assertTrue(any("from 2016-10-31 to 2026-10-13" in note
                             for note in notes))
 
+    def test_intraday_limit_does_not_evict_daily_backfill(self):
+        intraday = [
+            Bar.build(t=f"2026-10-{day:02d}T09:35:00+05:00",
+                      o=100, h=101, l=99, c=100, v=1)
+            for day in range(1, 6)
+        ]
+        daily = [
+            Bar.build(t=f"2016-10-{day:02d}T12:00:00+05:00",
+                      o=90, h=91, l=89, c=90, v=1, daily=True)
+            for day in range(1, 4)
+        ]
+        # A small intraday limit used to slice the combined list and discard
+        # all older daily context, even though backfill had been requested.
+        kept = service._cap_merged_bars(
+            {bar.t: bar for bar in [*daily, *intraday]}, limit=2, backfill=3)
+        self.assertEqual(sum(not bar.daily for bar in kept), 2)
+        self.assertEqual(sum(bar.daily for bar in kept), 3)
+        self.assertEqual([bar.t for bar in kept],
+                         sorted(bar.t for bar in [*daily, *intraday[-2:]]))
+
+    def test_zero_backfill_keeps_only_intraday_grain(self):
+        bars = [
+            Bar.build(t="2016-10-31T12:00:00+05:00", o=20, h=21,
+                      l=19, c=20, v=5, daily=True),
+            Bar.build(t="2026-10-13T09:35:00+05:00", o=98, h=99,
+                      l=97, c=98, v=5),
+        ]
+        kept = service._cap_merged_bars(
+            {bar.t: bar for bar in bars}, limit=10, backfill=0)
+        self.assertEqual([bar.t for bar in kept], [bars[1].t])
+
     def test_a_zero_backfill_and_an_empty_span_add_nothing(self):
         source = self.daily_source([])
         seen = {"2026-10-12T09:35:00+05:00": None}
