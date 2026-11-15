@@ -469,6 +469,32 @@ class TapeRoutesTest(ServerCase):
         self.assertIn("merged 2 session(s)", text)
         self.assertIn("session break", text)
 
+    def test_empty_newest_session_does_not_replace_latest_session_with_bars(self):
+        older = self.captures / "capture_20261009.ndjson"
+        older.write_text("\n".join(json.dumps(row) for row in
+                                    self.rows_for(datetime(
+                                        2026, 10, 9).date())) + "\n",
+                          encoding="utf-8")
+        newest = self.captures / "capture_20261013.ndjson"
+        rows = self.rows_for(datetime(2026, 10, 13).date())
+        for row in rows:
+            row["ticks"] = [tick for tick in row["ticks"]
+                            if tick["scrip"].startswith("PPL:")]
+        newest.write_text("\n".join(json.dumps(row) for row in rows) + "\n",
+                          encoding="utf-8")
+
+        server = self.taping_server()
+        body = self.body(server, "/api/bars?symbol=OGDC&days=3")
+        self.assertEqual(body["bar_count"], 8, body)
+        self.assertEqual(body["session"]["day"], "2026-10-12")
+        self.assertTrue(body["session"]["current"])
+        self.assertIn("from 2026-10-09 to 2026-10-12",
+                      " ".join(body["notes"]))
+        self.assertIn("newest candle is the 2026-10-12 session",
+                      " ".join(body["notes"]))
+        self.assertNotIn("no bar exists for OGDC in any of the 3 sessions",
+                         " ".join(body["notes"]))
+
     def test_days_merge_on_a_calendar_rung_ignores_the_merge(self):
         older = self.captures / "capture_20261009.ndjson"
         older.write_text("\n".join(json.dumps(row) for row in

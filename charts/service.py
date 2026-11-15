@@ -397,12 +397,14 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
     bars: list[Bar] = []
     seen: dict[str, Bar] = {}
     held = 0
+    held_payloads: list[ChartPayload] = []
     empty_days: list[str] = []
     for payload in payloads:
         if not payload.bars:
             empty_days.append(payload.session.day)
             continue
         held += 1
+        held_payloads.append(payload)
         for bar in payload.bars:
             seen[bar.t] = bar
     daily_notes: list[str] = []
@@ -429,7 +431,8 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         notes.append(
             f"merged {held} session(s) with bars for {symbol} of "
             f"{len(wanted_days)} session(s) requested, from "
-            f"{payloads[0].session.day} to {payloads[-1].session.day}")
+            f"{held_payloads[0].session.day} to "
+            f"{held_payloads[-1].session.day}")
     notes.extend(daily_notes)
     if empty_days:
         notes.append(
@@ -444,8 +447,11 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
             "this intraday chart contains captured intraday bars only; older "
             "EOD history is available on the 1D chart and is not reconstructed "
             "as intraday candles")
-    newest = payloads[-1]
-    if newest.bars:
+    # The newest requested date may be a weekend, a holiday, or a session
+    # where this symbol did not trade. Status and provenance must name the
+    # latest session that actually contributed candles, not that empty tail.
+    newest = held_payloads[-1] if held_payloads else payloads[-1]
+    if held_payloads:
         notes.append(
             f"the newest candle is the {newest.session.day} session's latest "
             "bar" + (", still forming" if newest.session.current
@@ -454,7 +460,7 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         notes.insert(
             0, f"no bar exists for {symbol} in any of the {len(wanted_days)} "
                f"session(s) read, which is not a price of zero")
-    session_day = newest.session.day if newest.bars else wanted_days[0]
+    session_day = newest.session.day if held_payloads else wanted_days[0]
     info = getattr(source, "source_info", None)
     source_info = (info(symbol, day=session_day) if callable(info)
                    else source.capabilities().source)
