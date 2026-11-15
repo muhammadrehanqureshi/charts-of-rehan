@@ -21,6 +21,8 @@ import {
   filled,
   highest,
   lowest,
+  pivotHigh,
+  pivotLow,
   rateOfChange,
   rsi,
   sma,
@@ -61,7 +63,8 @@ const SERIES = new Set([
 ]);
 
 const FUNCTIONS = new Set([
-  "sma", "ema", "rsi", "atr", "stddev", "highest", "lowest", "roc",
+  "sma", "ema", "rsi", "atr", "stddev", "highest", "lowest", "pivothigh",
+  "pivotlow", "roc",
   "change", "abs", "sqrt", "log", "exp", "min", "max", "nz", "obv",
   "plot", "hline", "round", "floor", "ceil", "pow", "sign", "shift",
   "stdev", "na", "bool", "int", "float",
@@ -994,6 +997,30 @@ export function compileFormula(source: string): (data: SeriesData) => Float64Arr
             return lowest(
               seriesValue(args[0] ?? Number.NaN, "lowest", length),
               scalar(args[1] ?? 20, "lowest period"));
+          case "pivothigh": {
+            // Pine has two shapes: `pivothigh(source, left, right)` and
+            // `pivothigh(left, right)`, the latter using high.
+            const hasSource = args.length >= 3;
+            const source = hasSource
+              ? seriesValue(args[0] ?? Number.NaN, "pivothigh source", length)
+              : data.high;
+            const left = Math.max(0, Math.trunc(scalar(
+              args[hasSource ? 1 : 0] ?? Number.NaN, "pivothigh left")));
+            const right = Math.max(0, Math.trunc(scalar(
+              args[hasSource ? 2 : 1] ?? Number.NaN, "pivothigh right")));
+            return pivotHigh(source, left, right);
+          }
+          case "pivotlow": {
+            const hasSource = args.length >= 3;
+            const source = hasSource
+              ? seriesValue(args[0] ?? Number.NaN, "pivotlow source", length)
+              : data.low;
+            const left = Math.max(0, Math.trunc(scalar(
+              args[hasSource ? 1 : 0] ?? Number.NaN, "pivotlow left")));
+            const right = Math.max(0, Math.trunc(scalar(
+              args[hasSource ? 2 : 1] ?? Number.NaN, "pivotlow right")));
+            return pivotLow(source, left, right);
+          }
           case "roc":
             return rateOfChange(
               seriesValue(args[0] ?? Number.NaN, "roc", length),

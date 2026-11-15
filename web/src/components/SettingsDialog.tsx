@@ -53,11 +53,16 @@ export interface ModalProps {
 /** The haze-and-panel shell both dialogs share. */
 export function Dialog({ title, onClose, children }: ModalProps) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef(onClose);
+
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -66,7 +71,10 @@ export function Dialog({ title, onClose, children }: ModalProps) {
     );
     first?.focus();
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    // Mount only. The parent creates a fresh onClose on every keystroke, and
+    // depending on it here refocused the dialog's first control - the header
+    // close button - after each letter, stealing the name field mid-word.
+  }, []);
 
   return (
     <div className="settings-haze" role="presentation"
@@ -355,7 +363,7 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
             A formula or a pasted Pine study, up to 1,000 lines; its
             last line is what the chart draws. Series (open, high, low,
             close, volume, hl2, ohlc4, bar_index, na, true/false), functions
-            (sma, ema, rsi, atr, stddev, highest, lowest, roc, change, obv,
+            (sma, ema, rsi, atr, stddev, highest, lowest, pivothigh, pivotlow, roc, change, obv,
             round, floor, ceil, pow, sign, shift, abs, sqrt, log, exp, min,
             max, nz, plot), `name = expression`, comparisons, `a ? b : c`,
             `close[1]` history, `//` comments, `ta.`/`math.` namespaces and
