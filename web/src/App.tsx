@@ -113,15 +113,6 @@ function isFlatFillRung(resolution: Resolution): boolean {
  */
 const INTRADAY_SESSIONS = 20;
 
-/**
- * Daily rows an intraday rung may carry behind its captured sessions.
- *
- * The exchange store reaches 2016; asking for the whole decade gives every
- * intraday rung a reachable ten-year history without inventing a minute the
- * recorder never saw. The service marks these rows with their own grain.
- */
-const DAILY_TAIL_DAYS = 2_600;
-
 function spanFor(resolution: Resolution): number {
   switch (resolution) {
     case "1s": case "10s": case "1m": case "5m":
@@ -554,7 +545,6 @@ export function App() {
     limit: limitFor(resolution),
     days: day.length === 0 && !isCalendarRung(resolution)
       ? spanFor(resolution) : undefined,
-    backfillDays: hasDailyBackfill(resolution) ? DAILY_TAIL_DAYS : undefined,
     fill: fillFlat && isFlatFillRung(resolution) ? "flat" : undefined,
   });
   // The tape's own per-minute buy/sell split, for the volume-delta pane. A
