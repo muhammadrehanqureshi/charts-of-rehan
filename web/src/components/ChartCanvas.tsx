@@ -65,17 +65,14 @@ import {
   frameFor,
   makePositions,
   paintOverlay,
-  paintSessionBreaks,
   type OverlayPositions,
   type ProfileBarSource,
 } from "../chart/overlay";
 import { flowColumns } from "../chart/flow";
 import {
-  sessionBreaks,
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
-  type SessionBreak,
   type SessionSchedule,
 } from "../chart/sessions";
 import { formatPrice, formatVolume } from "../chart/format";
@@ -275,8 +272,6 @@ interface EngineState {
   chartTimes: number[];
   /** Per-bar grain: true only for a daily-grain row behind the tape. */
   dailyFlags: boolean[];
-  /** The real intraday session starts the overlay rules run between. */
-  breaks: readonly SessionBreak[];
 }
 
 /** The nearest value at or below `value`, or -1 for an empty list. */
@@ -566,8 +561,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
         fontFamily: "'Trebuchet MS', 'Segoe UI', Verdana, sans-serif",
         panes: { separatorColor: tokens.border },
       },
-      // The owner's plate: candles, and nothing ruling the space behind
-      // them except the blue dotted session breaks the overlay paints.
+      // The owner's plate: candles, and nothing ruling the space behind them.
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -820,7 +814,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
       realTimes: [],
       chartTimes: [],
       dailyFlags: [],
-      breaks: [],
     };
 
     // The price pane is the chart; a study pane beneath it is a detail, so
@@ -1005,22 +998,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
         });
       }
     }
-    const chartMsOf = (realMs: number): number => {
-      const index = nearestIndex(realTimes, realMs);
-      return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
-    };
-    // Every band change is a real session break: the date changes, and
-    // Friday's 12:00-14:32 lunch is a second session on the same date. The
-    // exchange's own schedule decides the bands, so the rule lands on the
-    // first candle of the new session instead of a guessed clock edge.
-    state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(realTimes, resolution, schedule, dailyFlags)
-        .map((item): SessionBreak => {
-          const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
-          return item.previous === undefined ? moved
-            : { ...moved, previous: chartMsOf(item.previous) };
-        })
-      : [];
     state.candles.setData(candlesData);
     if (state.volumeShown && state.volume !== null) {
       // An empty plate is cleared, not left with stale bars behind the
@@ -1210,20 +1187,6 @@ export function ChartCanvas(props: ChartCanvasProps) {
       positions,
       bars,
     });
-    // The session rules: one dashed vertical at every date the chart divides,
-    // through the price pane and every study pane beneath it. Lines only -
-    // no tint on the older stretch, and no dates printed on the plot, which
-    // used to land on top of the candles and the legend. The axis carries the
-    // dates, so going back in time changes the candles and nothing else.
-    const ruleColors = { line: "rgba(41, 98, 255, 0.62)", label: "#8f9bb3" };
-    if (state.breaks.length > 1) {
-      paintSessionBreaks(context, state.chart, frame, state.breaks,
-        ruleColors, true, cssHeight, dpr, false,
-        (t) => {
-          const index = state.barTimes.indexOf(t);
-          return index >= 0 ? index : null;
-        });
-    }
     if (drag !== null) {
       paintLive(context, state.chart, state.candles, frame, drag, positions,
         bars);
