@@ -9,7 +9,11 @@
  * handful of objects instead of four hundred labels.
  */
 
-import type { Bar } from "../api/types";
+import type { Bar, Resolution } from "../api/types";
+import {
+  expectedSessionCount,
+  type SessionSchedule,
+} from "./sessions";
 
 export interface DayCount {
   /** The Karachi date, `YYYY-MM-DD`. */
@@ -20,6 +24,8 @@ export interface DayCount {
   readonly count: number;
   /** How many of those candles are fill=flat placeholders, not trades. */
   readonly synthetic: number;
+  /** Full-session slots for this timeframe, when it has an intraday grid. */
+  readonly expected?: number;
 }
 
 export interface DayCounts {
@@ -61,6 +67,8 @@ export function dayLabel(day: string): string {
 export function perDayCounts(
   bars: readonly Bar[],
   keep = 6,
+  resolution?: Resolution,
+  schedule?: SessionSchedule,
 ): DayCounts {
   const limit = Math.max(0, Math.floor(keep));
   const seen: { day: string; count: number; synthetic: number }[] = [];
@@ -106,11 +114,15 @@ export function perDayCounts(
     if (entry === undefined) {
       continue;
     }
+    const expected = resolution === undefined
+      ? 0
+      : expectedSessionCount(entry.day, resolution, schedule);
     days.push({
       day: entry.day,
       label: dayLabel(entry.day),
       count: entry.count,
       synthetic: entry.synthetic,
+      ...(expected > 0 ? { expected } : {}),
     });
   }
   return { days, earlierDays };

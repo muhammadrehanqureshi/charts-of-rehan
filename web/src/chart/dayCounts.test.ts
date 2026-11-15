@@ -69,4 +69,18 @@ describe("perDayCounts", () => {
     expect(dayLabel("2026-11-06")).toBe("06 Nov");
     expect(dayLabel("2026-10-30")).toBe("30 Oct");
   });
+
+  it("reports observed candles against that date's expected timeframe slots", () => {
+    const result = perDayCounts([
+      at("2026-10-12T09:32:00+05:00"),
+      at("2026-10-12T10:17:00+05:00"),
+    ], 6, "15m");
+    expect(result.days).toEqual([{
+      day: "2026-10-12",
+      label: "12 Oct",
+      count: 2,
+      synthetic: 0,
+      expected: 24,
+    }]);
+  });
 });

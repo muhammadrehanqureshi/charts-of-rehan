@@ -158,13 +158,16 @@ export function StatusBar(props: StatusBarProps) {
             {firstBarAt.slice(0, 10)} → {lastBarAt.slice(0, 10)}
           </span>
         ) : null}
-        {dayCounts.length > 1 ? (
+        {dayCounts.length > 0 ? (
           <span className="status__item"
-                title={"candles per Karachi date on this chart, oldest first" +
-                  "; * marks a date whose block includes fill=flat buckets"}>
+                title={"candles per Karachi date, oldest first; n/m means " +
+                  "charted bars versus full-session timeframe slots; " +
+                  "missing slots are not fabricated; * marks fill=flat candles"}>
             <span className="status__key">days</span>{" "}
             {dayCounts.map((item) =>
-              `${item.label} ${item.count}${item.synthetic > 0 ? "*" : ""}`,
+              `${item.label} ${item.count}` +
+                (item.expected === undefined ? "" : `/${item.expected}`) +
+                (item.synthetic > 0 ? "*" : ""),
             ).join(" · ")}
             {earlierDays > 0 ? ` · +${earlierDays} earlier` : ""}
           </span>

@@ -59,6 +59,18 @@ const FRIDAY_BANDS: readonly SessionBand[] = [
   [FRIDAY_SECOND_OPEN, FRIDAY_CLOSE],
 ];
 
+const SLOT_SECONDS: Partial<Record<Resolution, number>> = {
+  "1s": 1,
+  "10s": 10,
+  "1m": 60,
+  "5m": 300,
+  "10m": 600,
+  "15m": 900,
+  "30m": 1800,
+  "1h": 3600,
+  "4h": 14400,
+};
+
 /** What the renderer must know about one rung before drawing it. */
 export interface RungPolicy {
   /** Does a change of trading session draw a rule on this rung? */
@@ -300,6 +312,127 @@ function bandsFor(
     return weekday === 5 ? FRIDAY_BANDS : WEEKDAY_BANDS;
   }
   return undefined;
+}
+
+/** Expected bar starts for one trading day, with the exchange bands packed. */
+export function expectedSessionTimes(
+  day: string,
+  resolution: Resolution,
+  schedule?: SessionSchedule,
+): number[] {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  const seconds = SLOT_SECONDS[resolution];
+  if (match === null || seconds === undefined || seconds < 60) {
+    return [];
+  }
+  const midnight = Date.parse(`${day}T00:00:00Z`);
+  if (!Number.isFinite(midnight)) {
+    return [];
+  }
+  const dayId = Math.floor(midnight / DAY_MS);
+  const bands = bandsFor(dayId, schedule);
+  if (bands === undefined) {
+    return [];
+  }
+  const step = seconds * 1000;
+  const times: number[] = [];
+  for (const [open, close] of bands) {
+    const start = midnight - KARACHI_OFFSET_MS + open * MINUTE_MS;
+    const end = midnight - KARACHI_OFFSET_MS + close * MINUTE_MS;
+    for (let time = start; time < end; time += step) {
+      times.push(time);
+    }
+  }
+  return times;
+}
+
+/** Number of timeframe buckets that fit in the actual PSX bands for a day. */
+export function expectedSessionCount(
+  day: string,
+  resolution: Resolution,
+  schedule?: SessionSchedule,
+): number {
+  const seconds = SLOT_SECONDS[resolution];
+  if (seconds === undefined) {
+    return 0;
+  }
+  if (seconds >= 60) {
+    return expectedSessionTimes(day, resolution, schedule).length;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (match === null) {
+    return 0;
+  }
+  const midnight = Date.parse(`${day}T00:00:00Z`);
+  if (!Number.isFinite(midnight)) {
+    return 0;
+  }
+  const bands = bandsFor(Math.floor(midnight / DAY_MS), schedule);
+  if (bands === undefined) {
+    return 0;
+  }
+  const stepMinutes = seconds / 60;
+  return bands.reduce((total, [open, close]) =>
+    total + Math.ceil((close - open) / stepMinutes), 0);
+}
+
+/**
+ * Build the expected chart slots for dates that actually have intraday bars.
+ * Missing prices stay whitespace on the chart; this function never creates a
+ * candle or carries a previous close into an unobserved bucket.
+ */
+export function expectedSessionGrid(
+  times: ArrayLike<number>,
+  resolution: Resolution,
+  schedule?: SessionSchedule,
+  throughMs = Date.now(),
+): number[] {
+  const seconds = SLOT_SECONDS[resolution];
+  if (seconds === undefined || seconds < 60) {
+    return Array.from({ length: times.length }, (_, index) => times[index] ?? 0)
+      .filter(Number.isFinite);
+  }
+  const days = new Set<string>();
+  for (let index = 0; index < times.length; index += 1) {
+    const time = times[index];
+    if (time !== undefined && Number.isFinite(time)) {
+      days.add(dayText(dayNumber(time)));
+    }
+  }
+  const today = dayText(dayNumber(throughMs));
+  const grid: number[] = [];
+  for (const day of [...days].sort()) {
+    const daySlots = expectedSessionTimes(day, resolution, schedule);
+    // Do not draw future empty buckets while today's live session is open.
+    grid.push(...daySlots.filter((time) => day !== today || time <= throughMs));
+  }
+  return grid;
+}
+
+/** Map an observed bar's time to its band-aligned timeframe slot. */
+export function expectedBucketTime(
+  time: number,
+  resolution: Resolution,
+  schedule?: SessionSchedule,
+): number | null {
+  const seconds = SLOT_SECONDS[resolution];
+  if (seconds === undefined || seconds < 60 || !Number.isFinite(time)) {
+    return null;
+  }
+  const day = dayNumber(time);
+  const bands = bandsFor(day, schedule);
+  if (bands === undefined) {
+    return null;
+  }
+  const minute = minuteOfDay(time);
+  const band = bands.find(([open, close]) => minute >= open && minute < close);
+  if (band === undefined) {
+    return null;
+  }
+  const midnight = day * DAY_MS - KARACHI_OFFSET_MS;
+  const opened = midnight + band[0] * MINUTE_MS;
+  const step = seconds * 1000;
+  return opened + Math.floor((time - opened) / step) * step;
 }
 
 /**
