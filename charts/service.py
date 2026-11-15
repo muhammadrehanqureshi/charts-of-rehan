@@ -322,6 +322,27 @@ def spec_of(resolution: str) -> str:
     return ladder.spec_for(resolution).label
 
 
+def _cap_merged_bars(seen: dict[str, Bar], limit: int,
+                     backfill: int) -> list[Bar]:
+    """Keep the requested intraday window and daily context independently.
+
+    A merged payload has two grains. Applying ``limit`` to their combined
+    timestamp order lets a busy intraday rung evict the decade of daily rows
+    that was explicitly requested as backfill.
+    """
+    intraday = sorted((bar for bar in seen.values() if not bar.daily),
+                      key=lambda bar: bar.t)
+    daily = sorted((bar for bar in seen.values() if bar.daily),
+                   key=lambda bar: bar.t)
+    if limit > 0:
+        intraday = intraday[-limit:]
+    if backfill > 0:
+        daily = daily[-min(backfill, DAILY_BACKFILL_CAP):]
+    else:
+        daily = []
+    return sorted([*intraday, *daily], key=lambda bar: bar.t)
+
+
 def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
                          resolution: str, *, limit: int, context,
                          moment: datetime | None, today: date,
@@ -392,9 +413,10 @@ def _merged_days_payload(store: BarStore, source: BarSource, symbol: str,
         # that distinction visible in the payload.
         daily_notes.extend(
             _daily_backfill(source, symbol, backfill, seen, resolution))
-    bars = [seen[key] for key in sorted(seen)]
-    if limit > 0 and len(bars) > limit:
-        bars = bars[-limit:]
+    # The API limit belongs to the requested intraday grain. Daily context is
+    # separately bounded by backfill so recent fine-grain bars cannot silently
+    # push older EOD history out of the response.
+    bars = _cap_merged_bars(seen, limit, backfill)
     gaps: list = []
     for payload in payloads:
         gaps.extend(payload.gaps)

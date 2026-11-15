@@ -121,7 +121,11 @@ export function useChartFeed(
   // A merge of one day is no merge: that is the ordinary live chart.
   const merged = days > 1 && day.length === 0;
   const limit = options.limit ?? 2000;
-  const series = useMemo(() => new ColumnSeries(limit), [limit]);
+  // Merged payloads carry the intraday cap plus a separately bounded daily
+  // backfill. The series must hold both populations or older EOD context is
+  // dropped again on the client after the server preserves it.
+  const seriesCap = merged ? limit + backfill : limit;
+  const series = useMemo(() => new ColumnSeries(seriesCap), [seriesCap]);
   const [meta, setMeta] = useState<FeedMeta>(EMPTY_META);
   const [status, setStatus] = useState<FeedStatus>("loading");
   const [error, setError] = useState<FeedState["error"]>(null);
@@ -151,7 +155,7 @@ export function useChartFeed(
       setMeta((current) => {
         const bars = current.payload === null
           ? payload.bars
-          : mergeBars(current.payload.bars, payload.bars, limit);
+          : mergeBars(current.payload.bars, payload.bars, seriesCap);
         const gaps = current.payload === null
           ? payload.gaps : current.payload.gaps;
         const notes = current.payload === null
