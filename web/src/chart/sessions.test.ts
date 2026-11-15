@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   dayBreaks,
+  expectedBucketTime,
+  expectedSessionCount,
+  expectedSessionGrid,
+  expectedSessionTimes,
   hasDailyBackfill,
   hasSessionBreaks,
   intradayStamps,
@@ -14,6 +18,70 @@ import {
 function pkt(day: string, clock: string): number {
   return Date.parse(`${day}T${clock}+05:00`);
 }
+
+describe("expected timeframe slots", () => {
+  it("counts the complete Monday to Thursday session at each chart rung", () => {
+    const expected = new Map([
+      ["1m", 358], ["5m", 72], ["10m", 36], ["15m", 24],
+      ["30m", 12], ["1h", 6], ["4h", 2],
+    ] as const);
+    for (const [rung, count] of expected) {
+      expect(expectedSessionCount("2026-10-12", rung)).toBe(count);
+    }
+  });
+
+  it("counts Friday's two bands without adding lunch candles", () => {
+    const expected = new Map([
+      ["1m", 281], ["5m", 57], ["10m", 29], ["15m", 19],
+      ["30m", 10], ["1h", 5], ["4h", 2],
+    ] as const);
+    for (const [rung, count] of expected) {
+      expect(expectedSessionCount("2026-10-30", rung)).toBe(count);
+    }
+    const slots = expectedSessionTimes("2026-10-30", "15m");
+    expect(slots).toHaveLength(19);
+    expect(slots[11]).toBe(pkt("2026-10-30", "14:32"));
+  });
+
+  it("keeps missing slots on the timeframe grid without inventing bars", () => {
+    const observed = [pkt("2026-10-12", "10:17"), pkt("2026-10-12", "10:47")];
+    const grid = expectedSessionGrid(observed, "15m", undefined,
+      pkt("2026-10-12", "11:00"));
+    expect(grid).toHaveLength(6);
+    expect(grid[0]).toBe(pkt("2026-10-12", "09:32"));
+    expect(grid[1]).toBe(pkt("2026-10-12", "09:47"));
+    expect(grid[3]).toBe(pkt("2026-10-12", "10:17"));
+    expect(expectedBucketTime(pkt("2026-10-12", "10:19"), "15m"))
+      .toBe(pkt("2026-10-12", "10:17"));
+  });
+
+  it("anchors session dividers to band opens when the first candle is missing", () => {
+    const observed = [
+      pkt("2026-10-15", "11:47"),
+      pkt("2026-10-16", "10:17"),
+    ];
+    const grid = expectedSessionGrid(observed, "15m");
+    const breaks = sessionBreaks(grid, "15m");
+    expect(breaks.map((item) => item.t)).toEqual([
+      pkt("2026-10-15", "09:32"),
+      pkt("2026-10-16", "09:17"),
+      pkt("2026-10-16", "14:32"),
+    ]);
+    expect(breaks[1]?.previous).toBe(pkt("2026-10-15", "15:17"));
+    expect(breaks[2]?.previous).toBe(pkt("2026-10-16", "11:47"));
+  });
+
+  it("places Friday's afternoon divider after its expected morning slots", () => {
+    const observed = [pkt("2026-10-30", "11:47")];
+    const grid = expectedSessionGrid(observed, "15m");
+    const breaks = sessionBreaks(grid, "15m");
+    expect(breaks.map((item) => item.t)).toEqual([
+      pkt("2026-10-30", "09:17"),
+      pkt("2026-10-30", "14:32"),
+    ]);
+    expect(breaks[1]?.previous).toBe(pkt("2026-10-30", "11:47"));
+  });
+});
 
 describe("sessionBreaks", () => {
   it("finds one break per trading day and labels it on the Karachi clock", () => {

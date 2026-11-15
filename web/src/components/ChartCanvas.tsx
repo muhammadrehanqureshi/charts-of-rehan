@@ -24,6 +24,7 @@
 import {
   type CandlestickData,
   type HistogramData,
+  type WhitespaceData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
@@ -72,6 +73,8 @@ import {
 import { flowColumns } from "../chart/flow";
 import {
   sessionBreaks,
+  expectedBucketTime,
+  expectedSessionGrid,
   hasDailyBackfill,
   hasSessionBreaks,
   isDailyGrainStamp,
@@ -240,14 +243,14 @@ interface PaneRef {
 }
 
 interface ChartTimeMap {
-  /** Presentation seconds, one spacing step per accepted bar, ascending. */
+  /** Presentation seconds, one step per expected or observed slot. */
   readonly chartSec: readonly number[];
-  /** The tape's real instants, parallel to `chartSec`. */
+  /** Karachi slot instants, parallel to `chartSec`. */
   readonly realMs: readonly number[];
 }
 
 /**
- * How much presentation time one bar occupies.
+ * How much presentation time one expected candle slot occupies.
  *
  * A one-second step packed the bars but left the engine's tick generator with
  * a 49-second span, so it produced one label and its crosshair found nothing
@@ -903,10 +906,10 @@ export function ChartCanvas(props: ChartCanvasProps) {
     state.data = data;
     state.index.clear();
 
-    // The engine places bars by wall-clock time, so a merged session chart
-    // would spend most of its width on nights and weekends. Pack the bars
-    // into consecutive presentation steps, keeping the tape's real times
-    // beside them for the axis, the rules, the drawings and the legend.
+    // Build the presentation grid from the timeframe's actual session bands.
+    // Empty slots stay whitespace, so a missing capture minute is visible as
+    // missing data rather than a made-up flat-price candle. Daily context, if
+    // an older server still sends it, keeps its legacy one-row spacing.
     const accepted: {
       sourceIndex: number;
       realMs: number;
@@ -950,12 +953,34 @@ export function ChartCanvas(props: ChartCanvasProps) {
       state.chartTimes = [];
       return;
     }
-    const baseSec = Math.floor(accepted[0]!.realMs / 1000);
-    const chartSec = accepted.map((_bar, index) =>
+    const intradayOnly = accepted.every((bar) => !bar.daily);
+    const usesExpectedGrid = hasSessionBreaks(resolution)
+      && intradayOnly && resolution !== "1s" && resolution !== "10s";
+    const expectedGrid = usesExpectedGrid
+      ? expectedSessionGrid(
+        accepted.map((bar) => bar.realMs), resolution, schedule,
+      )
+      : [];
+    const barSlots = accepted.map((bar) =>
+      expectedGrid.length > 0
+        ? expectedBucketTime(bar.realMs, resolution, schedule) ?? bar.realMs
+        : bar.realMs,
+    );
+    const slotTimes = expectedGrid.length > 0
+      ? [...new Set([...expectedGrid, ...barSlots])].sort((a, b) => a - b)
+      : accepted.map((bar) => bar.realMs);
+    const baseSec = Math.floor((slotTimes[0] ?? accepted[0]!.realMs) / 1000);
+    const chartSec = slotTimes.map((_time, index) =>
       baseSec + index * PRESENTATION_STEP_SEC);
+    const chartSecBySlot = new Map<number, number>();
+    for (let index = 0; index < slotTimes.length; index += 1) {
+      chartSecBySlot.set(slotTimes[index]!, chartSec[index] ?? baseSec);
+    }
+    const barChartSec = barSlots.map((time) =>
+      chartSecBySlot.get(time) ?? baseSec);
     const realTimes = accepted.map((bar) => bar.realMs);
     const dailyFlags = accepted.map((bar) => bar.daily);
-    timeMap.current = { chartSec, realMs: realTimes };
+    timeMap.current = { chartSec, realMs: slotTimes };
     const opening = openingRange(realTimes, dailyFlags);
     setAxisSpan(
       realTimes[Math.min(opening.from, realTimes.length - 1)] ?? 0,
@@ -963,19 +988,29 @@ export function ChartCanvas(props: ChartCanvasProps) {
     );
     const chartTimes = new Array<number>(length).fill(Number.NaN);
     for (let index = 0; index < accepted.length; index += 1) {
-      chartTimes[accepted[index]!.sourceIndex] = (chartSec[index] ?? baseSec) * 1000;
+      chartTimes[accepted[index]!.sourceIndex] = (barChartSec[index] ?? baseSec) * 1000;
     }
     state.realTimes = realTimes;
     state.dailyFlags = dailyFlags;
     state.chartTimes = chartTimes;
     state.barTimes = accepted.map((_bar, index) =>
-      (chartSec[index] ?? baseSec) * 1000);
+      (barChartSec[index] ?? baseSec) * 1000);
     state.index.clear();
-    const candlesData: CandlestickData[] = [];
+    const candlesData: (CandlestickData | WhitespaceData)[] = [];
     const volumeData: HistogramData[] = [];
+    const barsBySlot = new Map<number, typeof accepted[number]>();
     for (let index = 0; index < accepted.length; index += 1) {
       const bar = accepted[index]!;
+      barsBySlot.set(barSlots[index]!, bar);
+    }
+    for (let index = 0; index < slotTimes.length; index += 1) {
+      const slotTime = slotTimes[index]!;
       const time = (chartSec[index] ?? baseSec) as UTCTimestamp;
+      const bar = barsBySlot.get(slotTime);
+      if (bar === undefined) {
+        candlesData.push({ time });
+        continue;
+      }
       state.index.set(Number(time), bar.sourceIndex);
       candlesData.push({
         time,
@@ -1000,7 +1035,7 @@ export function ChartCanvas(props: ChartCanvasProps) {
       }
     }
     const chartMsOf = (realMs: number): number => {
-      const index = nearestIndex(realTimes, realMs);
+      const index = nearestIndex(slotTimes, realMs);
       return (chartSec[Math.max(0, index)] ?? baseSec) * 1000;
     };
     // Every band change is a real session break: the date changes, and
@@ -1008,7 +1043,12 @@ export function ChartCanvas(props: ChartCanvasProps) {
     // exchange's own schedule decides the bands, so the rule lands on the
     // first candle of the new session instead of a guessed clock edge.
     state.breaks = hasSessionBreaks(resolution)
-      ? sessionBreaks(realTimes, resolution, schedule, dailyFlags)
+      ? sessionBreaks(
+        expectedGrid.length > 0 ? slotTimes : realTimes,
+        resolution,
+        schedule,
+        expectedGrid.length > 0 ? undefined : dailyFlags,
+      )
         .map((item): SessionBreak => {
           const moved: SessionBreak = { ...item, t: chartMsOf(item.t) };
           return item.previous === undefined ? moved

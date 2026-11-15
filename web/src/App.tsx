@@ -656,8 +656,11 @@ export function App() {
   const dayCounts = useMemo(
     () => perDayCounts(
       (feed.meta.payload?.bars ?? []).filter((bar) => bar.daily !== true),
+      6,
+      resolution,
+      sessionSchedule,
     ),
-    [feed.meta.payload],
+    [feed.meta.payload, resolution, sessionSchedule],
   );
   const fillMode = fillFlat && isFlatFillRung(resolution);
   const session = feed.meta.session;
