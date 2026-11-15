@@ -537,7 +537,14 @@ function replaceInputs(text: string): string {
       break;
     }
     const args = out.slice(open + 1, close);
-    const number = /-?\d+(?:\.\d+)?/.exec(args)?.[0] ?? "0";
+    // A boolean default is a value too. Reading only the digits in
+    // `input.bool(true, ...)` found none and substituted 0, silently turning
+    // a requested plot off; the first boolean token is the actual default.
+    const firstArg = args.split(",")[0] ?? args;
+    const boolean = /\b(true|false)\b/.exec(firstArg)?.[0];
+    const number = boolean !== undefined
+      ? (boolean === "true" ? "1" : "0")
+      : /-?\d+(?:\.\d+)?/.exec(args)?.[0] ?? "0";
     out = out.slice(0, match.index) + number + out.slice(close + 1);
   }
   return out;
@@ -564,6 +571,18 @@ const DROPPED_CALL = new RegExp(
 const DROPPED_NAMESPACE = new RegExp(
   "^\\s*(?:[A-Za-z_]\\w*\\s*(?::?=)\\s*)?(box|line|label|table|array|" +
   "strategy|request|ticker|polyline|map|matrix)\\.",
+);
+
+/**
+ * A drawing collection declared on its own line:
+ * `var box[] supplyBoxes = array.new_box()`. The initializer is a drawing
+ * namespace, but the declaration comes before it, so DROPPED_NAMESPACE alone
+ * never saw the line. These values are never numeric and are dropped with
+ * every box call that uses them.
+ */
+const DROPPED_TYPE_DECLARATION = new RegExp(
+  "^\\s*(?:var(?:ip)?\\s+)?(box|line|label|table|array|map|matrix|polyline)" +
+  "\\s*(?:<[^>]*>|\\[\\])?\\s+[A-Za-z_]\\w*\\s*=",
 );
 
 /** Pine's statement blocks are always drawings or guards; neither can plot. */
@@ -753,7 +772,8 @@ export function normaliseScript(source: string): string {
     // A declaration and a drawing this language cannot express (a shape, a
     // colour, an alert, a box, an array) are dropped - with every line they
     // wrap - rather than allowed to fail the whole study.
-    if (DROPPED_CALL.test(line) || DROPPED_NAMESPACE.test(line)) {
+    if (DROPPED_CALL.test(line) || DROPPED_NAMESPACE.test(line)
+        || DROPPED_TYPE_DECLARATION.test(line)) {
       const delta = entry.delta;
       skipping = delta > 0 ? delta : 0;
       continue;

@@ -391,6 +391,14 @@ export function IndicatorSettingsDialog(props: IndicatorSettingsProps) {
                 }}>
           remove indicator
         </button>
+        {definition?.formula ? (
+          <button type="button" className="settings-dialog__save"
+                  disabled={formulaError !== null}
+                  title={formulaError ?? "Save and close"}
+                  onClick={onClose}>
+            save
+          </button>
+        ) : null}
       </footer>
     </Dialog>
   );
