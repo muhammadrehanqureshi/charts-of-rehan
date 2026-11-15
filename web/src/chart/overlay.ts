@@ -530,6 +530,13 @@ export function paintSessionBreaks(
   dpr = 1,
   /** Name the day each session opens on the packed axis. */
   showDates = false,
+  /**
+   * The bar index a presentation time occupies. Bars are packed one per
+   * logical slot, so this stays correct while the engine is still laying out
+   * its time range; falling back to time-to-coordinate is for callers that
+   * have only timestamps.
+   */
+  indexOf?: (t: number) => number | null,
 ): void {
   const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
   // A one-CSS-pixel rule at a fractional DPR lands on a different pixel
@@ -541,9 +548,21 @@ export function paintSessionBreaks(
     return;
   }
   const scale = chart.timeScale();
+  const xAt = (t: number): number | null => {
+    if (indexOf !== undefined) {
+      const index = indexOf(t);
+      if (index !== null) {
+        const x = scale.logicalToCoordinate(index as never);
+        if (x !== null) {
+          return x;
+        }
+      }
+    }
+    return scale.timeToCoordinate((t / 1000) as never);
+  };
   const plan = breakPlan(
     breaks,
-    (t) => scale.timeToCoordinate((t / 1000) as never),
+    xAt,
     frame.plotWidth,
     denseAllowed,
     showDates,
@@ -581,6 +600,12 @@ export interface OverlayShapeInput {
   readonly positions: OverlayPositions;
   /** Bars behind the profile tool, or null when the chart holds none. */
   readonly bars?: ProfileBarSource | null;
+  /**
+   * Clear the canvas before painting. Kept drawings need the default true;
+   * a live shape is painted over them and must pass false, or starting a new
+   * drawing erases every line already committed.
+   */
+  readonly clear?: boolean;
 }
 
 /**
@@ -596,7 +621,9 @@ export function paintOverlay(
 ): void {
   void chart; // positions carry their own mapping
   void candles;
-  context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+  if (input.clear !== false) {
+    context.clearRect(0, 0, context.canvas.width, context.canvas.height);
+  }
   if (input.hidden && input.midDrag === null) {
     return;
   }
