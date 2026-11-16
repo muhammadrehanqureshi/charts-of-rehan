@@ -287,7 +287,7 @@ class CaptureSession:
         self.last_frame_at: str | None = None
         self.last_error: str | None = None
         self.running = False
-        #: True only while the socket is inside the owner's 08:55-16:00
+        #: True only while the socket is inside the owner's 09:15-15:49
         #: (Mon-Thu) or 08:55-17:00 (Fri) recording window. The process stays
         #: alive outside it and waits for the next window instead of exiting.
         self.capture_open = False
@@ -476,7 +476,7 @@ class CaptureSession:
                 self.capture_open = False
                 self.write_status()
                 print(f"{now_karachi():%H:%M:%S} recording window closed; "
-                      f"waiting for the next 08:55")
+                      f"waiting for the next session window")
                 continue
             self.counters["reconnects"] += 1
             self.write_status()

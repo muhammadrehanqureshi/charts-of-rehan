@@ -295,21 +295,25 @@ def close_time(d: date) -> tuple[int, int]:
                                        else FRIDAY_CLOSE)
 
 
-#: The owner's recording window. It deliberately starts before the first
-#: official band and ends after the last one, so pre-market and post-market
-#: prints are banked for analysis even though they are never official session
-#: bars. Friday closes at 17:00; Monday to Thursday at 16:00.
-CAPTURE_OPEN = (8, 55)
-CAPTURE_WEEKDAY_CLOSE = (16, 0)
+#: The owner's recording window. Monday to Thursday banks exactly the scan
+#: day: pre-market from 09:15 and the complete live/post-market day to 15:49.
+#: Friday keeps its own longer 08:55-17:00 window because its timings are
+#: different. Prints outside these windows are never banked.
+CAPTURE_WEEKDAY_OPEN = (9, 15)
+CAPTURE_WEEKDAY_CLOSE = (15, 49)
+CAPTURE_FRIDAY_OPEN = (8, 55)
 CAPTURE_FRIDAY_CLOSE = (17, 0)
+#: Compatibility alias for callers that named the common open.
+CAPTURE_OPEN = CAPTURE_WEEKDAY_OPEN
 
 
 def capture_window(d: date) -> tuple[tuple[int, int], tuple[int, int]] | None:
     """The recording window for a Karachi date, or None when closed."""
     if not is_trading_day(d):
         return None
-    close = CAPTURE_FRIDAY_CLOSE if d.weekday() == 4 else CAPTURE_WEEKDAY_CLOSE
-    return (CAPTURE_OPEN, close)
+    if d.weekday() == 4:
+        return (CAPTURE_FRIDAY_OPEN, CAPTURE_FRIDAY_CLOSE)
+    return (CAPTURE_WEEKDAY_OPEN, CAPTURE_WEEKDAY_CLOSE)
 
 
 def _at(d: date, hm: tuple[int, int]) -> datetime:
@@ -329,7 +333,7 @@ def next_capture_window(moment: datetime | None = None,
                         ) -> tuple[datetime, datetime] | None:
     """The recording window in force now, or the next one within a week.
 
-    The recorder sleeps outside 08:55-16:00 (Mon-Thu) and 08:55-17:00
+    The recorder sleeps outside 09:15-15:49 (Mon-Thu) and 08:55-17:00
     (Friday), so a chart that reports "idle" without naming the next open
     leaves the owner guessing whether capture is dead or simply early. Both
     answers come from this one table. Eight days is enough scanning to find

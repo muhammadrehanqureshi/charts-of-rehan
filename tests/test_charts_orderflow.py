@@ -410,10 +410,10 @@ class BookHttpCase(unittest.TestCase):
         self.assertEqual(recorder["state"], "RUNNING")
         self.assertEqual(recorder["counters"]["ticks"], 12)
         # The chip needs both facts: whether capture is open, and when the next
-        # window opens if it is not. A window always opens at 08:55.
+        # window opens if it is not. A weekday window opens at 09:15.
         self.assertIs(recorder["capturing"], True)
         self.assertIsNotNone(recorder["window"])
-        self.assertTrue(recorder["window"]["opens"].endswith("T08:55:00+05:00"))
+        self.assertTrue(recorder["window"]["opens"].endswith("T09:15:00+05:00"))
         self.assertEqual(answer["body"]["tape"]["symbols_with_bars"], 2)
 
 

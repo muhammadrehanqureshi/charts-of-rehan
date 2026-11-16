@@ -35,7 +35,7 @@ SUNDAY = date(2026, 10, 11)
 class CaptureWindowTest(unittest.TestCase):
     """The recorder's window, in force or next, from stated moments.
 
-    The status bar prints this so an idle recorder reads as "opens 08:55"
+    The status bar prints this so an idle recorder reads as "opens 09:15"
     rather than as a fault. A holiday and a weekend both have to be skipped
     to the next real morning, which is why the scan is stated here rather
     than left to the clock at test time.
@@ -46,31 +46,31 @@ class CaptureWindowTest(unittest.TestCase):
         window = sessions.capture_window(
             datetime(2026, 11, 9, 12, 34, tzinfo=KARACHI))
         self.assertEqual(window, {
-            "opens": "2026-11-10T08:55:00+05:00",
-            "closes": "2026-11-10T16:00:00+05:00",
+            "opens": "2026-11-10T09:15:00+05:00",
+            "closes": "2026-11-10T15:49:00+05:00",
         })
 
     def test_inside_the_window_it_names_that_same_window(self):
         window = sessions.capture_window(
             datetime(2026, 11, 10, 9, 30, tzinfo=KARACHI))
         self.assertEqual(window, {
-            "opens": "2026-11-10T08:55:00+05:00",
-            "closes": "2026-11-10T16:00:00+05:00",
+            "opens": "2026-11-10T09:15:00+05:00",
+            "closes": "2026-11-10T15:49:00+05:00",
         })
 
     def test_after_a_friday_close_it_names_monday(self):
         window = sessions.capture_window(
             datetime(2026, 10, 9, 17, 30, tzinfo=KARACHI))
         self.assertEqual(window, {
-            "opens": "2026-10-12T08:55:00+05:00",
-            "closes": "2026-10-12T16:00:00+05:00",
+            "opens": "2026-10-12T09:15:00+05:00",
+            "closes": "2026-10-12T15:49:00+05:00",
         })
 
     def test_a_sunday_night_names_the_morning_after(self):
         window = sessions.capture_window(
             datetime(2026, 10, 11, 23, 0, tzinfo=KARACHI))
         self.assertIsNotNone(window)
-        self.assertEqual(window["opens"], "2026-10-12T08:55:00+05:00")
+        self.assertEqual(window["opens"], "2026-10-12T09:15:00+05:00")
 
 
 class MinutesTest(unittest.TestCase):
