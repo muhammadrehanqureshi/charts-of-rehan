@@ -436,15 +436,23 @@ def session_flow(path: Path,
             # then attributes every share from the open.
             flow.pre_tape_volume = int(total)
             flow.unclassified_volume += int(total)
-            flow.observed_total = int(total)
+            flow.observed_total = max(flow.observed_total, int(total))
             previous_row[symbol] = tick
             continue
         previous_total = _num(previous.get("volume"))
-        flow.observed_total = int(total)
+        # The venue's counter is the session total, and a session total can
+        # only grow. Keep the highest value seen so a repeated or briefly
+        # backward snapshot can never make the displayed TOTAL decrease; the
+        # classified and unclassified sums are already cumulative.
+        highest = flow.observed_total
+        flow.observed_total = max(highest, int(total))
         if previous_total is None:
             previous_row[symbol] = tick
             continue
-        delta = int(total) - int(previous_total)
+        # Measure the new shares from the day's high-water mark, not merely
+        # the immediately previous snapshot. After a backward snapshot the
+        # next recovery must not re-count shares that were already banked.
+        delta = int(total) - max(int(previous_total), highest)
         if delta > 0:
             flow.windows += 1
             gap = _window_gap(tick, previous)
