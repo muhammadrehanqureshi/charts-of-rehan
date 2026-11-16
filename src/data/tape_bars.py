@@ -347,6 +347,7 @@ class PrintsFold:
                 continue
             trades = _number(row.get("trades"))
             total = _number(row.get("volume"))
+            high_before = self.volume_seen
             if trades is not None and trades >= 0:
                 self.orders_seen = max(self.orders_seen, int(trades))
             if total is not None and total >= 0:
@@ -368,7 +369,7 @@ class PrintsFold:
                     self.unclassified_volume += int(total)
             elif total is not None and total > 0 \
                     and total >= previous_volume:
-                delta = int(total) - int(previous_volume)
+                delta = int(total) - int(max(previous_volume, high_before))
                 if delta > 0:
                     self.windows += 1
                     gap = tick_volume._window_gap(row, prior)
@@ -501,6 +502,7 @@ class FlowFold:
                 self.reports[symbol] = report
             trades = _number(row.get("trades"))
             total = _number(row.get("volume"))
+            high_before = report["volume"]
             if trades is not None and trades >= 0:
                 report["orders"] = max(report["orders"], int(trades))
             if total is not None and total >= 0:
@@ -516,7 +518,7 @@ class FlowFold:
                     report["unclassified_volume"] += int(total)
             elif (total is not None and total > 0
                   and previous_volume is not None and total >= previous_volume):
-                delta = int(total) - int(previous_volume)
+                delta = int(total) - int(max(previous_volume, high_before))
                 if delta > 0:
                     gap = tick_volume._window_gap(row, prior)
                     if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:
@@ -596,6 +598,7 @@ class DeltaFold:
         self.day = day
         self.prior: Mapping | None = None
         self.buckets: dict[datetime, dict] = {}
+        self.volume_seen = 0.0
 
     # ----------------------------------------------------------------- feed
     def feed(self, rows: Iterable[Mapping], as_of: datetime) -> None:
@@ -620,9 +623,12 @@ class DeltaFold:
                 buckets[minute] = bucket
             total = _number(row.get("volume"))
             previous = _number(prior.get("volume")) if prior else None
+            high_before = self.volume_seen
+            if total is not None and total >= 0:
+                self.volume_seen = max(self.volume_seen, total)
             if prior is not None and total is not None and total > 0 \
                     and previous is not None and total >= previous:
-                delta = int(total) - int(previous)
+                delta = int(total) - int(max(previous, high_before))
                 if delta > 0:
                     gap = tick_volume._window_gap(row, prior)
                     if gap is None or gap > tick_volume.MAX_WINDOW_SECONDS:

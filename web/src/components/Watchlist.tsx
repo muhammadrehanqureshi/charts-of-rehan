@@ -230,6 +230,7 @@ export function Watchlist(props: WatchlistProps) {
                 <th scope="col" className="watchlist__th">Chg%</th>
                 <th scope="col" className="watchlist__th" title="live buy volume this session">Buy</th>
                 <th scope="col" className="watchlist__th" title="live sell volume this session">Sell</th>
+                <th scope="col" className="watchlist__th watchlist__th--unclear" title="shares the tape could not attribute to a side">Unclear</th>
                 <th scope="col" className="watchlist__th watchlist__th--delta" title="buy minus sell: the session's own net delta">Net Δ</th>
                 <th scope="col" className="watchlist__th watchlist__th--total" title="all traded shares this session">Total</th>
               </tr>
@@ -237,7 +238,7 @@ export function Watchlist(props: WatchlistProps) {
             <tbody>
               {watch.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="watchlist__quiet">
+                  <td colSpan={8} className="watchlist__quiet">
                     {loading
                       ? "reading the catalogue…"
                       : "Your list is empty. Use + to put symbols on it."}
@@ -306,6 +307,9 @@ export function Watchlist(props: WatchlistProps) {
                     <td className="wrow__cell wrow__cell--sell">
                       {side(money?.sell_volume)}
                     </td>
+                    <td className="wrow__cell wrow__cell--unclear">
+                      {side(money?.unclassified_volume)}
+                    </td>
                     <td className={`wrow__cell wrow__cell--delta${deltaTone(money?.delta)}`}>
                       {netDelta(money?.delta)}
                     </td>
@@ -322,7 +326,7 @@ export function Watchlist(props: WatchlistProps) {
         <p className="watchlist__note">
           {traded} of {rows.length} traded ·{" "}
           {live
-            ? `live day ${day || "(waiting for today's tape)"} · buy, sell and net delta from the venue's counters`
+            ? `live day ${day || "(waiting for today's tape)"} · buy, sell and unclear from the venue's counters`
             : `stored session ${storedDay ?? day}`}{" "}
           · change against the first print
         </p>
@@ -339,13 +343,14 @@ export function Watchlist(props: WatchlistProps) {
           <div className="tape__marketscroll">
             <table
               className="tape__markettable"
-              aria-label="live buy, sell, net delta and total for every traded stock"
+              aria-label="live buy, sell, unclear, net delta and total for every traded stock"
             >
               <thead>
                 <tr>
                   <th scope="col">symbol</th>
                   <th scope="col">buy</th>
                   <th scope="col">sell</th>
+                  <th scope="col" title="shares the tape could not attribute to a side">unclear</th>
                   <th scope="col">net Δ</th>
                   <th scope="col" title="all traded shares this session">total</th>
                 </tr>
@@ -378,6 +383,9 @@ export function Watchlist(props: WatchlistProps) {
                       </td>
                       <td className="detail__sell">
                         {side(money?.sell_volume)}
+                      </td>
+                      <td className="detail__unclear">
+                        {side(money?.unclassified_volume)}
                       </td>
                       <td className={delta > 0 ? "detail__buy"
                         : delta < 0 ? "detail__sell" : ""}>
@@ -453,6 +461,13 @@ export function Watchlist(props: WatchlistProps) {
                 <dd className="detail__sell">
                   {detailFlow?.sell_volume == null
                     ? "-" : formatVolume(detailFlow.sell_volume)}
+                </dd>
+              </div>
+              <div>
+                <dt>unclear</dt>
+                <dd className="detail__unclear">
+                  {detailFlow?.unclassified_volume == null
+                    ? "-" : formatVolume(detailFlow.unclassified_volume)}
                 </dd>
               </div>
               <div>
@@ -549,6 +564,7 @@ export function Watchlist(props: WatchlistProps) {
                           <th scope="col">day</th>
                           <th scope="col">buy</th>
                           <th scope="col">sell</th>
+                          <th scope="col" title="shares the tape could not attribute to a side">unclear</th>
                           <th scope="col" title="all traded shares">total</th>
                         </tr>
                       </thead>
@@ -567,6 +583,10 @@ export function Watchlist(props: WatchlistProps) {
                             <td className="detail__sell">
                               {row.totals.sell_volume == null
                                 ? "-" : formatVolume(row.totals.sell_volume)}
+                            </td>
+                            <td className="detail__unclear">
+                              {row.totals.unclassified_volume == null
+                                ? "-" : formatVolume(row.totals.unclassified_volume)}
                             </td>
                             <td className="detail__total">
                               {(() => {
@@ -594,6 +614,7 @@ export function Watchlist(props: WatchlistProps) {
                           <th scope="col">day</th>
                           <th scope="col">buy</th>
                           <th scope="col">sell</th>
+                          <th scope="col" title="shares the tape could not attribute to a side">unclear</th>
                           <th scope="col" title="all traded shares">total</th>
                         </tr>
                       </thead>
@@ -607,6 +628,10 @@ export function Watchlist(props: WatchlistProps) {
                           <td className="detail__sell">
                             {tape.totals?.sell_volume == null
                               ? "-" : formatVolume(tape.totals.sell_volume)}
+                          </td>
+                          <td className="detail__unclear">
+                            {tape.totals?.unclassified_volume == null
+                              ? "-" : formatVolume(tape.totals.unclassified_volume)}
                           </td>
                           <td className="detail__total">
                             {(() => {

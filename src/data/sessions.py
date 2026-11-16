@@ -35,26 +35,39 @@ Phases (`MarketPhase`):
 Owner's market-state law (2026-10-11), alongside the bands:
 
 The owner asked for one function that answers "which market state is this",
-with four states and strict 2-minute gaps, and for the scanner to run ONLY
-in the market state. `market_state_at` below is that function; it never
+with four states and strict 2-minute gaps. `market_state_at` below is that
+function; it describes the exchange, while the scanner's own windows come
+from `scan_windows` (updated 2026-11-16). It never
 replaces the phases, which the relay, the app and the notification texts
 still read:
 
-    PRE_MARKET   a trading day, 09:00 to 09:15, both session shapes
+    PRE_MARKET   Mon-Thu 09:15 to 09:30; Friday 09:00 to 09:15
     MARKET       inside a band: Mon-Thu 09:32 to 15:30; Friday 09:17 to
                  12:00 and 14:32 to 16:30
     POST_MARKET  Mon-Thu 15:32 to 15:49; Friday 16:32 to 16:49
     CLOSED       everything else, including the gaps at 15:30-15:32 and
-                 16:30-16:32, the Friday midday break and the 09:15-09:32
+                 16:30-16:32, the Friday midday break and the 09:30-09:32
                  morning gap
 
 Every window is half-open, [start, end), so 15:30:00 itself is no longer the
 market and 15:32:00 is already post-market: an instant that sits exactly on
 a boundary belongs to the window that starts there, never to the one that
-ends there. `is_scan_window` is the one answer to "may the scanner run now":
-true only in MARKET. Pre-market and post-market are watched, logged and
-reported, but the owner's standing order is that the quant never scans in
-them.
+ends there.
+
+Owner's scan calendar (2026-11-16), hardcoded below as `scan_windows`:
+
+    Monday-Thursday PRE_MARKET scan  09:15 to 09:30
+                    live scan        09:32 to 15:49, including the complete
+                                     post-market window to its close
+    Friday          unchanged: the exchange's two bands only, 09:17-12:00
+                    and 14:32-16:30; Friday's scan timings are different and
+                    are not inferred from the Monday-Thursday ones
+
+`is_scan_window` is the one answer to "may the scanner run now". It is true
+for the Monday-Thursday windows above and for Friday's bands. The 09:30-09:32
+gap is never scanned. The 15:30-15:32 exchange bookkeeping gap is inside the
+owner's continuous 09:32-15:49 live scan because the order was to scan the
+complete post-market through 15:49, not to stop at the 15:30 close.
 
 Owner's condition law (2026-10-11), the owner-facing half of the same clock:
 
@@ -105,11 +118,17 @@ FRIDAY_CLOSE = (16, 30)
 #: A band is ((open_hour, open_minute), (close_hour, close_minute)).
 Band = tuple[tuple[int, int], tuple[int, int]]
 
-# Owner's pre-market and post-market windows (2026-10-11). Both session
-# shapes share the pre-market window; post-market follows the day's last
-# close after the owner's strict 2-minute gap (15:32 and 16:32).
-PRE_MARKET_OPEN = (9, 0)
-PRE_MARKET_CLOSE = (9, 15)
+# Owner's pre-market and post-market windows. Monday to Thursday's
+# pre-market is 09:15-09:30 (updated 2026-11-16); Friday keeps its own
+# 09:00-09:15 window because Friday's timing is different. Post-market
+# follows the day's last close after the owner's strict 2-minute gap
+# (15:32 and 16:32).
+WEEKDAY_PRE_MARKET_OPEN = (9, 15)
+WEEKDAY_PRE_MARKET_CLOSE = (9, 30)
+FRIDAY_PRE_MARKET_OPEN = (9, 0)
+FRIDAY_PRE_MARKET_CLOSE = (9, 15)
+PRE_MARKET_OPEN = WEEKDAY_PRE_MARKET_OPEN
+PRE_MARKET_CLOSE = WEEKDAY_PRE_MARKET_CLOSE
 POST_MARKET_OPEN = (15, 32)
 POST_MARKET_CLOSE = (15, 49)
 FRIDAY_POST_MARKET_OPEN = (16, 32)
@@ -120,6 +139,16 @@ FRIDAY_BANDS: tuple[Band, ...] = (
     (FRIDAY_OPEN, FRIDAY_FIRST_CLOSE),
     (FRIDAY_SECOND_OPEN, FRIDAY_CLOSE),
 )
+
+# Owner's scan calendar. Monday to Thursday has the early pre-market window
+# and one continuous live window that carries the complete post-market to
+# 15:49. Friday keeps the exchange's own two bands; its different pre/post
+# scan times are deliberately not guessed here.
+WEEKDAY_SCAN_BANDS: tuple[Band, ...] = (
+    (WEEKDAY_PRE_MARKET_OPEN, WEEKDAY_PRE_MARKET_CLOSE),
+    (WEEKDAY_OPEN, POST_MARKET_CLOSE),
+)
+FRIDAY_SCAN_BANDS: tuple[Band, ...] = FRIDAY_BANDS
 
 # Owner's exact texts (SO-9, reworded by owner order 2026-10-08: name the
 # market event first, then the quant state).
@@ -170,13 +199,14 @@ class MarketPhase(str, Enum):
 class MarketState(str, Enum):
     """The owner's four market states (order of 2026-10-11).
 
-    Windows are half-open, [start, end). PRE_MARKET is 09:00 to 09:15 on
-    any trading day, MARKET is every band, POST_MARKET is 15:32 to 15:49
-    Monday to Thursday and 16:32 to 16:49 on Friday. Every other instant,
-    including the strict 2-minute gaps after each close, is CLOSED.
+    Windows are half-open, [start, end). PRE_MARKET is 09:15 to 09:30 on
+    Monday to Thursday and 09:00 to 09:15 on Friday, MARKET is every band,
+    POST_MARKET is 15:32 to 15:49 Monday to Thursday and 16:32 to 16:49 on
+    Friday. Every other instant, including the strict 2-minute gaps after
+    each close, is CLOSED.
 
-    Only MARKET may be scanned. Pre-market and post-market are reported,
-    never scanned (owner order of 2026-10-11).
+    The scanner calendar is not this enum: see `scan_windows` and
+    `is_scan_window` for the owner's hardcoded scan times.
     """
 
     PRE_MARKET = "PRE_MARKET"
@@ -186,7 +216,12 @@ class MarketState(str, Enum):
 
     @property
     def is_scan_window(self) -> bool:
-        """True only in MARKET: the one state the scanner may run in."""
+        """Whether this state is a live band. Not the scanner calendar.
+
+        The owner's scan windows span PRE_MARKET, MARKET and POST_MARKET on
+        Monday-Thursday, so the authoritative answer is the module-level
+        `is_scan_window(moment)`, which also knows the weekday.
+        """
         return self is MarketState.MARKET
 
 
@@ -375,6 +410,8 @@ def pre_market_window(d: date) -> tuple[tuple[int, int], tuple[int, int]] | None
     """The pre-market window for a Karachi date, or None when closed."""
     if not is_trading_day(d):
         return None
+    if d.weekday() == 4:
+        return (FRIDAY_PRE_MARKET_OPEN, FRIDAY_PRE_MARKET_CLOSE)
     return (PRE_MARKET_OPEN, PRE_MARKET_CLOSE)
 
 
@@ -389,6 +426,19 @@ def post_market_window(d: date) -> tuple[tuple[int, int], tuple[int, int]] | Non
     if d.weekday() == 4:
         return (FRIDAY_POST_MARKET_OPEN, FRIDAY_POST_MARKET_CLOSE)
     return (POST_MARKET_OPEN, POST_MARKET_CLOSE)
+
+
+def scan_windows(d: date) -> tuple[Band, ...]:
+    """The owner's hardcoded scan windows for one Karachi date.
+
+    Monday-Thursday: [09:15, 09:30) for the pre-market and [09:32, 15:49)
+    for the live market with the complete post-market. Friday: the exchange's
+    own two bands, unchanged, because Friday's scan timings are different.
+    Weekends and PSX holidays answer with no windows.
+    """
+    if not is_trading_day(d):
+        return ()
+    return FRIDAY_SCAN_BANDS if d.weekday() == 4 else WEEKDAY_SCAN_BANDS
 
 
 def _hm_micros(hm: tuple[int, int]) -> int:
@@ -406,7 +456,7 @@ def market_state_at(moment: datetime | None = None) -> MarketState:
 
     Edges are strict, so an instant that sits exactly on a boundary belongs
     to the window starting there and never to the one ending there: at
-    09:15:00 this is CLOSED (pre-market has ended, the market opens at
+    09:30:00 this is CLOSED (pre-market has ended, the market opens at
     09:32), and at 15:30:00 on a Monday to Thursday it is CLOSED until
     post-market starts at 15:32:00.
     """
@@ -440,13 +490,21 @@ def market_state_at(moment: datetime | None = None) -> MarketState:
 
 
 def is_scan_window(moment: datetime | None = None) -> bool:
-    """May the scanner run at this instant? True only in MARKET.
+    """May the scanner run at this instant, per the hardcoded owner calendar?
 
-    The owner's standing order of 2026-10-11: the quant scans the whole
-    KMIALL universe only inside a live band; pre-market and post-market
-    are watched and reported but never scanned.
+    Monday-Thursday: true in [09:15, 09:30) and [09:32, 15:49), so the
+    pre-market is scanned, the 09:30-09:32 gap is not, and the live scan
+    carries through the complete post-market. Friday: true only inside the
+    exchange's own two bands, because Friday's scan timings are different.
+    Weekends and holidays are never scanned.
     """
-    return market_state_at(moment).is_scan_window
+    k = as_karachi(moment)
+    day = k.date()
+    for band in scan_windows(day):
+        opens, closes = band_bounds(day, band)
+        if opens <= k < closes:
+            return True
+    return False
 
 
 def market_condition_at(moment: datetime | None = None) -> MarketCondition:
@@ -455,7 +513,7 @@ def market_condition_at(moment: datetime | None = None) -> MarketCondition:
     A single fold of `market_phase`, so the condition can never disagree
     with the session bands: WARMUP and OPEN are OPERATIONAL, the Friday
     midday break is BREAK, and every other phase is CLOSED. The morning
-    gap (09:15 to 09:32) and the two minute gap after a close are CLOSED,
+    gap (09:30 to 09:32) and the two minute gap after a close are CLOSED,
     because the exchange is not trading in either.
     """
     phase = market_phase(moment)

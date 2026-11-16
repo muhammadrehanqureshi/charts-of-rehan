@@ -230,12 +230,14 @@ TARGET_MULTIPLIER_BY_REGIME = {
 # scanning before the strategy's own minimum bar and volume-bucket requirements
 # can be met (MIN_BARS_PER_SYMBOL is 20 and VOLUME_WINDOW is 5).
 #
-# Owner order 2026-10-11: scan the whole KMIALL universe every 4 minutes,
-# forever until further notice, and never in the pre-market (09:00-09:15) or
-# post-market (15:32-15:49, Friday 16:32-16:49) windows. The 4 is the default
-# here, so a rebuilt task or a fresh clone runs at 4 minutes without any
-# environment change; the tick itself refuses to scan outside MARKET
-# (src/data/sessions.py, is_scan_window).
+# Owner order 2026-11-16: scan the whole KMIALL universe every 4 minutes,
+# forever until further notice. Monday to Thursday the hardcoded scan windows
+# are 09:15-09:30 (pre-market) and 09:32-15:49 (live market with the complete
+# post-market); the 09:30-09:32 gap is not scanned. Friday's different timings
+# are the exchange's own two bands. The 4 is the default here, so a rebuilt
+# task or a fresh clone runs at 4 minutes without any environment change; the
+# tick itself refuses to scan outside those windows (src/data/sessions.py,
+# scan_windows / is_scan_window).
 TICK_INTERVAL_MINUTES = _number("TICK_INTERVAL_MINUTES", 4)
 TICK_WARMUP_MINUTES = _number("TICK_WARMUP_MINUTES", 20)
 
