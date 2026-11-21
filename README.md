@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/charts-of-rehan.png" alt="Charts of Rehan" width="340" />
+  <img src="assets/charts-of-rehan-official.png" alt="Charts of Rehan" width="340" />
 </p>
 
 <h1 align="center">Charts of Rehan</h1>
@@ -43,7 +43,7 @@ list, and never invents a bar.
 | `src/data/` | the vendored data layer this project reads (see PROVENANCE.md) |
 | `tests/` | deterministic Python tests, no live network calls |
 | `examples/charts_demo.py` | the whole pipeline offline: replay bars, one gap, one revision |
-| `assets/` | the official mark (`charts-of-rehan.png`), shared by the README, the browser tab, the toolbar and the Desktop shortcut; its 128 px preview and the multi-size `.ico` |
+| `assets/` | the official mark (`charts-of-rehan-official.png`), shared by the README, the browser tab, the toolbar and the Desktop shortcut; its 128 px preview and the multi-size `.ico` |
 | `docs/` | architecture, API, deployment, data provenance |
 | `scripts/` | the guarded landing flow: repository identity, PR creation, merge |
 | `update-charts.cmd` | the one-click updater: fast-forward master, rebuild `web/dist` |
